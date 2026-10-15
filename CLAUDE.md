@@ -47,9 +47,15 @@ Every unit has a `.unit.json` at its root, never at a domain's:
 
 ## Purpose
 
+Workspace for reverse-engineering sessions with REA (`rea-agents`). It ships no unit; it scopes REA's MCP server and skill to sessions opened here (`docs/adrs/0001-ship-no-deployable-and-host-rea-as-agent-tooling.md`).
+
 ## Ownership
 
 ## Local Contracts
+
+- `.mcp.json` registers `rea` as `npx -y rea-agents@<version> mcp`, pinned to an exact version.
+- `.claude/skills/reverse-engineer-anything/` is the skill copied verbatim from the same `rea-agents` tarball. Its `metadata.tool_count` must equal the server's `tools/list` count; bump both together, never one alone.
+- Ghidra, a JDK, and other analysis engines are host installs, not repository content.
 
 ## Work Guidance
 
@@ -57,4 +63,4 @@ Every unit has a `.unit.json` at its root, never at a domain's:
 
 ## Child Index
 
-This project is not yet indexed. Before continuing you must scan the repository, create a `CLAUDE.md` in every child folder that is a durable boundary, and replace this message with one bullet per child `CLAUDE.md` — its path, then what that file owns. Go deep and scan files recursively to properly evaluate complexity. Do not create `CLAUDE.md` files in dot folders.
+None. No folder is yet a durable boundary of its own; `scripts/` and `.github/` are template-managed.
