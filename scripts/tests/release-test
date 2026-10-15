@@ -1,0 +1,192 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# What scripts/release hands to `gh release create`. The release itself is never
+# cut: `gh` is a stub recording its arguments, and CI_DRY_RUN makes scripts/ci a
+# no-op, so what is under test is the walk over apps/ and the artifact list it
+# builds -- which is where a wrong answer is silent, because a release with the
+# right tag and no assets looks exactly like a release that had none to attach.
+# Each way the walk aborts before the tag is cut is a case too.
+#
+# Nothing here needs a compiler or a container runtime. The one case that needs
+# a built file seeds the unit's dist/ instead: whether a toolchain produces the
+# binary is capabilities-test's question, and whether release attaches what it
+# finds is this one's.
+#
+# Not `set -e`: a failing assertion is recorded and the remaining cases still
+# run, so one break does not hide the rest.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+fixture() {
+  scratch_repo
+  current="$1"
+  stub gh <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" > "${GH_TRACE:?}"
+STUB
+}
+
+release() {
+  (cd "$work" && CI_DRY_RUN=1 GH_TRACE="$work/gh-called" scripts/release v1.2.3 2>&1)
+}
+
+# The same walk with nothing held back but the gate. CI_DRY_RUN was standing in
+# for two things above, and only one of them still has to be held back here:
+# scripts/release runs no git command of its own -- `gh release create` is its
+# whole remote surface, and the stub answers it, tag included -- so scripts/ci is
+# all that a real run would otherwise start, and a stub answers that in the copy
+# of scripts the fixture already made. The harness leaves CI_DRY_RUN unset and
+# GOWORK off, and says why.
+release_real() {
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$work/scripts/ci"
+  chmod +x "$work/scripts/ci"
+  (cd "$work" && GH_TRACE="$work/gh-called" scripts/release v1.2.3 2>&1)
+}
+
+echo "release-test"
+
+# jq reads each unit's declaration, and scripts/doctor requires it. Without it
+# every case would fail on the tool rather than on the walk, so the suite skips
+# every case, which the harness reports as a failure.
+if ! command -v jq > /dev/null 2>&1; then
+  skip "jq is not installed"
+  report
+  exit
+fi
+
+# A repository can be worth releasing before anything in it ships a file. The
+# tag and the notes are the release; an empty asset list is an outcome.
+fixture "a repository shipping no artifact still cuts a release"
+declare_unit lib
+out="$(release)"
+status=$?
+if (( status != 0 )); then
+  fail "a release with no artifacts failed (exit $status): $out"
+elif ! grep -q 'release create v1.2.3' < "$work/gh-called"; then
+  fail "gh was not asked to create the release: $(cat "$work/gh-called")"
+else
+  pass
+fi
+
+fixture "every file a unit produced is attached"
+declare_unit tool none executable linux-amd64
+mkdir -p "$work/apps/tool/dist"
+printf 'binary\n' > "$work/apps/tool/dist/tool-linux-amd64"
+printf 'binary\n' > "$work/apps/tool/dist/tool-macos-arm64"
+out="$(release)"
+status=$?
+if (( status != 0 )); then
+  fail "a release with artifacts failed (exit $status): $out"
+elif grep -q 'apps/tool/dist/tool-linux-amd64' < "$work/gh-called" &&
+  grep -q 'apps/tool/dist/tool-macos-arm64' < "$work/gh-called"; then
+  pass
+else
+  fail "the artifacts were not attached: $(cat "$work/gh-called")"
+fi
+
+# The unit is validated rather than built, so it belongs in the walk and
+# contributes nothing to it.
+fixture "a quadlet unit is validated and attaches nothing"
+declare_unit svc none quadlet
+quadlet_pair svc
+out="$(release)"
+status=$?
+if (( status != 0 )); then
+  fail "a quadlet unit failed the release (exit $status): $out"
+elif grep -q 'deploy/quadlet' < "$work/gh-called"; then
+  fail "a quadlet unit contributed a file to the release: $(cat "$work/gh-called")"
+elif grep -q 'validated' <<< "$out"; then
+  pass
+else
+  fail "the quadlet unit was not validated during the release: $out"
+fi
+
+# The tag is the thing that cannot be taken back. A build that cannot be made
+# has to stop the release while nothing has been published.
+fixture "a packaging failure aborts before the tag is cut"
+declare_unit svc none quadlet
+quadlet_pair svc
+printf '[Container]\nImage=localhost/other:latest\n' > "$work/apps/svc/deploy/quadlet/svc.container"
+out="$(release)"
+status=$?
+if (( status == 0 )); then
+  fail "a release survived a packaging failure: $out"
+elif [[ -e "$work/gh-called" ]]; then
+  fail "gh was called despite a packaging failure: $(cat "$work/gh-called")"
+else
+  pass
+fi
+
+# Packaging that produced nothing is not a packaging failure -- an unreachable
+# target and an unwired language both exit 0 by design -- so the walk has to
+# catch it separately or the tag is cut with the asset list silently short.
+# There is no unit here that could produce a file: no manifest, so no adapter.
+fixture "an executable unit that produced nothing aborts before the tag is cut"
+declare_unit tool none executable linux-amd64
+out="$(release)"
+status=$?
+if (( status == 0 )); then
+  fail "a release survived a unit that shipped nothing it declared: $out"
+elif [[ -e "$work/gh-called" ]]; then
+  fail "gh was called despite a unit producing no declared artifact: $(cat "$work/gh-called")"
+elif grep -q 'produced no file' <<< "$out"; then
+  pass
+else
+  fail "the release stopped without naming why: $out"
+fi
+
+# A dist/ is not an artifact list. The release attaches files, so counting what
+# the glob matched rather than what it can attach would let a unit that produced
+# only a directory pass the guard above and contribute nothing.
+fixture "a dist/ holding no file does not satisfy an executable declaration"
+declare_unit tool none executable linux-amd64
+mkdir -p "$work/apps/tool/dist/staging"
+out="$(release)"
+status=$?
+if (( status == 0 )); then
+  fail "a release survived a unit whose dist/ held no file: $out"
+elif grep -q 'produced no file' <<< "$out"; then
+  pass
+else
+  fail "the release stopped without naming why: $out"
+fi
+
+# The release is the reason scripts/package empties a unit's dist/, and the
+# comment on that `rm -rf dist` says why. What is this suite's to say is that
+# every case above runs under CI_DRY_RUN, which is the flag that skips the
+# clearing -- so until here the walk was only ever read where the thing it
+# depends on does not happen. Drop the clearing and this case says so: packaging
+# leaves the stale file, the walk counts it, and gh is handed a binary built
+# from another commit.
+#
+# No toolchain either way. go.mod alone makes Go present, which is what puts
+# this dist/ under the clearing, and the clearing runs before the dispatch -- so
+# a module with no main package produces no file whether or not go is installed,
+# and the first assertion below decides the case before the rest can differ.
+# Packaging then reports the unit unavailable and the release stops there, one
+# step short of the walk's own guard.
+fixture "a binary from an earlier build does not reach the release"
+declare_unit tool none executable linux-amd64
+printf 'module example.com/tool\n\ngo 1.22\n' > "$work/apps/tool/go.mod"
+mkdir -p "$work/apps/tool/dist"
+printf 'stale\n' > "$work/apps/tool/dist/tool-linux-amd64"
+out="$(release_real)"
+status=$?
+if [[ -e "$work/apps/tool/dist/tool-linux-amd64" ]]; then
+  fail "a file from an earlier build survived the release's packaging step: $out"
+elif (( status == 0 )); then
+  fail "a release survived a unit whose only file was from an earlier build: $out"
+elif ! grep -qE '^package +unavailable +go' <<< "$out"; then
+  fail "the release stopped somewhere other than packaging: $out"
+elif [[ -e "$work/gh-called" ]]; then
+  fail "gh was called with a binary from an earlier build: $(cat "$work/gh-called")"
+else
+  pass
+fi
+
+report

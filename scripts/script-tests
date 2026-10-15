@@ -1,0 +1,70 @@
+#!/usr/bin/env bash
+# Runs every scripts/tests/*-test concurrently, a test per CPU, and prints each
+# one's output whole once all have finished, in name order, so concurrent
+# output never interleaves. Exits non-zero naming every test that failed. A
+# suite that hangs prints nothing until it is killed, since its output is held
+# until then.
+#
+# The suites are independent: each builds its own scratch repositories, and the
+# one that writes inside this repository, summarize-test, is the only writer of
+# the path it writes. A new suite must keep to the same terms, since it runs
+# beside every other. Most of their time is spent waiting on git and child
+# processes, which is why running them side by side cuts the wall time.
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# nullglob so an empty scripts/tests/ reports itself plainly rather than the
+# unexpanded glob reading as one missing, non-executable test script.
+shopt -s nullglob
+test_scripts=(scripts/tests/*-test)
+shopt -u nullglob
+if (( ${#test_scripts[@]} == 0 )); then
+  echo "No test scripts found in scripts/tests/."
+  exit 1
+fi
+for test_script in "${test_scripts[@]}"; do
+  if [[ ! -x "$test_script" ]]; then
+    echo "$test_script is missing or not executable."
+    exit 1
+  fi
+done
+
+results="$(mktemp -d)"
+trap 'rm -rf "$results"' EXIT
+
+# getconf rather than nproc, which macOS lacks; where it answers nothing usable
+# the suites run one at a time rather than not at all.
+cpus="$(getconf _NPROCESSORS_ONLN 2>/dev/null || true)"
+[[ "$cpus" =~ ^[1-9][0-9]*$ ]] || cpus=1
+
+# stdin is closed for the same reason libs/detect.sh closes it for a
+# capability: a child that drains fd 0 blocks until the caller's stdin reaches
+# EOF, which for a terminal or an agent harness is never, and the run hangs with
+# nothing printed. xargs stops starting suites once one is killed by a signal,
+# and its own status says nothing the per-suite records below do not, so it is
+# ignored and a suite with no record is reported as one that did not run.
+# shellcheck disable=SC2016 # expanded by the inner bash, per test
+printf '%s\0' "${test_scripts[@]}" |
+  xargs -0 -n 1 -P "$cpus" bash -c '
+    name="${2##*/}"
+    status=0
+    "$2" </dev/null >"$1/$name.out" 2>&1 || status=$?
+    echo "$status" >"$1/$name.status"
+  ' _ "$results" || true
+
+failed=()
+for test_script in "${test_scripts[@]}"; do
+  name="${test_script##*/}"
+  cat "$results/$name.out" 2>/dev/null || echo "$test_script did not run."
+  if [[ "$(cat "$results/$name.status" 2>/dev/null)" != 0 ]]; then
+    failed+=("$test_script")
+  fi
+done
+
+if (( ${#failed[@]} )); then
+  echo
+  echo "Failed: ${failed[*]}"
+  exit 1
+fi

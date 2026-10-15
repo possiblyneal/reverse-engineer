@@ -1,0 +1,35 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+
+# Build output lands under apps/<name>/ and libs/<name>/ in this layout, so a
+# root-only removal cleans nothing in the common case. Searching finds it
+# wherever it sits.
+#
+# DETECT_PRUNE_DIRS is pruned rather than searched: each of those directories
+# holds a dependency's or another project's own build/dist/cache directories,
+# and deleting those cleans nothing this repository produced while forcing a
+# re-fetch. Swift output inside .build is left to `swift package clean`.
+prune=()
+detect_prune_expr prune
+
+find . \( "${prune[@]}" \) -prune -o \
+  -type d \( -name dist -o -name build -o -name coverage -o -name __pycache__ \
+  -o -name .pytest_cache -o -name .ruff_cache \) \
+  -exec rm -rf {} +
+
+# rm rather than -delete, which implies -depth and so disables the prune above.
+find . \( "${prune[@]}" \) -prune -o \
+  -type f \( -name '*.pyc' -o -name '*.pyo' \) -exec rm -f {} +
+
+# Dependency caches, kept out of the search above so that only these exact
+# paths are removed rather than every directory sharing their names.
+rm -rf node_modules/.cache target/debug/.fingerprint
+
+echo "Cleaned common generated files and caches. Add project-specific cleanup to scripts/clean."

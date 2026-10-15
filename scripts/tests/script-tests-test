@@ -1,0 +1,95 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# scripts/script-tests runs every suite at once and holds each one's output
+# until all have finished, so what it prints at the end is the only record of
+# which suite failed. These cases run it over suites written here, in a scratch
+# copy whose scripts/tests/ holds nothing else: passing suites print in name
+# order, every failing suite is named with its output kept, a killed runner
+# fails the run, and a non-executable suite, an empty tests/, and a suite
+# reading stdin are each handled.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+echo "script-tests-test"
+
+# A scratch repository whose scripts/tests/ holds only the suites named, each
+# given as name and body.
+suites() {
+  scratch_repo
+  rm -f "$work"/scripts/tests/*-test
+  while (( $# )); do
+    printf '#!/usr/bin/env bash\n%s\n' "$2" > "$work/scripts/tests/$1-test"
+    chmod +x "$work/scripts/tests/$1-test"
+    shift 2
+  done
+}
+
+suites b 'echo b-out' a 'echo a-out'
+current="passing suites exit 0 and print in name order"
+out="$("$work/scripts/script-tests" 2>&1)"
+status=$?
+if (( status == 0 )) && [[ "$out" == $'a-out\nb-out' ]]; then
+  pass
+else
+  fail "wanted exit 0 and a-out before b-out, got exit $status: $out"
+fi
+
+suites a 'echo a-out' b 'echo b-out; exit 3' c 'exit 1'
+current="every failing suite is named and its output kept"
+out="$("$work/scripts/script-tests" 2>&1)"
+status=$?
+if (( status == 1 )) && grep -q 'b-out' <<< "$out" &&
+  grep -qx 'Failed: scripts/tests/b-test scripts/tests/c-test' <<< "$out"; then
+  pass
+else
+  fail "wanted exit 1 naming b-test and c-test, got exit $status: $out"
+fi
+
+# shellcheck disable=SC2016 # expanded by the suite, naming its runner
+suites a 'kill -9 $PPID' b 'echo b-out'
+current="a suite whose runner is killed fails the run rather than passing it"
+out="$("$work/scripts/script-tests" 2>&1)"
+status=$?
+if (( status == 1 )) && grep -q '^Failed: .*scripts/tests/a-test' <<< "$out"; then
+  pass
+else
+  fail "wanted exit 1 naming a-test, got exit $status: $out"
+fi
+
+suites a 'echo a-out'
+chmod -x "$work/scripts/tests/a-test"
+current="a suite that is not executable is refused before any runs"
+out="$("$work/scripts/script-tests" 2>&1)"
+status=$?
+if (( status == 1 )) && grep -q 'a-test is missing or not executable' <<< "$out"; then
+  pass
+else
+  fail "wanted exit 1 refusing a-test, got exit $status: $out"
+fi
+
+suites
+current="an empty scripts/tests/ fails rather than passing nothing"
+out="$("$work/scripts/script-tests" 2>&1)"
+status=$?
+if (( status == 1 )) && grep -q 'No test scripts found' <<< "$out"; then
+  pass
+else
+  fail "wanted exit 1 for no suites, got exit $status: $out"
+fi
+
+suites a 'cat; echo a-out'
+current="a suite reading stdin sees EOF rather than hanging the run"
+out="$("$work/scripts/script-tests" < <(sleep 30) 2>&1)"
+status=$?
+if (( status == 0 )) && [[ "$out" == a-out ]]; then
+  pass
+else
+  fail "wanted exit 0 and a-out, got exit $status: $out"
+fi
+
+report

@@ -1,0 +1,159 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Asserts that the commit-message rules are actually enforced, by driving real
+# commits through the real hook rather than by reading the config.
+#
+# Two failures are invisible from the config alone. A commit-msg hook that was
+# never installed lets every message through while `pre-commit install` reports
+# success, and commitlint with no resolvable shared preset lints nothing while
+# exiting zero. Both look identical to a working setup from the outside.
+#
+# Unlike the other suites here, this one needs the network: commitlint is a
+# JavaScript program, so pre-commit provisions a Node environment and installs
+# it from npm the first time a case runs it. That cost was accepted rather than
+# leaving a rule that ships to every generated repository unproven.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+
+# Builds a repository wired exactly as a generated one is. Both the top-level
+# default_* keys and the commitlint entry are lifted out of this repository's
+# own .pre-commit-config.yaml rather than restated, so a change to the real
+# config is what these cases assert against.
+#
+# Every default_* key, not only default_install_hook_types. `default_stages`
+# decides which git hook each entry runs at, so a fixture that drops it
+# asserts against a config this repository does not have: it would report the
+# commit-msg wiring healthy while the real config had scoped commitlint out of
+# existence. That is a check that did not run reading as a check that passed.
+fixture() {
+  scratch_repo
+  current="$1"
+  {
+    # Each key and whatever list form it carries, copied verbatim -- a wrapped
+    # flow list and a block list both continue onto the lines below, and a
+    # single-line pattern would lift a fragment that no longer parses. Copying
+    # rather than reading the values keeps this fixture free of a second
+    # opinion about what the config says; libs/precommit.sh holds the only one.
+    awk '/^default_(install_hook_types|stages):/ {
+           print
+           if ($0 ~ /\[/) { if ($0 !~ /\]/) flow = 1 } else block = 1
+           next
+         }
+         flow { print; if ($0 ~ /\]/) flow = 0; next }
+         block && /^[[:space:]]*-/ { print; next }
+         block { block = 0 }' "$repo_root/.pre-commit-config.yaml"
+    echo "repos:"
+    awk '/^  - repo: .*commitlint-pre-commit-hook/ { on = 1; print; next }
+         on && /^  - repo: / { exit }
+         on { print }' "$repo_root/.pre-commit-config.yaml"
+  } > "$work/.pre-commit-config.yaml"
+
+  # commitlint resolves its config from the repository root, so the rules only
+  # reach the hook if this file travels with it.
+  cp "$repo_root/.commitlintrc.yaml" "$work/"
+
+  (cd "$work" && pre-commit install) > /dev/null 2>&1
+}
+
+# Stages a change and commits it with the given message, printing the combined
+# output. The caller reads git's exit status from the assignment.
+attempt() {
+  (
+    cd "$work" || exit 1
+    date +%s%N > change.txt
+    git add change.txt
+    git commit -F - <<< "$1"
+  ) 2>&1
+}
+
+
+echo "commitlint-test"
+
+if ! command -v pre-commit > /dev/null 2>&1; then
+  skip "pre-commit is not installed"
+  report
+  exit
+fi
+
+# `pre-commit install` takes no arguments here and must still write the second
+# hook file. It does that only because the config carries
+# default_install_hook_types; without that line every case below would pass for
+# the wrong reason, since a hook git never calls rejects nothing.
+fixture "pre-commit install writes the commit-msg hook"
+if [[ -f "$work/.git/hooks/commit-msg" ]]; then
+  pass
+else
+  fail "pre-commit install left no commit-msg hook, so no message is checked"
+fi
+
+fixture "a subject that is not conventional is rejected"
+out="$(attempt "nope")"
+status=$?
+if (( status != 0 )); then
+  pass
+else
+  fail "an unconventional subject committed cleanly: $out"
+fi
+
+fixture "a conventional subject with a body is accepted"
+out="$(attempt "feat: add a commit message check
+
+The body is separated from the subject by a blank line, which is what
+makes it a body rather than a runaway subject.
+
+Generated-By: Test Model")"
+status=$?
+if (( status == 0 )); then
+  pass
+else
+  fail "a valid conventional commit was rejected: $out"
+fi
+
+# The trailer is written into these messages rather than produced: this fixture
+# installs the commitlint hook alone, so what it proves is that the rule reads
+# the trailer. That scripts/attribute-commit writes one is attribute-commit-test's
+# case, and that the two meet on a real commit is neither's -- the rewrite runs
+# at a stage this fixture does not install.
+fixture "a message with no Generated-By trailer is rejected"
+out="$(attempt "feat: add a commit message check
+
+An agent wrote this and the attribution trailer never made it in.")"
+status=$?
+if (( status != 0 )) && grep -q "trailer-exists" <<< "$out"; then
+  pass
+else
+  fail "an unattributed commit was not caught by the rule: $out"
+fi
+
+# GitHub writes this subject itself when a pull request is merged, and no local
+# hook can reach it. commitlint's default ignore list is what keeps a merge from
+# failing here; if that ever stops covering the pattern, every merge breaks.
+fixture "a generated merge subject is accepted"
+out="$(attempt "Merge pull request #1 from possiblyneal/some-branch")"
+status=$?
+if (( status == 0 )); then
+  pass
+else
+  fail "a merge subject was rejected, which would block every merge: $out"
+fi
+
+# body-leading-blank is a warning in config-conventional and an error here. The
+# rule name is asserted rather than just the exit status, since a malformed
+# message fails for several reasons and only one of them is this rule.
+fixture "a body with no blank line before it is rejected"
+out="$(attempt "feat: add a commit message check
+This line runs straight on from the subject with no blank line.")"
+status=$?
+if (( status != 0 )) && grep -q "body-leading-blank" <<< "$out"; then
+  pass
+else
+  fail "a body with no leading blank line was not caught by the rule: $out"
+fi
+
+report

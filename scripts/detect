@@ -1,0 +1,33 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/detect <command>
+
+  languages       Present languages, one per line
+  github-output   language=true|false lines, plus trivy, for $GITHUB_OUTPUT
+  codeql-matrix   matrix=<json> for $GITHUB_OUTPUT, for the CodeQL job's strategy
+  probe           Every capability and language pairing, wired or absent
+EOF
+}
+
+case "${1:-}" in
+  languages) language_capabilities present ;;
+  github-output) language_capabilities github-output ;;
+  codeql-matrix) language_capabilities codeql-matrix ;;
+  probe) language_capabilities probe ;;
+  ""|-h|--help|help) usage ;;
+  *)
+    echo "Unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

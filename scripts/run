@@ -1,0 +1,112 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/unit.sh
+source "$repo_root/scripts/libs/unit.sh"
+
+# Starts one unit, dispatching on the run fact it declared: run: none stops
+# here, and every other value reaches the adapter rather than gating it. A run
+# is one foreground process, so the unit must be named when apps/ holds
+# several, and --entry when its manifest declares several programs. The context
+# reaches the adapter as the libs/unit.sh globals, unit_args and unit_entry
+# among them.
+#
+# An entry point is named, never declared. Each run adapter checks --entry
+# against the names its language's own manifest holds -- [project.scripts],
+# bin keys, main package import paths -- so a list in .unit.json would be a
+# second copy of one the adapter already reads, and the two would drift.
+#
+# Everything after `--` belongs to the program, so this script's own arguments
+# stay unambiguous however the program spells its flags.
+#
+# --entry is a flag rather than a second positional. A unit holding one program
+# needs no name and a repository holding one unit needs none either, so with
+# both omitted `scripts/run api` has two readings and no way to tell them
+# apart: positionally it is a unit, and the moment apps/ holds one unit it is
+# an entry point. A flag says which was meant whatever else is present.
+unit_name=""
+entry=""
+while (( $# > 0 )) && [[ "$1" != -- ]]; do
+  case "$1" in
+    --entry)
+      # `--` is the program's separator, never a value: taking it would read
+      # the first program argument as the unit name.
+      { (( $# >= 2 )) && [[ "$2" != -- ]]; } || { echo "--entry needs a value." >&2; exit 2; }
+      entry="$2"
+      shift 2
+      ;;
+    --entry=*)
+      entry="${1#--entry=}"
+      shift
+      ;;
+    -*)
+      echo "Unknown option: $1" >&2
+      echo "Usage: scripts/run [unit] [--entry <name>] [-- args...]" >&2
+      exit 2
+      ;;
+    *)
+      if [[ -n "$unit_name" ]]; then
+        echo "Two units named: $unit_name and $1. A run is one foreground process." >&2
+        exit 2
+      fi
+      unit_name="$1"
+      shift
+      ;;
+  esac
+done
+[[ "${1:-}" != -- ]] || shift
+unit_args=("$@")
+unit_entry="$entry"
+
+# A dry run reports what would be dispatched and runs nothing, so the
+# environment check is not run either: it is neither the dispatch nor free.
+if [[ -z "${CI_DRY_RUN:-}" ]]; then
+  if [[ -x scripts/doctor ]]; then
+    scripts/doctor
+  else
+    echo "No scripts/doctor script found; skipping environment checks."
+  fi
+fi
+
+unit="$(unit_resolve "$unit_name" run)" || exit 1
+
+if [[ -n "$unit" ]]; then
+  cd "apps/$unit"
+  unit_read
+  if [[ "$unit_run" == none ]]; then
+    echo "apps/$unit declares run: none, so there is nothing to run."
+    exit 0
+  fi
+fi
+
+mapfile -t languages < <(language_capabilities present)
+if (( ${#languages[@]} > 1 )); then
+  echo "Several stacks here: ${languages[*]}"
+  echo "A run is a single foreground process, so which one to start has to be said."
+  if [[ -n "$unit" ]]; then
+    echo "apps/$unit holds more than one stack. Split it, or add a run script that"
+    echo "starts what this unit means by running."
+  else
+    echo "apps/ has no units to name, so split the root or add a private run"
+    echo "adapter for the stack you mean to scripts/libs/detect.sh."
+  fi
+  exit 1
+fi
+
+if (( ${#languages[@]} == 0 )); then
+  echo "No project manifest found here, so there is nothing to run."
+  exit 0
+fi
+
+args=(--language "${languages[0]}")
+[[ -z "${CI_DRY_RUN:-}" ]] || args+=(--dry-run)
+
+language_capabilities run "${args[@]}" run
+tally

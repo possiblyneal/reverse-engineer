@@ -1,0 +1,168 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# The harness is the one module here whose defect no other suite can see: a
+# report that reads green over a run that verified nothing is exactly what the
+# other suites trust it not to do. So each case writes a small suite that
+# sources the harness, runs it as a process, and asserts on what a caller of
+# scripts/check would see -- the tally line and the exit status -- plus what
+# it leaves behind on disk: for all-pass, one-fail, all-skip, skip-beside-pass,
+# a declared not-applicable, and a suite that counted nothing, plus each
+# fixture primitive.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+harness="$repo_root/scripts/tests/libs/harness.sh"
+
+# Writes $work/suite from stdin, prefixed with the sourcing every suite does,
+# and runs it. Output lands in $out, status in $status.
+suite() {
+  {
+    printf '#!/usr/bin/env bash\nset -uo pipefail\nsource "%s"\n' "$harness"
+    cat
+  } > "$work/suite"
+  out="$(bash "$work/suite" 2>&1)"
+  status=$?
+}
+
+assert_tally() {
+  local want="$1" want_status="$2"
+  if [[ "$out" == *"$want"* ]] && (( status == want_status )); then
+    pass
+  else
+    fail "wanted '$want' with exit $want_status, got exit $status: '$out'"
+  fi
+}
+
+echo "harness-test"
+
+scratch_repo
+current="all passed reports green"
+suite <<'SUITE'
+current=a; pass
+current=b; pass
+report
+SUITE
+assert_tally "2 passed, 0 failed, 0 skipped, 0 not-applicable" 0
+
+scratch_repo
+current="one failure fails the suite and names the case"
+suite <<'SUITE'
+current=a; pass
+current=b; fail "broke"
+report
+SUITE
+assert_tally "1 passed, 1 failed, 0 skipped, 0 not-applicable" 1
+if [[ "$out" == *"  FAIL  b: broke"* ]]; then pass; else fail "the failing case was not named: '$out'"; fi
+
+# The silent green: every case skipped for a missing tool used to exit 0,
+# indistinguishable from a verified run.
+scratch_repo
+current="everything skipped is unavailable, not green"
+suite <<'SUITE'
+current=a; skip "jq is not installed"
+report
+SUITE
+assert_tally "0 passed, 0 failed, 1 skipped, 0 not-applicable" 1
+
+scratch_repo
+current="a skip beside a pass stays green and is counted"
+suite <<'SUITE'
+current=a; pass
+current=b; skip "go is not installed"
+report
+SUITE
+assert_tally "1 passed, 0 failed, 1 skipped, 0 not-applicable" 0
+
+# The two cases the counted not-applicable state exists to separate. Both
+# verify nothing; only the one that says so is green.
+scratch_repo
+current="a declared not-applicable suite is green and counted"
+suite <<'SUITE'
+not_applicable "the hook ships outside this repository"
+report
+SUITE
+assert_tally "0 passed, 0 failed, 0 skipped, 1 not-applicable" 0
+
+scratch_repo
+current="a suite that counted nothing at all fails"
+suite <<'SUITE'
+report
+SUITE
+assert_tally "0 passed, 0 failed, 0 skipped, 0 not-applicable" 1
+
+scratch_repo
+current="scratch_repo builds a repository with scripts and an identity"
+suite <<'SUITE'
+scratch_repo
+cd "$work" && git commit --allow-empty -qm initial && [[ -x scripts/check ]] && echo built
+SUITE
+if [[ "$out" == "built" ]]; then pass; else fail "could not commit in or find scripts in the scratch repo: '$out'"; fi
+
+scratch_repo
+current="the scratch directory is removed when the suite exits"
+suite <<'SUITE'
+scratch_repo
+echo "$work"
+SUITE
+if [[ -n "$out" && ! -e "$out" ]]; then pass; else fail "left behind: '$out'"; fi
+
+# mktemp honours TMPDIR, so a guard written against /tmp silently keeps every
+# fixture on a host where TMPDIR points elsewhere -- which is every macOS.
+scratch_repo
+current="cleanup follows TMPDIR away from /tmp"
+mkdir "$work/alt"
+{
+  printf '#!/usr/bin/env bash\nset -uo pipefail\nsource "%s"\n' "$harness"
+  # The suite expands it, not this file.
+  # shellcheck disable=SC2016
+  echo 'scratch_repo; echo "$work"'
+} > "$work/suite"
+out="$(TMPDIR="$work/alt" bash "$work/suite" 2>&1)"
+if [[ "$out" == "$work/alt/"* && ! -e "$out" ]]; then
+  pass
+else
+  fail "fixture not under TMPDIR or not removed: '$out'"
+fi
+
+scratch_repo
+current="stub puts a command first on PATH"
+suite <<'SUITE'
+scratch_repo
+stub gh <<'STUB'
+#!/usr/bin/env bash
+echo "stubbed $*"
+STUB
+gh auth status
+SUITE
+if [[ "$out" == "stubbed auth status" ]]; then pass; else fail "the real command ran or the stub was not found: '$out'"; fi
+
+scratch_repo
+current="declare_unit writes both facts and the targets"
+suite <<'SUITE'
+scratch_repo
+declare_unit lib
+declare_unit app oneshot executable linux-amd64 macos-arm64
+cat "$work/apps/lib/.unit.json" "$work/apps/app/.unit.json"
+SUITE
+want='{"schema_version": 1, "run": "none", "ships": {"kind": "none"}}
+{"schema_version": 1, "run": "oneshot", "ships": {"kind": "executable", "targets": ["linux-amd64", "macos-arm64"]}}'
+if [[ "$out" == "$want" ]]; then pass; else fail "unexpected declarations: '$out'"; fi
+
+# The pair is asserted through scripts/package rather than by its bytes: what
+# a suite wants from it is a unit that validates before the case breaks it.
+scratch_repo
+current="quadlet_pair writes a pair scripts/package validates"
+suite <<'SUITE'
+scratch_repo
+declare_unit svc longlived quadlet
+quadlet_pair svc
+(cd "$work" && CI_DRY_RUN=1 scripts/package svc > /dev/null 2>&1) && echo validated
+SUITE
+if [[ "$out" == "validated" ]]; then pass; else fail "the pair did not validate: '$out'"; fi
+
+report

@@ -1,0 +1,99 @@
+name: Feature request
+description: Propose a focused improvement with clear user value and scope
+title: "feat: "
+labels:
+  - enhancement
+type: feature
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for proposing an improvement. Focus on the problem, desired outcome, users, and boundaries.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or user need
+      description: What pain, limitation, or missing capability should this solve?
+      placeholder: "Example: Users cannot export reports without manually copying data from multiple screens."
+    validations:
+      required: true
+
+  - type: textarea
+    id: outcome
+    attributes:
+      label: Desired outcome
+      description: What should be true when this is done?
+      placeholder: "Example: Users can export a complete report as CSV from the report page."
+    validations:
+      required: true
+
+  - type: textarea
+    id: use_cases
+    attributes:
+      label: Use cases
+      description: Who needs this, and what workflow should it support?
+      placeholder: |
+        - As a `...`, I want to `...`, so that `...`.
+        - As a `...`, I want to `...`, so that `...`.
+    validations:
+      required: true
+
+  - type: textarea
+    id: scope
+    attributes:
+      label: Scope boundaries
+      description: What should this explicitly not include? Name the adjacent things someone might assume come with it.
+      placeholder: |
+        - Out of scope:
+        - Deliberately deferred to later:
+    validations:
+      required: true
+
+  - type: textarea
+    id: acceptance
+    attributes:
+      label: How will we know it works?
+      description: What should someone do to confirm this is finished and correct? Concrete checks, not "it works".
+      placeholder: |
+        - Given `...`, when I `...`, then `...`.
+        - Edge case that must behave correctly:
+    validations:
+      required: true
+
+  - type: textarea
+    id: unclear
+    attributes:
+      label: Open questions and things you have not decided
+      description: What are you unsure about, and where should whoever builds this come back to you instead of guessing? Naming a gap here is more useful than leaving it to be discovered mid-build.
+      placeholder: |
+        - Undecided:
+        - Ask me before assuming:
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Context and references
+      description: Add links, screenshots, docs, related issues, examples, or prior discussion. Redact secrets.
+      placeholder: |
+        - Related issues:
+        - Screenshots/examples:
+        - Docs/prior discussion:
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Reporter checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I confirmed this capability does not already exist in the latest version.
+          required: true
+        - label: I described the problem and desired outcome, not only a proposed implementation.
+          required: true
+        - label: I removed or redacted secrets, tokens, passwords, and private data.
+          required: true

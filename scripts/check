@@ -1,0 +1,125 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The full local gate, in the order below. Local means it reads no hosted
+# GitHub state, not that it stays offline: commitlint-test and pre-commit's own
+# hook environments fetch on first use.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# By default only the Result table reaches the caller, because the rest of the
+# run -- pre-commit's hook list, test progress, compiler noise -- is what an
+# agent would otherwise read to learn what the table already says. The filter is
+# scripts/summarize rather than a second one here: check runs itself under it
+# with --verbose, so the raw run still exists, and the exit status is the
+# gate's because summarize passes its command's through.
+#
+# The full run is written to tmp/check.log every time, passing or failing. A
+# pre-commit fixer repairs the file and exits non-zero, so a re-run passes and
+# the cause is gone; the log is what a failure outside the table is diagnosed
+# from. --verbose streams the same text live. --gate is the internal entry that
+# runs the steps below and nothing else, so the tee wraps exactly one run.
+case "${1:-}" in
+  "")
+    exec scripts/summarize scripts/check --verbose
+    ;;
+  --verbose)
+    mkdir -p tmp
+    # pipefail (set above) makes the pipeline's status the gate's, not tee's.
+    scripts/check --gate 2>&1 | tee tmp/check.log
+    exit "${PIPESTATUS[0]}"
+    ;;
+  --gate) ;;
+  *)
+    echo "usage: scripts/check [--verbose]" >&2
+    exit 2
+    ;;
+esac
+
+if [[ ! -x scripts/doctor ]]; then
+  echo "scripts/doctor is missing or not executable."
+  exit 1
+fi
+
+scripts/doctor
+
+# Run before the checks they guard. They verify the language-capabilities
+# interface, its workflow adapters, and that routine local commands stay offline.
+if [[ ! -x scripts/script-tests ]]; then
+  echo "scripts/script-tests is missing or not executable."
+  exit 1
+fi
+
+scripts/script-tests
+
+# Where a file sits, checked before what is in it. A misplaced file passes every
+# language check in this repository, because each one reads the manifests and
+# never asks whether the tree around them matches the rules.
+if [[ ! -x scripts/structure ]]; then
+  echo "scripts/structure is missing or not executable."
+  exit 1
+fi
+
+scripts/structure </dev/null
+
+# Whether this repository's own .github/ still matches the copy it ships to
+# generated repositories. Reports not-applicable where there is no payload,
+# which is every repository generated from one.
+if [[ ! -x scripts/github-parity ]]; then
+  echo "scripts/github-parity is missing or not executable."
+  exit 1
+fi
+
+scripts/github-parity </dev/null
+
+if [[ ! -x scripts/ci ]]; then
+  echo "scripts/ci is missing or not executable."
+  exit 1
+fi
+
+scripts/ci
+
+# The security workflow blocks a pull request the same way the CI workflow does,
+# so leaving it out here means finding out on the pull request instead of before
+# the commit.
+if [[ ! -x scripts/security ]]; then
+  echo "scripts/security is missing or not executable."
+  exit 1
+fi
+
+scripts/security
+
+# The commit hooks see staged files only, so a file stays unchecked until it is
+# next touched: a hook added today never reaches the files already committed,
+# and a rename out of a recognized type stops the checks with nothing reporting
+# it. This is the sweep that covers them. doctor above already fails when the
+# config is present and the tool or the installed hook is missing.
+#
+# no-commit-to-branch is skipped rather than run. It reads the current branch
+# instead of any file, so on main it fails this whole sweep for a commit that
+# is not being made.
+if [[ -s .pre-commit-config.yaml ]]; then
+  echo
+  echo "Running pre-commit across all files"
+  SKIP=no-commit-to-branch pre-commit run --all-files
+
+  # --all-files means every file Git knows about, so a file written but not yet
+  # staged is not one of them. That is this sweep's blind spot at the moment it
+  # matters most: a new script reads as covered here and then fails the hook at
+  # commit time, having never been looked at. --files takes a path whether or
+  # not Git tracks it, which is what closes the gap.
+  #
+  # --exclude-standard so an ignored path stays ignored; -z and -d '' so a name
+  # containing whitespace stays one argument.
+  untracked=()
+  while IFS= read -r -d '' path; do
+    untracked+=("$path")
+  done < <(git ls-files --others --exclude-standard -z 2>/dev/null)
+
+  if (( ${#untracked[@]} )); then
+    echo
+    echo "Running pre-commit across ${#untracked[@]} untracked file(s)"
+    SKIP=no-commit-to-branch pre-commit run --files "${untracked[@]}"
+  fi
+fi

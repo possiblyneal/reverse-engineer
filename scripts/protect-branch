@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Refuse a push whose destination is a protected branch. Work reaches main
+# through a pull request that GitHub merges; a push naming main as its
+# destination bypasses review entirely, and on a plan without push protection
+# or branch rulesets nothing hosted refuses it.
+#
+# Nothing local refuses it either, which is why this exists. `no-commit-to-branch`
+# runs at pre-commit and fires only while HEAD *is* the protected branch, so it
+# never sees `git push origin HEAD:main` from a feature branch. `changelog-check`
+# is the only other pre-push hook and reads CHANGELOG.md structure, never the
+# destination ref. The permission rules cannot cover it either: an ask rule
+# matches a command prefix, and the destination is an argument.
+#
+# pre-commit supplies the destination as PRE_COMMIT_REMOTE_BRANCH. Two limits
+# come from its parser rather than from here, and both are left to the server:
+# it reports only the first ref of a multi-ref push, and it skips a ref whose
+# local sha is all zeros, which is every `git push --delete`. GitHub refuses to
+# delete the branch its HEAD points at, so the default branch is covered there.
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/result.sh
+source "$(dirname "${BASH_SOURCE[0]}")/libs/result.sh"
+
+protected_branches=("main" "master")
+
+destination="${PRE_COMMIT_REMOTE_BRANCH:-}"
+
+# Unset means pre-commit built no destination for this push -- a delete-only
+# push, or a stage other than pre-push. Neither is this script's business.
+[[ -n "$destination" ]] || exit 0
+
+destination="${destination#refs/heads/}"
+
+for branch in "${protected_branches[@]}"; do
+  if [[ "$destination" == "$branch" ]]; then
+    result protect-branch FAIL "refusing to push to $destination; open a pull request instead, since $destination is written by merging one"
+    exit 1
+  fi
+done

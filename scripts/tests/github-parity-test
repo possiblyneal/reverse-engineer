@@ -1,0 +1,213 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Exercises scripts/github-parity: every way the two .github/ trees can
+# disagree, the two documented exceptions, and the states it reports when it
+# cannot decide: the index read rather than the working tree in both
+# directions, no payload at all, and the record unreadable without jq.
+#
+# Each fixture is a real Git repository with the scripts tree copied into it,
+# for the reason structure-test gives: the script resolves its own repository
+# root from BASH_SOURCE and cds there, so running this repository's copy
+# against a fixture directory would compare this repository's trees instead.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+payload="apps/github-repository-template/src/base-repo/.github"
+
+write() {
+  mkdir -p "$work/$(dirname "$1")"
+  printf '%s\n' "${2-x}" > "$work/$1"
+}
+
+# The same file in both trees, which is what parity means.
+mirror() {
+  write ".github/$1" "${2-x}"
+  write "$payload/$1" "${2-x}"
+}
+
+# A record with the given features object, since a payload file the root lacks
+# is judged against it.
+record_file() {
+  write .repo-template.json "{\"schema_version\": 1, \"generation\": {\"features\": ${1-\{\}}}}"
+}
+
+stage() {
+  git -C "$work" add -A > /dev/null 2>&1
+}
+
+# Runs the check and keeps its output and exit status for the assertions to
+# read. Staging is the caller's rather than this helper's: two cases below turn
+# on the difference between the index and the working tree, and one runs the
+# script on a reduced PATH. Every assertion reads what this produced, so a case
+# is never audited twice under different conditions.
+run_parity() {
+  (cd "$work" && "$@" ./scripts/github-parity) > "$work/.audit-output" 2>&1
+  parity_status=$?
+}
+
+audit() {
+  stage
+  run_parity
+}
+
+# Replaces a path's stage-0 index entry with the numbered stages a conflicted
+# merge leaves behind. That is the one state git show cannot read a path out of,
+# and the only way to reach it here: a fixture has no history to merge.
+unmerge() {
+  local blob null="0000000000000000000000000000000000000000"
+  blob="$(git -C "$work" rev-parse ":$1")"
+  printf '0 %s\t%s\n100644 %s 2\t%s\n100644 %s 3\t%s\n' \
+    "$null" "$1" "$blob" "$1" "$blob" "$1" |
+    git -C "$work" update-index --index-info
+}
+
+assert_passes() {
+  if (( parity_status == 0 )); then
+    pass
+  else
+    fail "agreeing trees were rejected: $(grep -E '^ +' "$work/.audit-output" | head -1 | xargs)"
+  fi
+}
+
+# Asserts the run failed and that the finding names the given path, so a
+# fixture cannot pass by tripping the check for some other reason.
+assert_fails() {
+  if (( parity_status == 0 )); then
+    fail "divergence was accepted"
+  elif ! grep -qE '^github-parity +FAIL' "$work/.audit-output"; then
+    fail "expected a FAIL; got: $(head -1 "$work/.audit-output")"
+  elif ! grep -qE "^ +$1" "$work/.audit-output"; then
+    fail "expected a finding naming $1; got: $(grep -E '^ +' "$work/.audit-output" | head -1 | xargs)"
+  else
+    pass
+  fi
+}
+
+assert_state() {
+  if grep -qE "^github-parity +$1" "$work/.audit-output"; then
+    pass
+  else
+    fail "expected $1; got: $(head -1 "$work/.audit-output")"
+  fi
+}
+
+# A fixture holding one agreeing file in each tree, which every case then
+# breaks in exactly one way.
+parity_fixture() {
+  fixture "$1"
+  record_file
+  mirror workflows/ci.yml
+}
+
+echo "github-parity-test"
+
+parity_fixture "identical trees pass"
+audit
+assert_passes
+
+parity_fixture "a file whose content differs fails"
+write ".github/workflows/ci.yml" changed
+audit
+assert_fails "workflows/ci.yml differs"
+
+parity_fixture "a root file absent from the payload fails"
+write .github/workflows/release.yml
+audit
+assert_fails "workflows/release.yml is in .github and not in the payload"
+
+# The case the whole check exists for at the presence level: a new workflow
+# reaches root and never reaches the payload, and nothing else would say so.
+parity_fixture "a payload file absent from the root fails"
+write "$payload/workflows/codeql.yml"
+audit
+assert_fails "workflows/codeql.yml is in the payload and not in .github"
+
+# Both halves of the question are asked of the index, which is the tree being
+# committed. Reading content from the working tree instead gets each of these
+# backwards.
+parity_fixture "an unstaged edit is not a divergence"
+stage
+write ".github/workflows/ci.yml" scratch
+run_parity
+assert_passes
+
+parity_fixture "an unstaged fix does not excuse a staged divergence"
+write ".github/workflows/ci.yml" changed
+stage
+write "$payload/workflows/ci.yml" changed
+run_parity
+assert_fails "workflows/ci.yml differs"
+
+# dependabot.yml is the one path allowed to differ, and it is allowed to differ
+# only in content.
+parity_fixture "the named content exception may differ"
+write .github/dependabot.yml root
+write "$payload/dependabot.yml" payload
+audit
+assert_passes
+
+parity_fixture "the named content exception may not go missing"
+write .github/dependabot.yml root
+audit
+assert_fails "dependabot.yml is in .github and not in the payload"
+
+# The resolution .repo-template.json already carries, read rather than
+# restated: a deliberate omission is accounted for, an undeclared one is not.
+parity_fixture "an omission recorded in generation.features is accounted for"
+record_file '{"codeql": "omitted-by-choice"}'
+write "$payload/workflows/codeql.yml"
+audit
+assert_passes
+
+parity_fixture "a feature recorded with any other value is not an omission"
+record_file '{"codeql": "enabled"}'
+write "$payload/workflows/codeql.yml"
+audit
+assert_fails "workflows/codeql.yml is in the payload and not in .github"
+
+# A feature can record a deliberate absence that is not a file at all, and one
+# of those must not excuse a missing workflow.
+parity_fixture "a feature naming no file excuses nothing"
+record_file '{"merge_settings": "omitted-by-choice"}'
+write "$payload/workflows/codeql.yml"
+audit
+assert_fails "workflows/codeql.yml is in the payload and not in .github"
+
+# The state every repository generated from the payload is in: it carries this
+# script and has no second tree, which is not-applicable rather than a pass.
+parity_fixture "a repository with no payload is not-applicable"
+rm -rf "${work:?}/apps"
+audit
+assert_state not-applicable
+
+# The record answers one question only, so only that question is unavailable
+# without jq. A divergence needing no record is still named.
+parity_fixture "the record cannot be read without jq"
+record_file '{"codeql": "omitted-by-choice"}'
+write "$payload/workflows/codeql.yml"
+stage
+run_parity env PATH="$(minimal_path bash dirname git sed sort cmp)"
+assert_state unavailable
+
+parity_fixture "a divergence needing no record is named without jq"
+write .github/workflows/release.yml
+stage
+run_parity env PATH="$(minimal_path bash dirname git sed sort cmp)"
+assert_fails "workflows/release.yml is in .github and not in the payload"
+
+# git show fails on an unmerged path and a process substitution's exit status
+# is invisible, so an unguarded cmp would compare the two empty streams that
+# leaves behind and call the trees identical.
+parity_fixture "an unreadable path is a finding rather than agreement"
+stage
+unmerge ".github/workflows/ci.yml"
+unmerge "$payload/workflows/ci.yml"
+run_parity
+assert_fails "workflows/ci.yml cannot be read from the index"
+
+report

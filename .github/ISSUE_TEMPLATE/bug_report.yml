@@ -1,0 +1,136 @@
+name: Bug report
+description: Report a reproducible bug with enough context for humans and AI agents to investigate
+title: "bug: "
+labels:
+  - bug
+type: bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for filing a bug. Clear, reproducible reports help humans and AI agents diagnose issues faster.
+
+  - type: input
+    id: version
+    attributes:
+      label: Affected version
+      description: Which version, tag, or commit SHA does this bug occur on? "Latest" is ambiguous by the time anyone reads this, so give the exact value.
+      placeholder: "Example: v1.4.2, or commit 9026ce4"
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What should have happened?
+      placeholder: "Example: User logs in successfully or sees a validation message."
+    validations:
+      required: true
+
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual behavior
+      description: What happened instead? Include exact error text when possible.
+      placeholder: "Example: API returns 500 with `TypeError: cannot read property ...`."
+    validations:
+      required: true
+
+  - type: dropdown
+    id: severity
+    attributes:
+      label: Severity
+      description: How much damage does this cause when it happens?
+      options:
+        - Critical - data loss, security exposure, or total outage
+        - High - core workflow blocked with no workaround
+        - Medium - feature impaired but a workaround exists
+        - Low - minor or cosmetic
+    validations:
+      required: true
+
+  - type: dropdown
+    id: frequency
+    attributes:
+      label: Frequency
+      description: How often does this happen?
+      options:
+        - Every time
+        - Sometimes
+        - Only happened once
+        - Unknown
+    validations:
+      required: true
+
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps to reproduce
+      description: Provide precise steps, commands, inputs, URLs, screenshots, or a failing test.
+      placeholder: |
+        1. Run `...`
+        2. Open `...`
+        3. Enter `...`
+        4. Observe `...`
+    validations:
+      required: true
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs and traces
+      description: Paste relevant logs, crash reports, stack traces, network responses, terminal output, screen recordings or screenshots. Redact secrets.
+      render: shell
+      placeholder: |
+        Paste shortest useful log excerpt here.
+    validations:
+      required: false
+
+  - type: textarea
+    id: worked_before
+    attributes:
+      label: Did this work before?
+      description: If yes, provide the last known working version, commit, date, or release.
+      placeholder: |
+        Yes/No/Unknown:
+        Last known working version, if yes:
+    validations:
+      required: true
+
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: Include versions and platform details.
+      placeholder: |
+        - OS & version:
+        - Architecture (x86_64, arm64):
+    validations:
+      required: true
+
+  - type: textarea
+    id: agent_hints
+    attributes:
+      label: Investigation hints
+      description: Optional. Point humans and AI agents toward likely files, modules, services, recent changes, or commands to run first.
+      placeholder: |
+        - Likely files/modules:
+        - Recent changes:
+        - Commands to run first:
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checklist
+    attributes:
+      label: Reporter checklist
+      options:
+        - label: I searched existing issues and did not find a duplicate.
+          required: true
+        - label: I checked the latest version, and the bug still exists there.
+          required: false
+        - label: I included exact steps or artifacts needed to reproduce the bug.
+          required: true
+        - label: I removed or redacted secrets, tokens, passwords, and private data.
+          required: true

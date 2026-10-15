@@ -1,0 +1,34 @@
+# LF in the repo and in every working tree, all platforms.
+* text=auto eol=lf
+
+# Windows scripts need CRLF to execute correctly.
+*.bat text eol=crlf
+*.cmd text eol=crlf
+
+# SVG is markup; keep it diffable and reviewable.
+*.svg text
+
+# Name the enclosing function or heading in diff hunk headers.
+# Only Git's built-in drivers work; an unknown name is silently ignored.
+*.md diff=markdown
+*.py diff=python
+*.go diff=golang
+*.rs diff=rust
+*.sh diff=bash
+*.java diff=java
+*.rb diff=ruby
+
+# Lockfiles are generated, so line-wise merging can silently produce a
+# dependency set no resolver ever validated. Conflict instead, then take
+# one side and regenerate. linguist-generated collapses them on GitHub.
+package-lock.json merge=binary linguist-generated
+pnpm-lock.yaml merge=binary linguist-generated
+yarn.lock merge=binary linguist-generated
+Cargo.lock merge=binary linguist-generated
+go.sum merge=binary linguist-generated
+uv.lock merge=binary linguist-generated
+
+# GitHub language statistics.
+**/docs/** linguist-documentation
+generated/** linguist-generated
+vendor/** linguist-vendored

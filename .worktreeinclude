@@ -1,0 +1,16 @@
+# Gitignored files copied into each new Claude worktree, which is otherwise
+# a fresh checkout containing tracked files only. Uses .gitignore syntax.
+# A file is copied only if it matches here AND is gitignored.
+#
+# Local run configuration only: what a worktree needs to start, which is
+# endpoints, ports, and registry auth for a local install.
+#
+# Cloud credential files stay out. A service account JSON holds a private key
+# for a real project, and nothing in a local run reads one, so copying it into
+# every worktree would widen where that key sits without making anything work.
+# A worktree that genuinely needs one should read it from outside the tree,
+# through the path or the variable the cloud SDK already looks up.
+
+.env
+.env.*
+.npmrc

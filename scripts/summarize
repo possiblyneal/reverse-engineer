@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Runs a check command and prints only its Result table: one line per check and
+# the findings under any that failed. Everything else the command wrote --
+# compiler noise, pre-commit's own log, a test runner's progress -- is dropped.
+#
+# The layout it reads is the interface libs/result.sh documents: the check name
+# padded to 18 columns, the state to 16, findings indented under a FAIL. This
+# script is the one consumer of that promise, so a change to those widths is a
+# change to this file.
+#
+# It exists because the alternative is improvising a filter per invocation --
+# `tail -60`, a redirect to a log, `grep -iE "FAIL|error"` -- and each of those
+# answers a different question than "what did every check do". The last one is
+# the worst of them: it finds the word FAIL and misses `unavailable`, which is
+# equally a failing state and the one a report is most likely to record as a
+# pass.
+#
+# Exits with the command's own status, so it can stand in for the command in a
+# gate rather than only in a report.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+if (( $# == 0 )); then
+  echo "usage: scripts/summarize <command> [args...]" >&2
+  echo "  e.g. scripts/summarize scripts/ci" >&2
+  exit 2
+fi
+
+output="$("$@" 2>&1)"
+status=$?
+
+# A state line, then the findings under a FAIL: lines indented exactly 21
+# spaces, the column libs/result.sh prints them at. awk rather than grep so a
+# finding stays attached to the check that recorded it. Any other indented line
+# is a tool's own output -- cargo indents its progress -- and is dropped, after
+# a pass or after a FAIL's findings alike. Exit 1 from awk means the table held
+# nothing that failed.
+awk '
+  /^[A-Za-z0-9_-]+ +(pass|not-applicable|unavailable|FAIL|would-run)( |$)/ {
+    print; under = ($2 == "FAIL"); if ($2 == "FAIL" || $2 == "unavailable") failed = 1; next
+  }
+  # 21 literal spaces: an awk older than 2019 reads {21} as text, not a count.
+  /^                     [^ ]/ { if (under) print; next }
+  { under = 0 }
+  END { exit failed ? 0 : 1 }
+' <<< "$output"
+# grep's convention: 0 means the table held a failing state, not that awk
+# succeeded. Named for what it answers, since every read below is negated.
+table_reported_failure=$?
+
+# Not everything a check command runs reports through the Result table: the
+# script suites print their own tally, and pre-commit prints its own hook list.
+# A table of nothing but passes above a failing exit reads as a contradiction,
+# so say where the failure was instead of leaving the reader to find it.
+#
+# The output is kept rather than described, because the common case cannot be
+# reproduced by running the command again. Pre-commit's fixer hooks repair the
+# file and exit non-zero, so the second run passes having already fixed what it
+# found -- and every re-run after that reads as a transient failure. The whole
+# run is already in `output`; writing it out is the difference between a log to
+# grep and a cause that no longer exists.
+if (( status != 0 && table_reported_failure != 0 )); then
+  log="$repo_root/tmp/summarize-failure.log"
+  echo
+  echo "$1 exited $status with no failing result line: the failure is outside the"
+  # The write is checked rather than assumed. Naming a log the run could not
+  # write -- a read-only tree, a `tmp` that is a file -- sends the reader after
+  # a file that is not there, which is the same wrong diagnosis in a new shape.
+  if mkdir -p "$repo_root/tmp" 2>/dev/null &&
+     printf '%s\n' "$output" > "$log" 2>/dev/null; then
+    echo "Result table. The whole run is at $log; re-running may not reproduce it."
+  else
+    echo "Result table, and $log could not be written, so the run is lost."
+    echo "Re-run redirecting to a file you can write; it may not reproduce."
+  fi
+fi
+
+exit "$status"

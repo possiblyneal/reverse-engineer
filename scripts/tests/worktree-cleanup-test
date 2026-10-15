@@ -1,0 +1,72 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Proves cleanup uses Git's stale-worktree metadata pruning, not directory
+# deletion, and is idempotent. post-checkout and post-merge pass their own
+# positional arguments, which the script must ignore rather than read as paths.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+cleanup_script="$repo_root/scripts/worktree-cleanup"
+
+fixture() {
+  scratch_repo
+  current="$1"
+  git -C "$work" commit --allow-empty -qm initial
+}
+
+stale_worktree() {
+  local path="$work/stale"
+  git -C "$work" worktree add -q -b stale "$path"
+  rm -rf "$path"
+}
+
+has_prunable_worktree() {
+  local listed
+  listed="$(git -C "$work" worktree list --porcelain)"
+  [[ "$listed" == *$'\nprunable '* ]]
+}
+
+echo "worktree-cleanup-test"
+
+fixture "reports without mutating stale metadata"
+stale_worktree
+output="$(cd "$work" && "$cleanup_script" --report old new 1)"
+if [[ "$output" == Stale\ worktree\ metadata:* ]] && has_prunable_worktree; then
+  pass
+else
+  fail "report output or stale metadata was unexpected: '$output'"
+fi
+
+fixture "prunes stale metadata from hook arguments"
+stale_worktree
+output="$(cd "$work" && "$cleanup_script" old new 1)"
+if [[ "$output" == Pruned\ stale\ worktree\ metadata:* ]] && ! has_prunable_worktree; then
+  pass
+else
+  fail "prune output or remaining metadata was unexpected: '$output'"
+fi
+
+fixture "is idempotent after pruning"
+stale_worktree
+(cd "$work" && "$cleanup_script") >/dev/null
+if output="$(cd "$work" && "$cleanup_script" old new)" && [[ -z "$output" ]]; then
+  pass
+else
+  fail "second prune returned '$output'"
+fi
+
+fixture "never removes a live worktree"
+live="$work/live"
+git -C "$work" worktree add -q -b live "$live"
+if (cd "$work" && "$cleanup_script" old new 1) >/dev/null && [[ -f "$live/.git" ]]; then
+  pass
+else
+  fail "live worktree was removed or cleanup failed"
+fi
+
+report

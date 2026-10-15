@@ -1,0 +1,17 @@
+# Without this, GitHub offers "Open a blank issue" alongside the forms, and
+# every required field in them becomes optional in practice.
+blank_issues_enabled: false
+
+# Destinations listed on the template chooser, above the issue forms, for
+# someone who has arrived at "New issue" with something that is not one.
+#
+# Commented out, because no destination exists until the repository has one --
+# and `url` must be a real URL, so a placeholder left uncommented renders as a
+# working link to nothing. Uncomment once a destination exists, and point it at
+# the same channel SUPPORT.md names if that addon was adopted: the chooser is
+# one step earlier than the banner GitHub uses to link SUPPORT.md, and two
+# answers to "where do I ask?" is worse than one.
+# contact_links:
+#   - name: Questions and help
+#     url: https://github.com/OWNER/REPO/discussions
+#     about: Ask about using this project here rather than opening an issue.

@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Exercises deterministic Keep a Changelog structure only. Whether a change
+# merits an entry remains an author and reviewer decision, so these fixtures do
+# not try to infer it from a source diff. Covered: each structural rule, the
+# shipped addon changelog, a missing file, a missing awk, and an unrelated path.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+fixture() {
+  scratch_repo
+  current="$1"
+  printf '%s\n' "$2" > "$work/CHANGELOG.md"
+}
+
+# Each verdict is asserted on the line it prints, since a hook and a person
+# read the same output and the result layout is the contract.
+assert_accepts() {
+  local status=0
+  out="$("$repo_root/scripts/changelog-check" "$work/CHANGELOG.md" 2>&1)" || status=$?
+  if (( status == 0 )) && grep -qE '^changelog +pass +.*CHANGELOG.md is well-formed$' <<< "$out"; then
+    pass
+  else
+    fail "valid changelog was rejected: $out"
+  fi
+}
+
+# assert_rejects [finding]: a failing exit, a FAIL line, and when given, the
+# finding under it.
+assert_rejects() {
+  local status=0
+  out="$("$repo_root/scripts/changelog-check" "$work/CHANGELOG.md" 2>&1)" || status=$?
+  if (( status == 0 )); then
+    fail "invalid changelog was accepted: $out"
+  elif ! grep -qE '^changelog +FAIL +[0-9]+ violation\(s\)$' <<< "$out"; then
+    fail "no FAIL line: $out"
+  elif [[ -n "${1:-}" ]] && ! grep -qE "^ +.*$1" <<< "$out"; then
+    fail "wanted a finding matching '$1' in: $out"
+  else
+    pass
+  fi
+}
+
+valid='# Changelog
+
+All notable changes to this project will be documented in this file.
+
+## [Unreleased]
+
+### Added
+
+- A useful change.
+
+## [1.2.3] - 2026-08-11
+
+### Fixed
+
+- A previous behavior.
+
+[Unreleased]: https://example.test/compare/v1.2.3...HEAD
+[1.2.3]: https://example.test/releases/tag/v1.2.3'
+
+echo "changelog-check-test"
+
+fixture "a valid changelog passes" "$valid"
+assert_accepts
+
+fixture "a missing Unreleased section fails" "${valid/Unreleased/Pending}"
+assert_rejects 'expected exactly one ## \[Unreleased\] section'
+
+fixture "Unreleased must lead release sections" "${valid/Unreleased/$'1.2.2] - 2026-08-10\n\n## [Unreleased'}"
+assert_rejects '\[Unreleased\] must be the first release section'
+
+fixture "an unknown category fails" "${valid/Added/Other}"
+assert_rejects 'category must be Added, Changed, Deprecated, Removed, Fixed, or Security'
+
+fixture "an empty category fails" "${valid/- A useful change./}"
+assert_rejects 'category Added must contain a list entry'
+
+fixture "a malformed release heading fails" "${valid/1.2.3/1.2}"
+assert_rejects 'release headings must use ## \[x.y.z\] - YYYY-MM-DD'
+
+fixture "a missing release reference fails" "${valid/1.2.3]:/1.2.4]:}"
+assert_rejects 'missing \[1.2.3\] link reference'
+
+fixture "a missing Unreleased reference fails" "${valid/Unreleased]:/Pending]:}"
+assert_rejects 'missing \[Unreleased\] link reference'
+
+current="a missing file fails on its own line"
+status=0
+out="$("$repo_root/scripts/changelog-check" "$work/absent/CHANGELOG.md" 2>&1)" || status=$?
+if (( status != 0 )) && grep -qE '^changelog +FAIL +.*absent/CHANGELOG.md does not exist$' <<< "$out"; then
+  pass
+else
+  fail "$out"
+fi
+
+fixture "awk missing is unavailable, not a pass" "$valid"
+status=0
+out="$(PATH="$(minimal_path bash dirname basename)" "$repo_root/scripts/changelog-check" "$work/CHANGELOG.md" 2>&1)" || status=$?
+if (( status != 0 )) && grep -qE '^changelog +unavailable +awk could not check ' <<< "$out"; then
+  pass
+else
+  fail "$out"
+fi
+
+current="unrelated paths are ignored"
+if out="$("$repo_root/scripts/changelog-check" "$repo_root/scripts/check" 2>&1)" && [[ -z "$out" ]]; then
+  pass
+else
+  fail "an unrelated path did not produce a no-op: $out"
+fi
+
+current="each path gets its own verdict"
+out="$("$repo_root/scripts/changelog-check" "$work/CHANGELOG.md" "$work/CHANGELOG.md" 2>&1)"
+if (( $(grep -cE '^changelog ' <<< "$out") == 2 )); then
+  pass
+else
+  fail "$out"
+fi
+
+report

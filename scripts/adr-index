@@ -1,0 +1,162 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Rewrites docs/adrs/index.md from the frontmatter of the decision records
+# beside it. The file is derived: every value in it is already authoritative in
+# an ADR, so editing it by hand loses the edit on the next run.
+#
+# Wired into .pre-commit-config.yaml as a fixer. Regeneration is the check --
+# pre-commit fails the commit when this rewrites the file, the same way
+# end-of-file-fixer does, so a stale index cannot be committed.
+#
+# A pre-commit hook rather than a capability in libs/detect.sh: ADRs are prose
+# and exist in every repository whatever it is written in, so there is no
+# language to dispatch on. scripts/check reaches it through the pre-commit
+# sweep, which runs whether or not the repository has a language manifest.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+adr_dir="docs/adrs"
+index="$adr_dir/index.md"
+
+[[ -d "$adr_dir" ]] || exit 0
+
+# Reads one frontmatter scalar, or nothing when the key is absent.
+#
+# The key comparison is exact and anchored at column zero, which is what makes
+# the template's decoys unreadable rather than a filter over them: `#     title`
+# inside the commented `sources:` block and the indented continuation of a
+# nested value are not equal to `title`, so neither can be mistaken for the
+# record's own field. Do not relax it to a prefix or a regex match.
+#
+# This is not a YAML parser and must not be asked to be one. It reads the
+# single-line scalars this repository's template defines, and every record here
+# is a copy of that template. A value that needs quoting, folding, or a list
+# belongs in the record's body instead.
+field() {
+  awk -v want="$1" '
+    NR == 1 { if ($0 !~ /^---[[:space:]]*$/) exit; next }
+    /^---[[:space:]]*$/ { exit }
+    {
+      c = index($0, ":")
+      if (c == 0) next
+      if (substr($0, 1, c - 1) != want) next
+      val = substr($0, c + 1)
+      # The comment is stripped before the leading trim, because the template
+      # ships `superseded_by:` with a comment and no value: trimming first
+      # leaves the "#" at the start, where a rule matching " #" no longer sees
+      # it, and the comment becomes the path. Only an unquoted value is
+      # stripped, so a quoted title containing " #" survives.
+      if (val !~ /^[[:space:]]*"/) sub(/[[:space:]]+#.*$/, "", val)
+      sub(/^[[:space:]]+/, "", val)
+      if (val ~ /^#/) val = ""
+      sub(/[[:space:]]+$/, "", val)
+      gsub(/^"|"$/, "", val)
+      print val
+      exit
+    }
+  ' "$2"
+}
+
+# A pipe would break the table it is written into.
+escape_cell() {
+  printf '%s' "${1//|/\\|}"
+}
+
+errors=()
+rows=()
+
+shopt -s nullglob
+for path in "$adr_dir"/*.md; do
+  file="${path##*/}"
+
+  # A record is NNNN-slug.md. Anything else here is not one: the template holds
+  # placeholders rather than a decision, index.md is this script's own output,
+  # and a supporting note is free to sit beside the records without being
+  # listed as one.
+  [[ "$file" =~ ^([0-9]{4})- ]] || continue
+  [[ "$file" == "0000-template.md" ]] && continue
+  number="${BASH_REMATCH[1]}"
+
+  title="$(field title "$path")"
+  status="$(field status "$path")"
+  superseded_by="$(field superseded_by "$path")"
+
+  if [[ -n "$superseded_by" ]]; then
+    # Accepted in two forms: a path from the repository root, as the template
+    # writes it, or a bare filename when the replacement sits in this same
+    # directory. Resolved to the root-relative form so the existence check and
+    # the link are computed from one value.
+    if [[ "$superseded_by" == */* ]]; then
+      target="$superseded_by"
+    else
+      target="$adr_dir/$superseded_by"
+    fi
+
+    # A replacement that does not exist makes the roll-up worse than no
+    # roll-up: the record reads as settled and the decision that settled it
+    # cannot be found. A typo here is invisible at review, since the value is
+    # plausible either way.
+    if [[ ! -f "$target" ]]; then
+      errors+=("$path: superseded_by names $target, which does not exist. Give the path from the repository root, or the filename alone when the replacement is in $adr_dir.")
+      continue
+    fi
+
+    # The index sits in $adr_dir, so a replacement kept in an app's own adr
+    # directory is reached by climbing out of this one.
+    if [[ "$target" == "$adr_dir/"* ]]; then
+      link="${target#"$adr_dir/"}"
+    else
+      link="../../$target"
+    fi
+
+    replacement="${target##*/}"
+    if [[ "$replacement" =~ ^([0-9]{4}) ]]; then
+      status_cell="superseded by [${BASH_REMATCH[1]}]($link)"
+    else
+      status_cell="superseded by [$(escape_cell "$replacement")]($link)"
+    fi
+  else
+    status_cell="$status"
+  fi
+
+  rows+=("| [$number]($file) | $(escape_cell "$title") | $status_cell |")
+done
+
+if (( ${#errors[@]} > 0 )); then
+  printf '%s\n' "${errors[@]}" >&2
+  exit 1
+fi
+
+before=""
+[[ -f "$index" ]] && before="$(cat "$index")"
+
+# No decisions yet means no index. Every repository generated from this template
+# starts with only the template record, and a file listing nothing is worse than
+# its absence. Removing a stale index here is what makes deleting the last
+# record converge.
+if (( ${#rows[@]} == 0 )); then
+  rm -f "$index"
+  after=""
+else
+  after="$(
+    echo "<!-- Generated by scripts/adr-index. Edit the ADR frontmatter, not this file. -->"
+    echo
+    echo "# Decision Records"
+    echo
+    echo "| # | Decision | Status |"
+    echo "| --- | --- | --- |"
+    printf '%s\n' "${rows[@]}"
+  )"
+  printf '%s\n' "$after" > "$index"
+fi
+
+# Reporting the rewrite rather than leaving it to pre-commit's own
+# modified-files detection, which does not fire when the index is created for
+# the first time: the file is untracked at that moment, so pre-commit sees no
+# change to a file it knows about and the commit lands without the index in it.
+if [[ "$before" != "$after" ]]; then
+  echo "Rewrote $index. Stage it with the record that changed it." >&2
+  exit 1
+fi

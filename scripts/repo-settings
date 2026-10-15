@@ -1,0 +1,256 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Inspect the hosted GitHub settings the repository's files rely on but cannot
+# enforce: rulesets, push protection, merge methods, CODEOWNERS. Run explicitly,
+# never from check or ci, since it needs the network and admin visibility.
+#
+# It reports and never changes. A ruleset write replaces the whole ruleset
+# rather than merging into it, so a fix applied from here would silently drop
+# whatever rules the repository added on its own.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/result.sh
+source "$repo_root/scripts/libs/result.sh"
+
+usage() {
+  echo "Usage: scripts/repo-settings check" >&2
+}
+
+# One fetch, then judgments. fetch_settings calls gh once per endpoint and
+# leaves a single JSON document in $settings: a key per endpoint that answered
+# -- repo, codeowners_errors, branch_rules, protection, rulesets -- holding its
+# body, and under errors a key per endpoint that did not, holding the HTTP
+# status and message GitHub gave, or an empty status when gh itself failed or
+# printed something that is not JSON. Every judgment below reads the document
+# and nothing else, so a suite stubs gh per endpoint and the judgments are seen
+# through the same command line a person runs.
+settings='{"errors": {}}'
+repo=""
+branch=""
+
+# fetch_one <key> <endpoint>. gh api prints GitHub's error document to stdout
+# and exits 1 on any HTTP error, so the body is read either way and the status
+# inside it is what tells a 404 from a 403: the same exit status, and for a
+# judgment two different facts.
+fetch_one() {
+  local key="$1" endpoint="$2" body="" status=0
+  body="$(gh api "$endpoint" 2>/dev/null)" || status=$?
+  if ! jq -e . <<<"$body" >/dev/null 2>&1; then
+    settings="$(jq --arg k "$key" '.errors[$k] = {"status": "", "message": "gh api printed no JSON"}' <<<"$settings")"
+  elif (( status == 0 )); then
+    settings="$(jq --arg k "$key" --argjson v "$body" '. + {($k): $v}' <<<"$settings")"
+  else
+    settings="$(jq --arg k "$key" --argjson v "$body" '.errors[$k] = {"status": (($v.status // "") | tostring), "message": (($v.message // "") | tostring)}' <<<"$settings")"
+  fi
+}
+
+# The branch every other endpoint is asked about is the one the repository
+# view names, so that view is read first and alone.
+fetch_settings() {
+  fetch_one repo "repos/$repo"
+  branch="$(setting '.repo.default_branch // "main"')"
+  fetch_one codeowners_errors "repos/$repo/codeowners/errors?ref=$branch"
+  fetch_one branch_rules "repos/$repo/rules/branches/$branch"
+  fetch_one protection "repos/$repo/branches/$branch/protection"
+  fetch_one rulesets "repos/$repo/rulesets"
+}
+
+setting() {
+  jq -r "$1" <<<"$settings"
+}
+
+# fetched <key>: the endpoint answered, and its body is in the document.
+fetched() {
+  jq -e --arg k "$1" 'has($k)' <<<"$settings" >/dev/null
+}
+
+# error_status <key>: the HTTP status an endpoint that did not answer gave.
+error_status() {
+  jq -r --arg k "$1" '.errors[$k].status // ""' <<<"$settings"
+}
+
+# error_of <key>: that answer as a detail, "<message> (HTTP <status>)".
+error_of() {
+  jq -r --arg k "$1" '.errors[$k] | "\(.message) (HTTP \(.status))"' <<<"$settings"
+}
+
+# not_offered <key>: GitHub refused the endpoint for the plan and visibility,
+# which it says with a 403 and an upgrade message. Any other refusal is a
+# setting that exists and could not be read, which is a different state.
+not_offered() {
+  [[ "$(error_status "$1")" == 403 && "$(jq -r --arg k "$1" '.errors[$k].message' <<<"$settings")" == "Upgrade to GitHub"* ]]
+}
+
+# Every way a CODEOWNERS file fails is silent -- a rejected line is skipped
+# while the rest of the file still applies, an owner without write access is
+# dropped -- so it is asked about rather than waited on. codeowners/errors needs
+# only read access, and a non-admin is exactly who benefits from being told the
+# file is broken, so this runs above the admin gate. It runs below the settings
+# read because that is what makes a 404 here mean "no CODEOWNERS file" rather
+# than "no access to look"; the two are the same status code.
+judge_codeowners() {
+  if ! fetched codeowners_errors; then
+    if [[ "$(error_status codeowners_errors)" == 404 ]]; then
+      result codeowners pass "no CODEOWNERS file on $branch, nothing to validate"
+    else
+      result codeowners unavailable "CODEOWNERS on $branch cannot be checked: $(error_of codeowners_errors)"
+    fi
+    return
+  fi
+  local finding
+  while IFS= read -r finding; do
+    record "$finding"
+  done < <(setting '.codeowners_errors.errors[]? | "\(.path):\(.line):\(.column) \(.kind) -- \(.message)"')
+  verdict codeowners "CODEOWNERS parses on $branch"
+}
+
+# The requirement that makes the file binding can come from a ruleset or from
+# classic branch protection. rules/branches reports only the first, so a
+# repository protected the classic way reads as unrequired there, and the
+# second needs admin to read. An unread requirement is reported as itself
+# rather than as unrequired: a file wrongly reported as binding is the one
+# error that leaves someone trusting a review gate that does not exist. A plan
+# that offers neither is the one case where unrequired is the whole truth.
+judge_owner_review() {
+  fetched codeowners_errors || return 0
+  if fetched branch_rules; then
+    if [[ "$(setting '[.branch_rules[]? | select(.type == "pull_request" and .parameters.require_code_owner_review == true)] | length')" != 0 ]]; then
+      result owner-review pass "required on $branch by a ruleset"
+      return
+    fi
+  elif not_offered branch_rules; then
+    result owner-review not-applicable "not offered for $repo's plan and visibility (GitHub Pro on a private repository, free on a public one); until then CODEOWNERS only requests a reviewer and nothing waits for the answer"
+    return
+  else
+    result owner-review unavailable "whether $branch requires code owner review cannot be read: $(error_of branch_rules); until it can be, treat CODEOWNERS as requesting reviewers that nothing waits for"
+    return
+  fi
+
+  if [[ "$(setting '.repo.permissions.admin')" != true ]]; then
+    result owner-review unavailable "no ruleset requires it on $branch, and reading classic branch protection needs admin on $repo"
+  elif fetched protection && [[ "$(setting '.protection.required_pull_request_reviews.require_code_owner_reviews')" == true ]]; then
+    result owner-review pass "required on $branch by classic branch protection"
+  elif fetched protection || [[ "$(error_status protection)" == 404 ]]; then
+    result owner-review not-applicable "not required on $branch, so CODEOWNERS only requests a reviewer and nothing waits for the answer; require it in Settings, under Rules, in the pull request rule"
+  else
+    result owner-review unavailable "no ruleset requires it on $branch, and classic branch protection cannot be read: $(error_of protection)"
+  fi
+}
+
+# Merge commits are read before the other two merge methods: with both of those
+# off, a repository that also has this off has no way left to merge a pull
+# request, and GitHub refuses to write that state rather than reporting it.
+judge_merge_settings() {
+  boolean_setting allow_merge_commit true merge-commits \
+    "turn it on in Settings, under Pull Requests; with squash and rebase off there is no way left to merge a pull request"
+  boolean_setting allow_squash_merge false squash-merging \
+    "turn it off in Settings, under Pull Requests; a squash takes its message from the pull request title, which the commit-msg hook never sees"
+  boolean_setting allow_rebase_merge false rebase-merging \
+    "turn it off in Settings, under Pull Requests; a rebase replays the branch as new commits, so what lands is not what CI ran against"
+  boolean_setting delete_branch_on_merge true delete-branches \
+    "turn it on in Settings, under Pull Requests; merged branches otherwise accumulate on the remote"
+}
+
+# boolean_setting <field> <want> <check> <remediation>: a setting off is
+# optional and reported not-applicable with what turning it on costs.
+boolean_setting() {
+  local field="$1" want="$2" check="$3" remediation="$4" value
+  value="$(setting ".repo.$field // false")"
+  if [[ "$value" == "$want" ]]; then
+    result "$check" pass "$field is $value on $repo"
+  else
+    result "$check" not-applicable "$field is $value on $repo; $remediation"
+  fi
+}
+
+# security_and_analysis is absent for a plan that does not offer it, and the
+# status is "unavailable" for one that offers it only on another visibility.
+judge_push_protection() {
+  case "$(setting '.repo.security_and_analysis.secret_scanning_push_protection.status // "unavailable"')" in
+    enabled)
+      result push-protection pass "enabled on $repo"
+      ;;
+    unavailable)
+      result push-protection not-applicable "not offered for $repo's plan and visibility (GitHub Advanced Security on a private repository, free on a public one); until then gitleaks in .pre-commit-config.yaml is the only check that sees a secret before it is pushed"
+      ;;
+    *)
+      result push-protection not-applicable "disabled on $repo; enable it in Settings, under Advanced Security"
+      ;;
+  esac
+}
+
+judge_rulesets() {
+  if fetched rulesets; then
+    if [[ "$(setting '[.rulesets[]? | select(.target == "branch" and .enforcement == "active")] | length')" != 0 ]]; then
+      result rulesets pass "an active branch ruleset on $repo"
+    else
+      result rulesets not-applicable "no active branch ruleset on $repo; add one in Settings, under Rules, requiring a pull request and the CI check, since without it a fresh clone has neither local hook until they are installed"
+    fi
+  elif not_offered rulesets; then
+    result rulesets not-applicable "not offered for $repo's plan and visibility (GitHub Pro on a private repository, free on a public one); until then the local hooks are all of it: no-commit-to-branch refuses a commit made on $branch and scripts/protect-branch refuses a push whose destination is $branch"
+  else
+    result rulesets unavailable "rulesets on $repo cannot be read: $(error_of rulesets)"
+  fi
+}
+
+# The preflight: each tool or access this needs and does not have is an optional
+# absence, reported as such and ending the run, since nothing after it could be
+# read. Past it, a setting GitHub does not offer for the plan is optional too,
+# and a setting it offers and the token cannot read is unavailable, which fails
+# the tally -- a check that did not run is not a check that passed.
+check_github_settings() {
+  if ! command -v gh >/dev/null 2>&1; then
+    result gh not-applicable "not on PATH; the remote's branch and secret settings cannot be read without it"
+    return
+  fi
+  if ! gh auth status >/dev/null 2>&1; then
+    result gh-auth not-applicable "not logged in; run: gh auth login"
+    return
+  fi
+  if ! command -v jq >/dev/null 2>&1; then
+    result jq not-applicable "not on PATH; the remote's branch and secret settings cannot be read without it"
+    return
+  fi
+  if ! repo="$(gh repo view --json nameWithOwner --jq .nameWithOwner 2>/dev/null)"; then
+    result remote not-applicable "no GitHub remote, nothing to check settings on yet"
+    return
+  fi
+
+  fetch_settings
+
+  if ! fetched repo; then
+    result settings unavailable "$repo's settings cannot be read with this token: $(error_of repo)"
+    return
+  fi
+
+  judge_codeowners
+  judge_owner_review
+
+  if [[ "$(setting '.repo.permissions.admin')" != true ]]; then
+    result admin unavailable "$repo's merge, branch, and security settings need admin to read"
+    return
+  fi
+
+  judge_merge_settings
+  judge_push_protection
+  judge_rulesets
+}
+
+case "${1:-}" in
+  check)
+    if (( $# != 1 )); then
+      usage
+      exit 2
+    fi
+    check_github_settings
+    tally
+    ;;
+  *)
+    usage
+    exit 2
+    ;;
+esac

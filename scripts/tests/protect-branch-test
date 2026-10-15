@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# The guard's whole value is that it reads the push destination rather than the
+# current branch, so the case that matters is a push to main made from a branch
+# that is not main -- the one no-commit-to-branch cannot see. The refs it must
+# let through matter just as much: a guard that fails an ordinary feature push
+# gets bypassed with --no-verify, and then it protects nothing. Destinations
+# are tried bare, qualified, near-miss, and unset.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+script="$repo_root/scripts/protect-branch"
+
+# The script reads one environment variable and writes no files, so the fixture
+# is the variable and no scratch repository is needed.
+run_with_destination() {
+  if [[ "$1" == "unset" ]]; then
+    env -u PRE_COMMIT_REMOTE_BRANCH "$script" 2>&1
+  else
+    PRE_COMMIT_REMOTE_BRANCH="$1" "$script" 2>&1
+  fi
+}
+
+refuses() {
+  current="$1"
+  local destination="$2" output status
+  output="$(run_with_destination "$destination")"
+  status=$?
+  if (( status != 0 )) && [[ "$output" == *"refusing to push to"* ]]; then
+    pass
+  else
+    fail "allowed a push to '$destination' (exit $status): '$output'"
+  fi
+}
+
+allows() {
+  current="$1"
+  local destination="$2" output status
+  output="$(run_with_destination "$destination")"
+  status=$?
+  if (( status == 0 )) && [[ -z "$output" ]]; then
+    pass
+  else
+    fail "blocked or spoke on '$destination' (exit $status): '$output'"
+  fi
+}
+
+echo "protect-branch-test"
+
+refuses "refuses a fully qualified main" "refs/heads/main"
+refuses "refuses a bare main" "main"
+refuses "refuses master" "refs/heads/master"
+
+allows "allows a feature branch" "refs/heads/fix/openclaude-paths"
+allows "allows a branch whose name contains main" "refs/heads/maintenance"
+allows "allows a branch ending in main" "refs/heads/feat/domain"
+
+# A delete-only push leaves pre-commit with no destination to export. Failing
+# closed here would refuse every `git push --delete` of a feature branch, which
+# is routine; the deletion case is the server's, and the script must be quiet
+# rather than wrong.
+allows "stays silent with no destination" "unset"
+
+report

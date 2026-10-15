@@ -1,0 +1,69 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+
+permissions:
+  contents: read
+
+# A new push to the same branch makes the previous run's result obsolete, and
+# leaving it running lets a stale result report after the newer one.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  ci:
+    name: CI
+    # Hosted by default. A repository that sets a `RUNNER` variable runs this
+    # job on its own machine instead, and must leave it unset while it is
+    # public: a self-hosted runner there lets any fork's pull request run
+    # arbitrary code on the host.
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+
+      # adr-index-test and commitlint-test both skip their hook-wiring cases
+      # when pre-commit is absent, and those cases are the ones that catch a
+      # hook pre-commit never invokes -- the failure both suites exist for.
+      # Without this they report a smaller green run here than they do locally,
+      # which is the shape of a regression nothing sees.
+      #
+      # adr-index-test costs nothing: its fixture holds only the local hook, so
+      # no hook environment is downloaded. commitlint-test does download one,
+      # because commitlint is a JavaScript program and proving it rejects a bad
+      # message means running it. That puts the npm registry on the critical
+      # path of this job, which was accepted rather than shipping a
+      # commit-message rule to every generated repository unproven.
+      - name: Install pre-commit
+        run: pipx install pre-commit
+
+      # Before the toolchains, since these install none and verify both the
+      # language-capabilities wiring and the local/hosted check boundary.
+      - name: Verify repository scripts
+        run: scripts/script-tests
+
+      # The hook receives the same base-to-head file range a push does. It
+      # validates an edited changelog but deliberately does not require one for
+      # every pull request; that editorial decision belongs in review.
+      - name: Validate changed changelog entries
+        if: github.event_name == 'pull_request'
+        env:
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: >-
+          pre-commit run changelog-check --hook-stage pre-push
+          --from-ref "$BASE_SHA" --to-ref "$HEAD_SHA"
+
+      - name: Set up toolchains
+        uses: ./.github/actions/setup-toolchains
+
+      - name: Run CI checks
+        run: scripts/ci

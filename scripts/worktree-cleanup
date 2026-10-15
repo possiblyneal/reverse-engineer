@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Prune Git's records for worktrees whose directories have already disappeared.
+# This never removes a live worktree directory. Git invokes this after checkout
+# and merge; SessionStart invokes --report so starting a session stays read-only.
+# --report is the only argument read: the hook stages pass their own, which
+# change nothing here.
+
+mode="prune"
+if [[ "${1:-}" == "--report" ]]; then
+  mode="report"
+  shift
+fi
+
+if ! git rev-parse --is-inside-work-tree >/dev/null 2>&1; then
+  exit 0
+fi
+
+stale="$(git worktree prune --dry-run 2>&1 || true)"
+[[ -n "$stale" ]] || exit 0
+
+if [[ "$mode" == "prune" ]]; then
+  git worktree prune >/dev/null 2>&1 || {
+    echo "Could not prune stale worktree metadata."
+    exit 0
+  }
+  echo "Pruned stale worktree metadata:"
+else
+  echo "Stale worktree metadata:"
+fi
+
+lines=()
+while IFS= read -r line; do
+  lines+=("$line")
+done <<< "$stale"
+
+for line in "${lines[@]:0:20}"; do
+  echo "$line"
+done
+
+if (( ${#lines[@]} > 20 )); then
+  echo "... and $(( ${#lines[@]} - 20 )) more"
+fi

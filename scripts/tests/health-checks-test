@@ -1,0 +1,73 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Keeps local startup checks offline while proving hosted repository checks stay
+# available through their explicit command, with gh stubbed.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+
+fixture() {
+  scratch_repo
+  current="$1"
+  stub gh <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$*" >> "${GH_TRACE:?}"
+exit 1
+STUB
+}
+
+echo "health-checks-test"
+
+fixture "doctor stays offline"
+out="$(cd "$work" && GH_TRACE="$work/gh-called" scripts/doctor 2>&1)"
+status=$?
+if (( status == 0 )) && [[ ! -e "$work/gh-called" ]]; then
+  pass
+else
+  fail "scripts/doctor contacted GitHub or failed in an otherwise healthy local fixture"
+fi
+
+fixture "run stays offline"
+out="$(cd "$work" && GH_TRACE="$work/gh-called" scripts/run 2>&1)"
+status=$?
+if (( status == 0 )) && [[ ! -e "$work/gh-called" ]]; then
+  pass
+else
+  fail "scripts/run contacted GitHub or failed in an empty local fixture"
+fi
+
+fixture "package stays offline"
+out="$(cd "$work" && GH_TRACE="$work/gh-called" scripts/package 2>&1)"
+status=$?
+if (( status == 0 )) && [[ ! -e "$work/gh-called" ]]; then
+  pass
+else
+  fail "scripts/package contacted GitHub or failed in an empty local fixture"
+fi
+
+fixture "repository settings are explicit"
+out="$(cd "$work" && GH_TRACE="$work/gh-called" scripts/repo-settings check 2>&1)"
+status=$?
+if (( status == 0 )) &&
+  grep -qx 'auth status' "$work/gh-called" &&
+  grep -qE '^gh-auth +not-applicable' <<<"$out"; then
+  pass
+else
+  fail "scripts/repo-settings check did not perform the hosted GitHub preflight"
+fi
+
+fixture "repository settings require a subcommand"
+out="$(cd "$work" && GH_TRACE="$work/gh-called" scripts/repo-settings 2>&1)"
+status=$?
+if (( status != 0 )) && grep -q 'Usage: scripts/repo-settings check' <<<"$out"; then
+  pass
+else
+  fail "scripts/repo-settings accepted a missing subcommand"
+fi
+
+report
