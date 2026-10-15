@@ -53,7 +53,7 @@ Workspace for reverse-engineering sessions with REA (`rea-agents`). It ships no 
 
 ## Local Contracts
 
-- `.mcp.json` registers `rea` as `npx -y rea-agents@<version> mcp`, pinned to an exact version.
+- `.mcp.json` registers `rea` as `npx -y rea-agents@<version> mcp`, pinned to an exact version. Its `env.REA_GHIDRA_STARTUP_TIMEOUT_MS` overrides REA's 330 s default (one deadline covering Ghidra import, analysis, bridge, and readiness), which large binaries exceed on first analysis.
 - `.claude/skills/reverse-engineer-anything/` is the skill copied verbatim from the same `rea-agents` tarball. Its `metadata.tool_count` must equal the server's `tools/list` count; bump both together, never one alone.
 - Ghidra, a JDK, and other analysis engines are host installs, not repository content.
 

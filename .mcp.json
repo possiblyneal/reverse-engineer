@@ -2,7 +2,8 @@
   "mcpServers": {
     "rea": {
       "command": "npx",
-      "args": ["-y", "rea-agents@6.5.0", "mcp"]
+      "args": ["-y", "rea-agents@6.5.0", "mcp"],
+      "env": { "REA_GHIDRA_STARTUP_TIMEOUT_MS": "1800000" }
     }
   }
 }
