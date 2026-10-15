@@ -1,0 +1,107 @@
+# Environment / secrets
+.env
+.env.*
+!.env.example
+!.env.*.example
+
+# Keys and credentials. A leaked key means rotation, not just a revert.
+*.pem
+*.key
+id_rsa*
+*.p12
+*.pfx
+credentials.json
+service-account*.json
+.npmrc
+.pypirc
+
+# Terraform state stores secrets in plaintext.
+*.tfstate
+*.tfstate.*
+.terraform/
+
+# Claude config: copied into a generated repo but not committed there.
+.claude/
+CLAUDE.local.md
+
+# What a unit's program writes while it runs. Anchored to the unit root so a
+# source package named state/ stays tracked.
+/apps/*/state/
+
+# Local scratch
+tmp/*
+!tmp/.gitkeep
+*.tmp
+*.temp
+
+# The tasks CLI's tracker: the list, the temporary copy a write stages it
+# in, and the git repository holding its history. Personal to whoever runs
+# it, not part of the repo.
+/TASKS.md
+/.TASKS.md.*
+/.tasks.git
+
+# Logs
+*.log
+logs/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor / IDE
+.vscode/*
+!.vscode/extensions.json
+!.vscode/settings.json
+.idea/
+*.swp
+*.swo
+.orca/
+
+# Dependencies. Unanchored: these nest legitimately in monorepos.
+node_modules/
+.venv/
+venv/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# JavaScript / TypeScript
+.npm/
+.pnpm-store/
+.yarn/cache/
+coverage/
+/dist/
+/build/
+.next/
+.nuxt/
+.svelte-kit/
+
+# scripts/package writes one artifact per declared target here, under the unit
+# it packaged. /dist/ above is anchored to the repository root, so it does not
+# reach these; without the line a packaged binary is untracked and unignored,
+# and scripts/check hands every untracked file to pre-commit.
+apps/*/dist/
+
+# Go and Rust. /bin/ is anchored: src/bin/ and cmd/*/bin/ hold real source.
+/bin/
+target/
+
+# Containers
+*.pid
+*.cid
+
+# Local databases
+*.sqlite
+*.sqlite3
+*.db
+
+# Generated artifacts
+/artifacts/
+/downloads/

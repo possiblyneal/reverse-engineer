@@ -1,0 +1,42 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+
+# Audits lockfiles rather than building, and security.yml relies on that: it
+# sets up toolchains inline instead of through setup-toolchains, so nothing in
+# .github/system-packages.txt is installed for it. A build here would need both.
+
+# Before the audit, which would run green over the package it cannot see.
+judge_orphan_manifests
+tally || exit 1
+
+if language_capabilities has-any; then
+  language_capabilities run audit
+else
+  result audit not-applicable "no project manifest"
+fi
+
+# The secret scan is not-applicable rather than unavailable without gitleaks on
+# PATH: pre-commit runs its own pinned copy at commit, push protection is the
+# hosted half, and the security workflow installs no scanner on purpose -- so
+# the absence blocks nothing, and a state that failed the tally would say the
+# opposite.
+if command -v gitleaks >/dev/null 2>&1; then
+  status=0
+  gitleaks detect --source . --redact --verbose || status=$?
+  if (( status == 0 )); then
+    result secret-scan pass "gitleaks found nothing"
+  else
+    result secret-scan FAIL "gitleaks exit $status"
+  fi
+else
+  result secret-scan not-applicable "gitleaks is not on PATH; pre-commit runs its own pinned copy at commit"
+fi
+
+tally

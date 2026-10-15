@@ -1,0 +1,205 @@
+name: CodeQL
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    # CodeQL ships new queries continuously, so a weekly run finds problems in
+    # code that has not changed since the last push.
+    - cron: "41 7 * * 2"
+
+# The floor every job starts from. security-events: write is not here: only
+# `analyze` uploads results, and at the workflow level `detect` would inherit
+# the ability to write findings into the Security tab in order to run a
+# detection script. Each job widens from this to what it actually needs.
+permissions:
+  contents: read
+
+concurrency:
+  group: codeql-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  # Code scanning accepts uploaded results from a public repository, and from a
+  # private one only with GitHub Advanced Security. Checking before analyzing
+  # turns an hour of work that dies at its upload step into an answer arriving
+  # in seconds that names what is wrong.
+  #
+  # The test is visibility alone, so a private repository that does have
+  # Advanced Security stands down here although it could upload. That is stated
+  # rather than detected: `security_and_analysis` comes back empty on a
+  # repository without it even to an administrator's token, so a branch on it
+  # would be one nothing can be shown to exercise, and Advanced Security on a
+  # private repository is Enterprise-only. Such a repository deletes the `if:`
+  # on `detect` and `analyze` rather than the workflow -- the gates are there,
+  # not in this job, and dropping only `analyze`'s leaves it needing a matrix
+  # `detect` never built.
+  #
+  # Where results cannot be uploaded this reports and stands down rather than
+  # failing. A private repository is the ordinary case for a generated
+  # repository and it cannot fix this from inside the repository, so failing
+  # here put a permanent red check on every pull request -- which is not a
+  # finding anyone acts on, and is read as broken CI rather than as missing
+  # coverage. Scanning starts by itself the day the repository goes public.
+  #
+  # The cost is that green no longer distinguishes "scanned clean" from "did
+  # not scan", so three things carry that instead: the warning annotation
+  # below, the run summary, and `detect` and `analyze` appearing on the checks
+  # list as skipped. A repository choosing never to scan still records the
+  # omission under `features` in `.repo-template.json`, the durable statement.
+  #
+  # It is its own job so the check reads "Code scanning enabled" rather than a
+  # language-detection result that would misdescribe the answer.
+  scanning:
+    name: Code scanning enabled
+    # Hosted by default. A repository that sets a `RUNNER` variable runs this
+    # job on its own machine instead, and must leave it unset while it is
+    # public: a self-hosted runner there lets any fork's pull request run
+    # arbitrary code on the host.
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      enabled: ${{ steps.check.outputs.enabled }}
+    steps:
+      # Visibility is read from the API rather than github.event.repository,
+      # whose payload GitHub documents as "Not applicable" for schedule. Read
+      # from the event, the weekly run would compare a null against "public"
+      # and stand the scan down on a public repository every Tuesday.
+      - name: Check that code scanning can accept results
+        id: check
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          visibility="$(gh api "repos/${GITHUB_REPOSITORY}" --jq .visibility)"
+          # An absent key prints the literal null at exit 0, so without this the
+          # scan would stand down on a response nothing understood and say so in
+          # a summary reading "visibility is `null`". Not knowing the answer is
+          # a failure to report, not a private repository.
+          if [ -z "${visibility}" ] || [ "${visibility}" = "null" ]; then
+            echo "::error title=Visibility unreadable::gh api returned no visibility for ${GITHUB_REPOSITORY}, so whether code scanning can accept results is unknown."
+            exit 1
+          fi
+          if [ "${visibility}" = "public" ]; then
+            echo "enabled=true" >> "${GITHUB_OUTPUT}"
+            echo "Repository is public. Code scanning accepts uploaded results."
+            exit 0
+          fi
+          echo "enabled=false" >> "${GITHUB_OUTPUT}"
+          {
+            echo "### Code scanning is not available, so nothing was analyzed"
+            echo
+            echo "Repository visibility is \`${visibility}\`, and code scanning accepts results"
+            echo "from a public repository. CodeQL would analyze the code and then fail at"
+            echo "its upload step, so \`analyze\` was skipped."
+            echo
+            echo "**This repository has no static analysis coverage.** A green check on this"
+            echo "workflow means the scan stood down, not that it found nothing. Resolve it"
+            echo "by one of:"
+            echo
+            echo "- making the repository public"
+            echo "- deleting \`.github/workflows/codeql.yml\`, recording the omission under"
+            echo "  \`features\` in \`.repo-template.json\`"
+            echo
+            echo "GitHub Advanced Security also lets a private repository upload results, and"
+            echo "this job does not test for it. On a private repository that has it, delete"
+            echo "the \`if:\` on both the \`detect\` and \`analyze\` jobs rather than the workflow."
+            echo "Dropping only \`analyze\`'s leaves it needing a matrix \`detect\` never built."
+          } >> "${GITHUB_STEP_SUMMARY}"
+          echo "::warning title=No static analysis coverage::Code scanning cannot accept results from a repository with ${visibility} visibility. CodeQL did not run. Make the repository public, or delete this workflow and record the omission. See the run summary for the Advanced Security case."
+
+  # CodeQL fails when told to analyze a language the repository does not
+  # contain, so the language list comes from the manifests actually present
+  # rather than from a fixed list this template cannot know.
+  detect:
+    name: Detect languages
+    # Gated on the same answer as `analyze`. Building a matrix nothing consumes
+    # is a checkout and a runner spent on every push, pull request and weekly
+    # run of a repository that will not scan.
+    needs: scanning
+    if: needs.scanning.outputs.enabled == 'true'
+    # Hosted by default. A repository that sets a `RUNNER` variable runs this
+    # job on its own machine instead, and must leave it unset while it is
+    # public: a self-hosted runner there lets any fork's pull request run
+    # arbitrary code on the host.
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 5
+    outputs:
+      matrix: ${{ steps.detect.outputs.matrix }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # The matrix comes from scripts/detect rather than being built here,
+      # so a language this repository checks is one CodeQL scans. This step
+      # used to keep its own copy of detection, which is how a new stack ends up
+      # linted and tested while nothing scans it for vulnerabilities.
+      - name: Detect languages
+        id: detect
+        run: scripts/detect codeql-matrix >> "$GITHUB_OUTPUT"
+
+  analyze:
+    name: Analyze ${{ matrix.language }}
+    needs: [scanning, detect]
+    # Skipped where results cannot be uploaded. Without this the scan runs for
+    # up to an hour and dies at the upload step it was already told about.
+    if: needs.scanning.outputs.enabled == 'true'
+    # `RUNNER` redirects this job too, but only where the matrix asked for
+    # Linux. Swift's entry asks for `macos-latest`, and a `RUNNER` pointing at
+    # a Linux machine would take a scan that needs macOS and fail it, so the
+    # comparison lets that one entry through unchanged. An unset or empty
+    # `RUNNER` is falsy, which drops the whole expression back to the matrix.
+    runs-on: ${{ matrix.runner == 'ubuntu-latest' && vars.RUNNER || matrix.runner }}
+    timeout-minutes: 60
+    # The one job that uploads findings, so the one job that may write them.
+    # actions: read lets CodeQL read workflow run metadata when scanning the
+    # `actions` language in the matrix.
+    permissions:
+      contents: read
+      security-events: write
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.detect.outputs.matrix) }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # Go's autobuild runs whatever `go` is on PATH, and without this that is
+      # the one CodeQL's bundle carries, which trails the current release. A
+      # module whose go directive is newer refuses to build under it and the
+      # scan fails before analyzing anything. `stable` rather than a version
+      # file: the matrix has one go entry for the whole repository, which may
+      # hold several modules and no go.work, and the newest release satisfies
+      # every directive among them. It is also what setup-toolchains and
+      # security.yml install, so the scan builds with the toolchain CI checks.
+      - name: Set up Go
+        if: matrix.language == 'go'
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v4
+        with:
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
+          # Add .github/codeql/codeql-config.yml and uncomment the line below to
+          # scope what gets analyzed or change which queries run. The two things
+          # it is for: `paths` / `paths-ignore`, to keep vendored, generated, or
+          # fixture code out of the results, and `queries` / `packs`, to run a
+          # broader suite such as security-extended than the default one.
+          #
+          # It ships commented out because neither answer exists yet in a new
+          # repository -- there is no code to have produced a false positive,
+          # and the default suite is the right starting point. Note that the
+          # config file is read only through this key: adding the file without
+          # uncommenting the line leaves configuration that nothing applies and
+          # nothing reports.
+          # config-file: .github/codeql/codeql-config.yml
+
+      - name: Analyze
+        uses: github/codeql-action/analyze@v4
+        with:
+          category: /language:${{ matrix.language }}

@@ -1,0 +1,546 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Audit the repository's shape against the layout rules, which live here: each
+# check below carries the rule it enforces, as a literal list or a literal test.
+# Runs from scripts/check and from pre-commit on every commit.
+#
+# This checks where a file sits, and reads the contents of exactly one file --
+# a unit's .unit.json, which exists because how a unit runs and what it ships
+# are the two facts a tree cannot show. Three of the rules are about content
+# and are reported not-applicable rather than guessed at: whether
+# libs/ really holds code shared across apps, whether tests/ really spans them,
+# and whether a file sits at the scope it belongs to. A script that inferred
+# those from paths would be wrong quietly, which is worse than not asking.
+#
+# It does not source libs/detect.sh. Structure is language-independent -- the
+# same reasoning that keeps adr-index out of the capability dispatch. The one
+# language fact it needs is which root manifests are legal at the root, and
+# those are a fixed list of filenames rather than a detection.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/result.sh
+source "$repo_root/scripts/libs/result.sh"
+
+allow_file=".structure-allow"
+
+# Folders permitted at the repository root. Everything at root is repo-wide in
+# scope; anything scoped to a single app or domain belongs under that app.
+# .devcontainer and gradle are here because the payload's own additions require
+# them: .devcontainer is an addon, and gradle/ holds the wrapper Kotlin repos
+# must commit.
+root_folders=(
+  .claude .devcontainer .github apps assets deploy docs gradle
+  libs scripts tests tmp tools
+)
+
+# Files permitted at the repository root. The rule is that a root file needs
+# permission; this list is the permission already granted, and .structure-allow
+# is where a repository records the rest.
+root_files=(
+  # Shipped by the template payload.
+  CLAUDE.md .commitlintrc.yaml .env .gitattributes .gitignore .mcp.json
+  .pre-commit-config.yaml .worktreeinclude
+
+  # Written into a repository when it is generated from the template.
+  .repo-template.json
+
+  # Git's own, and not relocatable: git reads it from the root by that name.
+  .gitmodules
+
+  # The permission this script's own rules refer to.
+  .structure-allow
+
+  # The domain model.
+  GLOSSARY.md GLOSSARY-MAP.md
+
+  # Additions by occasion, held back in the template's repository-addons.
+  404.html AUTHORS CHANGELOG.md CITATION.cff CODEOWNERS CODE_OF_CONDUCT.md
+  CONTRIBUTING.md CONTRIBUTORS.md GOVERNANCE.md LICENSE README.md SECURITY.md
+  SUPPORT.md _config.yml .all-contributorsrc .env.example .nojekyll
+
+  # Root workspace manifests, and the lockfiles their tools write beside them.
+  # Swift is absent deliberately: it has no root manifest, so a Swift repository
+  # keeps its packages nested and there is nothing to permit here.
+  pyproject.toml uv.lock
+  go.work go.work.sum
+  package.json package-lock.json tsconfig.json
+  Cargo.toml Cargo.lock
+  build.gradle.kts gradle.properties gradlew gradlew.bat settings.gradle.kts
+)
+
+# Scoped folders: a scope holder -- the repository root, a unit, or a domain --
+# may contain any of these. The list is what tells a scoped folder from a domain
+# and what src-placement refuses a src/ under; nesting is unrestricted, so a
+# tests/ holding the tests for the tests under tests/ is not this audit's
+# business.
+scoped_folders=(assets deploy docs libs scripts tests tools)
+
+# The deployment technologies deploy/ recognizes. Unlike the lists above this
+# one will go stale: deployment tooling turns over faster than anything else in
+# a repository, so a .structure-allow entry naming another is the expected case
+# here rather than the exceptional one.
+deploy_folders=(compose containerfile env quadlet systemd)
+
+# The values a unit declaration may carry. Values only: every run-and-ship
+# pairing is legal, including the ones that look odd, because a rule forbidding
+# a combination is a rule nobody revisits when the exception arrives. ADR 0001
+# has the two cases -- a scheduled job and a library -- that broke the design
+# where one word named both facts.
+unit_runs='["oneshot","longlived","none"]'
+unit_kinds='["executable","quadlet","none"]'
+unit_targets='["linux-amd64","macos-arm64"]'
+
+# Reads one declaration and prints one line per illegal value. In jq rather
+# than in shell because hand-parsing a structured format is how
+# libs/precommit.sh came to exist: a pattern that read one of three valid forms
+# and reported the other two correct when they were not.
+#
+# Single-quoted deliberately: every \(...) below is jq's own interpolation and
+# every $name is a jq argument, so shell expansion here would corrupt the
+# program rather than fill it in.
+# shellcheck disable=SC2016
+unit_facts_program='
+  [
+    (if .schema_version != 1 then "schema_version \(.schema_version|tojson) is not 1" else empty end),
+
+    (.run as $r | if ($runs | index($r)) then empty
+     else "run \($r|tojson) is not one of \($runs|join(", "))" end),
+
+    (if (.ships|type) != "object" then "ships \(.ships|tojson) is not an object naming a kind"
+     else
+       (.ships.kind as $k | if ($kinds | index($k)) then empty
+        else "ships.kind \($k|tojson) is not one of \($kinds|join(", "))" end),
+
+       (if .ships.kind == "executable" then
+          (if (.ships.targets|type) != "array" or (.ships.targets|length) == 0
+           then "ships.targets is required and non-empty when kind is executable"
+           else (.ships.targets[] | . as $t | select(($targets | index($t)) | not)
+                 | "ships.targets \($t|tojson) is not one of \($targets|join(", "))")
+           end)
+        elif (.ships|has("targets")) then
+          "ships.targets is set but kind is \(.ships.kind|tojson); targets belong to executable alone"
+        else empty end)
+     end)
+  ] | .[]
+'
+
+in_list() {
+  local needle="$1" item
+  shift
+  for item in "$@"; do
+    [[ "$needle" == "$item" ]] && return 0
+  done
+  return 1
+}
+
+# .gitkeep is how an otherwise empty directory exists in Git at all, so it is
+# exempt from every rule that judges a file by its name. It still counts as a
+# path for the rules that read the directories above it -- holding a folder
+# open is the entire reason the file is there.
+is_placeholder() {
+  [[ "${1##*/}" == .gitkeep ]]
+}
+
+# Splits a path into the global `parts` array. Not a read into an array with
+# IFS set to a slash, which stops at the first newline: a newline is legal in a
+# path, and read would silently drop every segment after it rather than
+# misreporting one.
+#
+# It also sets `src_limit`, the index of the first src segment, or the segment
+# count when there is none. Everything below a src/ is the language's business
+# rather than this repository's layout -- a Go package named docs/, a Python
+# scripts/ module, a generated tree with a shape nobody chose -- so the rules
+# that apply at depth apply to the tree around the source and stop there.
+split_path() {
+  local rest="$1" i
+  parts=()
+  while [[ "$rest" == */* ]]; do
+    parts+=("${rest%%/*}")
+    rest="${rest#*/}"
+  done
+  parts+=("$rest")
+
+  src_limit=${#parts[@]}
+  for (( i = 0; i < ${#parts[@]}; i++ )); do
+    if [[ "${parts[i]}" == src ]]; then
+      src_limit=$i
+      break
+    fi
+  done
+
+  # And `scope_start`, the first segment a depth rule may judge. The scope
+  # holders are the root, a unit, and a domain; `apps/` is none of them, so the
+  # segment under it is a unit name and cannot be a scoped folder however it is
+  # spelled. Without this a unit named docs, tests, scripts, or deploy collects
+  # findings for its name -- including `apps/docs/src/: src belongs to a scope
+  # holder, not under docs/`, which is wrong twice over, since apps/docs/ is
+  # exactly the scope holder that src belongs to.
+  scope_start=0
+  if [[ "${parts[0]}" == apps ]]; then
+    scope_start=2
+  fi
+}
+
+# The path down to and including parts[$2], for naming the directory a finding
+# is about rather than the file that happened to reveal it.
+path_prefix() {
+  local -n _parts="$1"
+  local upto="$2" prefix="" i
+  for (( i = 0; i <= upto; i++ )); do prefix="$prefix/${_parts[i]}"; done
+  printf '%s' "${prefix#/}"
+}
+
+if ! git rev-parse --git-dir > /dev/null 2>&1; then
+  result structure unavailable "not a Git repository; the audit enumerates with git ls-files"
+  exit 1
+fi
+
+# Enumerate through Git rather than the filesystem. Gitignored scratch --
+# .orca/, node_modules/, a virtualenv, whatever a machine leaves lying around --
+# is then invisible by construction rather than by a prune list that drifts out
+# of date the way this repository's clean script once did.
+# A path in conflict is listed once per merge stage, and git orders the index
+# by path so those entries are adjacent. Without this, every finding about a
+# conflicted file is reported three times.
+tracked=()
+previous=""
+while IFS= read -r -d '' path; do
+  [[ "$path" == "$previous" ]] && continue
+  previous="$path"
+  tracked+=("$path")
+done < <(git ls-files -z)
+
+if (( ${#tracked[@]} == 0 )); then
+  result structure not-applicable "no tracked files"
+  exit 0
+fi
+
+# .structure-allow records the permission the rules say a non-standard path
+# needs. A bare path allows exactly that file. A path ending in / names a
+# prefix the walk stops descending into, which is how a vendored dependency or
+# a tracked test fixture keeps its own shape without the rules growing an
+# "unless it is a fixture" clause that would hollow them out.
+allow_paths=()
+allow_prefixes=()
+if [[ -f "$allow_file" ]]; then
+  while IFS= read -r line || [[ -n "$line" ]]; do
+    line="${line#"${line%%[![:space:]]*}"}"
+    # A whole-line comment, then a trailing one -- which must be preceded by
+    # whitespace, since # is a legal character in a filename and stripping it
+    # unconditionally voids the permission the line was written to grant.
+    [[ "$line" == \#* ]] && continue
+    line="${line%%[[:space:]]#*}"
+    line="${line%"${line##*[![:space:]]}"}"
+    [[ -n "$line" ]] || continue
+    if [[ "$line" == */ ]]; then
+      allow_prefixes+=("$line")
+    else
+      allow_paths+=("$line")
+    fi
+  done < "$allow_file"
+fi
+
+paths=()
+pruned=0
+for path in "${tracked[@]}"; do
+  skip=""
+  for prefix in ${allow_prefixes[@]+"${allow_prefixes[@]}"}; do
+    [[ "$path" == "$prefix"* ]] && { skip=1; break; }
+  done
+  if [[ -n "$skip" ]]; then
+    pruned=$((pruned + 1))
+    continue
+  fi
+  paths+=("$path")
+done
+
+echo "structure"
+echo
+
+# --- root -------------------------------------------------------------------
+
+for path in "${paths[@]}"; do
+  [[ "$path" == */* ]] && continue
+  is_placeholder "$path" && continue
+  in_list "$path" "${root_files[@]}" && continue
+  in_list "$path" ${allow_paths[@]+"${allow_paths[@]}"} && continue
+  record "$path: root file needs permission; move it, or add it to $allow_file"
+done
+verdict root-files "every root file is permitted"
+
+seen_roots=""
+for path in "${paths[@]}"; do
+  [[ "$path" == */* ]] || continue
+  top="${path%%/*}"
+  [[ " $seen_roots " == *" $top "* ]] && continue
+  seen_roots="$seen_roots $top"
+  in_list "$top" "${root_folders[@]}" && continue
+  in_list "$top" ${allow_paths[@]+"${allow_paths[@]}"} && continue
+  record "$top/: root folder needs permission; everything at root is repo-wide"
+done
+verdict root-folders "every root folder is permitted"
+
+# --- apps -------------------------------------------------------------------
+
+# A unit is a folder under apps/. A domain is a folder under a unit that is
+# neither src/ nor a scoped folder and holds a src/ of its own. The first half
+# tells a domain from a scoped folder without a marker file a repository would
+# have to remember to write; the second tells it from a misspelling of one,
+# which no name could distinguish. Below a domain the vocabulary closes.
+units=()
+declared=()
+misplaced=()
+domains=()
+unit_src=()
+domain_src=()
+domain_strays=()
+apps_src=""
+for path in "${paths[@]}"; do
+  [[ "$path" == apps/* ]] || continue
+  split_path "$path"
+
+  if [[ "${parts[1]}" == src ]]; then
+    if [[ -z "$apps_src" ]]; then
+      apps_src=1
+      record "apps/src/: source belongs to a unit, never directly under apps/"
+    fi
+    continue
+  fi
+
+  unit="${parts[1]}"
+  # A unit is a folder under apps/, so a file sitting directly there belongs to
+  # no unit and is not deployable by itself.
+  if (( ${#parts[@]} < 3 )); then
+    is_placeholder "$path" || record "$path: apps/ holds units, which are folders; a file here belongs to none"
+    continue
+  fi
+  in_list "$unit" ${units[@]+"${units[@]}"} || units+=("$unit")
+
+  child="${parts[2]}"
+  # A unit declares at its own root, and nowhere else: a domain does not
+  # declare, because the unit is what ships, and a declaration under a scoped
+  # folder is a file the audit would never read. Below a src/ the arrangement
+  # is the language's, so a declaration there is not this rule's to judge --
+  # which is also what keeps the template's own payload from being audited as
+  # if it were this repository.
+  if [[ "${parts[-1]}" == .unit.json ]] && (( src_limit == ${#parts[@]} )); then
+    if (( ${#parts[@]} == 3 )); then
+      declared+=("$unit")
+    else
+      misplaced+=("$path")
+    fi
+  fi
+  # A file directly under the unit is not a domain and not a src placement.
+  (( ${#parts[@]} >= 4 )) || continue
+
+  if [[ "$child" == src ]]; then
+    in_list "$unit" ${unit_src[@]+"${unit_src[@]}"} || unit_src+=("$unit")
+  elif ! in_list "$child" "${scoped_folders[@]}"; then
+    in_list "$unit/$child" ${domains[@]+"${domains[@]}"} || domains+=("$unit/$child")
+
+    # Below a domain the vocabulary closes. A domain is one folder under its
+    # unit and domains do not nest, so a folder here is src/ or a scoped folder
+    # and there is no third case a name could be. A file sitting directly in
+    # the domain is left alone, the same latitude a unit's own files get: a
+    # manifest has to live beside the source it declares.
+    (( ${#parts[@]} >= 5 )) || continue
+    grandchild="${parts[3]}"
+    if [[ "$grandchild" == src ]]; then
+      in_list "$unit/$child" ${domain_src[@]+"${domain_src[@]}"} || domain_src+=("$unit/$child")
+    elif ! in_list "$grandchild" "${scoped_folders[@]}"; then
+      in_list "$unit/$child/$grandchild" ${domain_strays[@]+"${domain_strays[@]}"} \
+        || domain_strays+=("$unit/$child/$grandchild")
+    fi
+  fi
+done
+
+# A .structure-allow prefix prunes paths before this walk sees them, which can
+# remove a domain's own src/ while a sibling path still registers the domain.
+# Permission must never make a check stricter than its absence would, so the
+# src/ is looked for once more in the tracked list, which pruning does not
+# touch. Every other check here only gets more lenient under a prefix entry.
+if (( pruned > 0 )); then
+  for domain in ${domains[@]+"${domains[@]}"}; do
+    in_list "$domain" ${domain_src[@]+"${domain_src[@]}"} && continue
+    for path in "${tracked[@]}"; do
+      [[ "$path" == "apps/$domain/src/"* ]] || continue
+      domain_src+=("$domain")
+      break
+    done
+  done
+fi
+
+for unit in ${units[@]+"${units[@]}"}; do
+  in_list "$unit" ${unit_src[@]+"${unit_src[@]}"} || continue
+  for domain in ${domains[@]+"${domains[@]}"}; do
+    if [[ "$domain" == "$unit/"* ]]; then
+      record "apps/$unit/: a unit split into domains has no src/ of its own; ${domain##*/}/ is a domain"
+      break
+    fi
+  done
+done
+
+# A domain holds its own src/ -- that is what the layout rules say a domain is.
+# The unit level cannot be an allowlist, since a domain name is the
+# repository's to choose and a typo has the same shape as a new business area.
+# Requiring the src/ separates them: a folder that is neither a scoped folder
+# nor a source tree is a misspelling or a misplacement, not a domain.
+for domain in ${domains[@]+"${domains[@]}"}; do
+  in_list "$domain" ${domain_src[@]+"${domain_src[@]}"} && continue
+  record "apps/$domain/: a domain holds a src/; without one this is a misspelled scoped folder or misplaced source"
+done
+verdict apps-layout "units and domains hold src/ where the rules place it"
+
+# --- domain vocabulary ------------------------------------------------------
+
+for stray in ${domain_strays[@]+"${domain_strays[@]}"}; do
+  # One misplacement is one finding. A folder under a parent that has no src/
+  # is already reported by apps-layout, and repeating it here would assert the
+  # opposite of what that finding said -- that the parent is a domain.
+  in_list "${stray%/*}" ${domain_src[@]+"${domain_src[@]}"} || continue
+  record "apps/$stray/: a domain holds src/ or a scoped folder (${scoped_folders[*]}), and domains do not nest"
+done
+verdict domain-folders "every folder under a domain is src/ or a scoped folder"
+
+# --- unit declarations ------------------------------------------------------
+
+# How a unit runs and what it ships are not on disk: a Go module with one main
+# package is a CLI, a TUI, or a service, and the compiler cannot tell them
+# apart. So a unit declares, and this is where the declaration is required --
+# at commit time with the unit named, rather than at release time with an
+# empty asset list.
+if (( ${#units[@]} == 0 )); then
+  result unit-declaration not-applicable "no units under apps/"
+else
+  for path in ${misplaced[@]+"${misplaced[@]}"}; do
+    record "$path: a declaration sits at its unit's root, never under a domain or a scoped folder"
+  done
+  for unit in "${units[@]}"; do
+    in_list "$unit" ${declared[@]+"${declared[@]}"} && continue
+    record "apps/$unit/: no .unit.json; a unit declares how it runs and what it ships"
+  done
+  verdict unit-declaration "every unit carries a declaration, at its own root"
+fi
+
+if (( ${#declared[@]} == 0 )); then
+  result unit-facts not-applicable "no declaration to read"
+elif ! command -v jq > /dev/null 2>&1; then
+  # A check that did not run is not a check that passed, so this is unavailable
+  # and fails the run rather than reporting a silent pass over unread files.
+  result unit-facts unavailable "jq is needed to read a unit declaration"
+else
+  for unit in "${declared[@]}"; do
+    file="apps/$unit/.unit.json"
+    if ! problems="$(jq -r \
+      --argjson runs "$unit_runs" \
+      --argjson kinds "$unit_kinds" \
+      --argjson targets "$unit_targets" \
+      "$unit_facts_program" "$file" 2> /dev/null)"; then
+      record "$file: not readable as JSON"
+      continue
+    fi
+    while IFS= read -r problem; do
+      [[ -n "$problem" ]] && record "$file: $problem"
+    done <<< "$problems"
+  done
+  verdict unit-facts "every declared fact is a value the template recognizes"
+fi
+
+# --- src placement ----------------------------------------------------------
+
+for path in "${paths[@]}"; do
+  split_path "$path"
+  scope=""
+  for (( i = scope_start; i < ${#parts[@]} - 1; i++ )); do
+    # The first src ends the walk either way: a src nested inside another src
+    # is the source tree's own arrangement, not a placement this rule judges.
+    if [[ "${parts[i]}" == src ]]; then
+      if [[ -n "$scope" ]]; then
+        finding="$(path_prefix parts "$i")/: src belongs to a scope holder, not under $scope/"
+        record "$finding"
+      fi
+      break
+    fi
+    in_list "${parts[i]}" "${scoped_folders[@]}" && scope="${parts[i]}"
+  done
+done
+verdict src-placement "no src/ sits under a scoped folder"
+
+# --- deploy vocabulary ------------------------------------------------------
+
+for path in "${paths[@]}"; do
+  split_path "$path"
+  for (( i = scope_start; i < ${#parts[@]} - 1 && i < src_limit; i++ )); do
+    [[ "${parts[i]}" == deploy ]] || continue
+    child="${parts[i+1]}"
+    # Whether the child is a folder at all is decided before its name is, so a
+    # file that happens to be called env or quadlet is still a loose file.
+    if (( i + 1 == ${#parts[@]} - 1 )); then
+      is_placeholder "$path" && continue
+      finding="$path: deploy/ holds one folder per technology (${deploy_folders[*]}), not loose files"
+    else
+      in_list "$child" "${deploy_folders[@]}" && continue
+      finding="$(path_prefix parts "$(( i + 1 ))")/: not a recognized deployment technology (${deploy_folders[*]})"
+    fi
+    record "$finding"
+  done
+done
+verdict deploy-folders "every deploy/ subfolder is a recognized technology"
+
+# --- tools programs ---------------------------------------------------------
+
+# tools/ holds helpers that must be built before they run, one directory per
+# program with its own manifest. Whether a directory carries a manifest is a
+# language question this script does not ask -- that is the orphan-manifest
+# rule's, in libs/detect.sh -- but whether a program got a directory at all is
+# placement, and the same rule deploy/ states in the same words.
+for path in "${paths[@]}"; do
+  split_path "$path"
+  for (( i = scope_start; i < ${#parts[@]} - 1 && i < src_limit; i++ )); do
+    [[ "${parts[i]}" == tools ]] || continue
+    (( i + 1 == ${#parts[@]} - 1 )) || continue
+    is_placeholder "$path" && continue
+    in_list "$path" ${allow_paths[@]+"${allow_paths[@]}"} && continue
+    record "$path: tools/ holds one directory per program, not loose files"
+  done
+done
+verdict tools-programs "every tools/ entry is a program directory"
+
+# --- docs content -----------------------------------------------------------
+
+for path in "${paths[@]}"; do
+  split_path "$path"
+  under_docs=""
+  for (( i = scope_start; i < ${#parts[@]} - 1 && i < src_limit; i++ )); do
+    [[ "${parts[i]}" == docs ]] && { under_docs=1; break; }
+  done
+  [[ -n "$under_docs" ]] || continue
+  name="${parts[-1]}"
+  [[ "$name" == *.md ]] && continue
+  is_placeholder "$path" && continue
+  in_list "$path" ${allow_paths[@]+"${allow_paths[@]}"} && continue
+  record "$path: docs/ takes Markdown freely; anything else needs permission"
+done
+verdict docs-content "docs/ holds Markdown only"
+
+# --- what this cannot answer ------------------------------------------------
+
+echo
+result libs-are-shared not-applicable "whether libs/ is shared across apps is a judgment about content"
+result tests-are-crossapp not-applicable "whether tests/ spans apps is a judgment about content"
+result scope-matching not-applicable "whether a file sits at its own scope is a judgment about content"
+
+echo
+if (( pruned > 0 )); then
+  echo "$pruned path(s) not descended into, per $allow_file."
+fi
+if tally; then
+  echo "Structure matches the layout rules."
+else
+  echo "Structure does not match the layout rules; each finding above names the rule and the fix."
+  exit 1
+fi

@@ -1,0 +1,52 @@
+# Rules for the commit-msg hook in .pre-commit-config.yaml.
+#
+# YAML rather than commitlint.config.mjs so this needs no package.json. A
+# package.json at the root would make has_node() in scripts/libs/detect.sh
+# true, and every check would start dispatching JavaScript adapters in a
+# repository that contains no JavaScript. The check-yaml hook validates this
+# file on every commit as a side effect of the format.
+#
+# Two of the three rules below are the ones the Conventional Commits
+# specification states as MUST and config-conventional ships as warnings. The
+# third is this repository's own. Everything else -- type-enum, subject-case,
+# header-max-length, body-max-line-length -- is the stock preset, at error
+# level already.
+extends:
+  - "@commitlint/config-conventional"
+
+rules:
+  # A body not separated from the subject by a blank line is not a body: git
+  # reads the whole run of text as one subject line. This is a correctness
+  # rule, not a style preference, which is why it is an error here.
+  body-leading-blank: [2, always]
+
+  # Same failure one paragraph down. Without the blank line, `BREAKING CHANGE:`
+  # and `Refs: #12` are parsed as more body text, so a breaking change stops
+  # being machine-readable at exactly the moment that matters.
+  footer-leading-blank: [2, always]
+
+  # The model that wrote a commit is worth recording: it is the only per-commit
+  # statement of what produced the change. `scripts/attribute-commit` writes
+  # `Generated-By: <model ID>` at prepare-commit-msg, from CLAUDE_COMMIT_MODEL
+  # when set, otherwise from the per-command entries the user-level
+  # commit-model hook writes under
+  # ${XDG_CACHE_HOME:-~/.cache}/claude-commit-model/<session id>/ (see the
+  # script). It also rewrites a stray
+  # `Co-Authored-By: <model> <noreply@anthropic.com>` into it -- a tool is not
+  # a co-author. This rule makes the trailer required rather than incidental,
+  # so a commit made without it fails here instead of landing unattributed.
+  #
+  # It follows that a commit made outside Claude Code, with no `Generated-By`
+  # written, is refused. That is the rule working: every commit in this
+  # repository is agent-written, and one that is not should say so deliberately
+  # by adding its own `Generated-By:` line rather than by passing unnoticed.
+  #
+  # The rule matches through `git interpret-trailers --parse`, which reads a
+  # trailer only in the message's last paragraph. A `Generated-By:` line run on
+  # from the body is invisible to it and fails, which is the same defect
+  # footer-leading-blank names one rule up.
+  #
+  # A human co-author keeps their own `Co-Authored-By:` line: the hook's
+  # rewrite touches only trailers addressed to noreply@anthropic.com, and
+  # nothing here forbids the others.
+  trailer-exists: [2, always, "Generated-By:"]

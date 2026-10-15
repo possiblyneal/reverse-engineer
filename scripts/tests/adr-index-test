@@ -1,0 +1,294 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Asserts that the generated ADR index converges: a second run changes nothing,
+# a hand edit does not survive, and a record that disappears takes its row with
+# it. The index is derived, so convergence is the whole property.
+#
+# The hook wiring is asserted here too, against a real repository. The script
+# passing while pre-commit never invokes it is a failure this suite could not
+# otherwise see, and is exactly what happened on deletion: pre-commit's staged
+# file list excludes deletions, so a `files:` filter skipped the hook on the one
+# commit that made the index stale.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+
+fixture() {
+  scratch_repo
+  current="$1"
+  mkdir -p "$work/docs/adrs"
+  cp "$repo_root/docs/adrs/0000-template.md" "$work/docs/adrs/"
+}
+
+# Writes a record. record <file> <title> <status> [superseded_by]
+record() {
+  {
+    echo "---"
+    echo "type: Architecture Decision Record"
+    echo "title: $2"
+    echo "description: One sentence."
+    echo 'generated: { by: "human:neal", at: "2026-08-05T14:30:00Z" } # update after each change'
+    echo "superseded_by: ${4:-}"
+    echo "status: $3              # proposed | accepted | deprecated | superseded"
+    echo "---"
+  } > "$work/docs/adrs/$1"
+}
+
+index="docs/adrs/index.md"
+
+echo "adr-index-test"
+
+# A record's own frontmatter is the only source for its row, and the trailing
+# comment the template ships on `status` must not become part of the value.
+fixture "records become rows"
+record 0001-use-postgresql.md "Use PostgreSQL for the Primary Datastore" accepted
+record 0002-redis-sessions.md "Store Sessions in Redis" superseded docs/adrs/0005-sessions-in-postgres.md
+record 0005-sessions-in-postgres.md "Move Sessions into PostgreSQL" accepted
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+out="$(cat "$work/$index" 2>&1)"
+if grep -qxF '| [0001](0001-use-postgresql.md) | Use PostgreSQL for the Primary Datastore | accepted |' <<<"$out" &&
+  grep -qxF '| [0002](0002-redis-sessions.md) | Store Sessions in Redis | superseded by [0005](0005-sessions-in-postgres.md) |' <<<"$out"; then
+  pass
+else
+  fail "a record did not produce its row, or the status carried the template's trailing comment"
+fi
+
+# The template ships `superseded_by:` with a trailing comment and no value. A
+# comment strip that runs after the leading trim leaves the "#" at the start of
+# the value, where a rule matching " #" no longer sees it, and the comment
+# becomes the path -- so filling in a copy of the template and leaving that one
+# line untouched produced a record the script refused.
+fixture "the template's own empty commented field reads as empty"
+{
+  echo "---"
+  echo "title: Use PostgreSQL"
+  echo "superseded_by:                # path to the replacing ADR; set status: superseded when filling this"
+  echo "status: accepted              # proposed | accepted | deprecated | superseded"
+  echo "---"
+} > "$work/docs/adrs/0001-a.md"
+out="$(cd "$work" && scripts/adr-index 2>&1)"
+if grep -qxF '| [0001](0001-a.md) | Use PostgreSQL | accepted |' "$work/$index" 2> /dev/null; then
+  pass
+else
+  fail "a record copied from the template and filled in was rejected: $out"
+fi
+
+# A title is free text, and neither the table's column separator nor a "#"
+# inside a quoted value may be treated as syntax.
+fixture "a quoted title keeps its hash and escapes its pipe"
+record 0001-a.md '"Adopt Postgres # and drop Redis | soon"' accepted
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+if grep -qxF '| [0001](0001-a.md) | Adopt Postgres # and drop Redis \| soon | accepted |' "$work/$index"; then
+  pass
+else
+  fail "a quoted title lost its hash, kept its quotes, or broke the table with a pipe"
+fi
+
+# The template holds placeholders rather than a decision, so listing it would
+# put an angle-bracket row in every generated repository. A supporting note
+# beside the records is not a record either.
+fixture "only NNNN-prefixed records are listed"
+record 0001-a.md "A Real Decision" accepted
+printf -- '---\ntitle: Notes\n---\n' > "$work/docs/adrs/notes.md"
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+if ! grep -q '0000-template' "$work/$index" && ! grep -q 'notes.md' "$work/$index"; then
+  pass
+else
+  fail "the template or a non-record file was listed as a decision"
+fi
+
+# Regeneration is the check, so the script must report the rewrite itself. A
+# newly created index is untracked at that moment and pre-commit's own
+# modified-files detection does not see it.
+fixture "a rewrite is reported"
+record 0001-a.md "A" accepted
+out="$(cd "$work" && scripts/adr-index 2>&1)"
+status=$?
+if (( status != 0 )) && grep -q "Rewrote $index" <<<"$out"; then
+  pass
+else
+  fail "creating the index did not fail the run, so a commit lands without it"
+fi
+
+# Without this the hook fails forever: every commit touching an ADR would
+# rewrite an already-correct file.
+fixture "a correct index is left alone"
+record 0001-a.md "A" accepted
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+before="$(cat "$work/$index")"
+out="$(cd "$work" && scripts/adr-index 2>&1)"
+status=$?
+if (( status == 0 )) && [[ -z "$out" ]] && [[ "$before" == "$(cat "$work/$index")" ]]; then
+  pass
+else
+  fail "a second run rewrote an index that was already correct"
+fi
+
+fixture "a hand edit does not survive"
+record 0001-a.md "A" accepted
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+expected="$(cat "$work/$index")"
+echo "hand-written note" >> "$work/$index"
+out="$(cd "$work" && scripts/adr-index 2>&1)"
+status=$?
+if (( status != 0 )) && [[ "$expected" == "$(cat "$work/$index")" ]]; then
+  pass
+else
+  fail "an edit to the generated index was kept"
+fi
+
+# Every repository generated from this template starts with only the template
+# record, and a file listing nothing is worse than its absence.
+fixture "no decisions means no index"
+out="$(cd "$work" && scripts/adr-index 2>&1)"
+status=$?
+if (( status == 0 )) && [[ ! -e "$work/$index" ]] && [[ -z "$out" ]]; then
+  pass
+else
+  fail "an index was written for a directory holding only the template"
+fi
+
+fixture "removing the last record removes the index"
+record 0001-a.md "A" accepted
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+rm "$work/docs/adrs/0001-a.md"
+out="$(cd "$work" && scripts/adr-index 2>&1)"
+status=$?
+if (( status != 0 )) && [[ ! -e "$work/$index" ]]; then
+  pass
+else
+  fail "a stale index survived the removal of the last record"
+fi
+
+# A typo here is invisible at review: both the right path and the wrong one
+# read as plausible, and the record claims to be settled either way.
+fixture "a replacement that does not exist is refused"
+record 0001-a.md "A" superseded docs/adrs/0009-typo.md
+out="$(cd "$work" && scripts/adr-index 2>&1)"
+status=$?
+if (( status != 0 )) && grep -q 'which does not exist' <<<"$out" && [[ ! -e "$work/$index" ]]; then
+  pass
+else
+  fail "a record was listed as superseded by an ADR that is not there"
+fi
+
+fixture "a bare replacement filename resolves in the ADR directory"
+record 0001-a.md "A" superseded 0002-b.md
+record 0002-b.md "B" accepted
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+if grep -qxF '| [0001](0001-a.md) | A | superseded by [0002](0002-b.md) |' "$work/$index"; then
+  pass
+else
+  fail "a replacement named by filename alone was not resolved against docs/adrs"
+fi
+
+# docs/CLAUDE.md contemplates an app keeping its own adr directory once local
+# decisions would drown the repo-wide ones, so a replacement is not always a
+# sibling. The link has to climb out of docs/adrs to reach it.
+fixture "a replacement outside the ADR directory links out"
+record 0001-a.md "A" superseded apps/billing/docs/adrs/0003-c.md
+mkdir -p "$work/apps/billing/docs/adrs"
+touch "$work/apps/billing/docs/adrs/0003-c.md"
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+if grep -qxF '| [0001](0001-a.md) | A | superseded by [0003](../../apps/billing/docs/adrs/0003-c.md) |' "$work/$index"; then
+  pass
+else
+  fail "a replacement in another directory got a link relative to the wrong place"
+fi
+
+# The template's commented `sources:` block contains its own `title:` and the
+# `generated:` line carries a nested `{ by: ..., at: ... }`. Each decoy is
+# placed before the real field it shadows, since matching stops at the first
+# hit and a decoy that comes second would be skipped whether or not the guard
+# against it exists.
+fixture "nested and commented frontmatter is not read"
+{
+  echo "---"
+  echo "# sources:"
+  echo "#   - id: some-source"
+  echo "#     title: A Cited Source, Not This Decision"
+  echo "  title: indented-continuation-not-a-field"
+  echo "title: A"
+  echo "generated: { by: \"human:neal\", at: \"2026-08-05T14:30:00Z\" }"
+  echo "status: accepted"
+  echo "---"
+} > "$work/docs/adrs/0001-a.md"
+(cd "$work" && scripts/adr-index) > /dev/null 2>&1
+if grep -qxF '| [0001](0001-a.md) | A | accepted |' "$work/$index"; then
+  pass
+else
+  fail "an indented or commented frontmatter line was read as a record's field"
+fi
+
+# The directory is absent until a repository writes its first decision.
+fixture "a missing directory is not an error"
+rm -rf "$work/docs"
+out="$(cd "$work" && scripts/adr-index 2>&1)"
+status=$?
+if (( status == 0 )) && [[ -z "$out" ]]; then
+  pass
+else
+  fail "a repository with no docs/adrs directory failed the run"
+fi
+
+# Everything above proves the script converges. These two prove pre-commit
+# actually runs it -- the gap that let a deletion commit a stale index while
+# every script-level case passed.
+if command -v pre-commit > /dev/null 2>&1; then
+  # Builds a repository wired exactly as a generated one is: this repo's own
+  # hook definition, lifted from .pre-commit-config.yaml rather than restated,
+  # so a change to the real config is what this asserts against.
+  hook_fixture() {
+    fixture "$1"
+    awk '/^  # docs\/adrs\/index.md is derived/ { on = 1 }
+         on && /^  - repo: local/ { printing = 1 }
+         printing && /^  [^ ]/ && !/^  - repo: local/ && seen { exit }
+         printing { print; seen = 1 }' \
+      "$repo_root/.pre-commit-config.yaml" > "$work/hook.yaml"
+    { echo "repos:"; cat "$work/hook.yaml"; } > "$work/.pre-commit-config.yaml"
+  }
+
+  hook_fixture "pre-commit runs the hook on a deleted record"
+  record 0001-a.md "A" accepted
+  record 0002-b.md "B" accepted
+  (
+    cd "$work" || exit 1
+    scripts/adr-index
+    git add -A
+    git commit -qm init
+    pre-commit install
+  ) > /dev/null 2>&1
+  out="$(cd "$work" && git rm -q docs/adrs/0002-b.md && git commit -m "remove a record" 2>&1)"
+  status=$?
+  if (( status != 0 )) && ! grep -q '0002-b' "$work/$index"; then
+    pass
+  else
+    fail "deleting a record committed an index still listing it: $out"
+  fi
+
+  hook_fixture "pre-commit blocks a first index that is not staged"
+  record 0001-a.md "A" accepted
+  (
+    cd "$work" || exit 1
+    git add -A
+    git commit -qm init
+    pre-commit install
+  ) > /dev/null 2>&1
+  out="$(cd "$work" && git add docs/adrs/0001-a.md && git commit -m "add a record" 2>&1)"
+  status=$?
+  if (( status != 0 )) && [[ -f "$work/$index" ]]; then
+    pass
+  else
+    fail "a commit adding the first record landed without the index: $out"
+  fi
+else
+  current="hook wiring"
+  skip "pre-commit is not installed"
+fi
+
+report

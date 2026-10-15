@@ -1,0 +1,36 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+
+# The integration tier: every tests/integration/ directory in the repository,
+# at whatever scope it sits. Its own entry point rather than a flag on check,
+# because an integration test reaches something a gate cannot assume is present
+# -- a database, a container, a network -- and a check that fails for want of
+# one is a check nobody can read. Run it when those things are up; scripts/check
+# stays the answer to "is this commit sound on this machine".
+#
+# The tier is a path, not a marker: integration_dirs finds it, and the gate's
+# test capability leaves it out. A language with no tier present reports
+# not-applicable, so a repository without one never fails for lacking a runner.
+#
+# Takes no unit name. A repository whose tiers must run separately says so by
+# running this from inside the unit, and a flag for that is not owed until one
+# does.
+if ! language_capabilities has-any; then
+  echo "No project manifest found, so there is nothing to test yet."
+  exit 0
+fi
+
+args=()
+[[ -z "${CI_DRY_RUN:-}" ]] || args+=(--dry-run)
+language_capabilities run "${args[@]}" integration
+
+[[ -z "${CI_DRY_RUN:-}" ]] || exit 0
+
+tally

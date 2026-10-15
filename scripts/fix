@@ -1,0 +1,41 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+
+# The write half of what `scripts/check` checks: the linter's own autofix, then
+# the formatter. Both unconditionally, and in that order, because a lint fix
+# rewrites code and leaves the layout of what it wrote to whatever runs next --
+# formatting last is what makes the result the same as a formatted commit.
+#
+# No flag over the lint half. Every autofix reached here is one the tool itself
+# considers safe, and it is a rewrite the linter would have demanded at the gate
+# anyway, so a flag would only be a way to run half of a command whose whole
+# purpose is to rewrite. Where a language has no lint autofix at all the
+# capability reports not-applicable, so this stays green on the three that do not.
+# Those are Go, Swift and Kotlin: go vet reports without rewriting, and the
+# rewriting swift format and ktlint do is the formatting already run here.
+# unavailable would name a tool that could be installed, and fail this on every
+# Go repository for it.
+#
+# A lint-fix FAIL means findings remain that the tool could not fix itself.
+# ruff, eslint and clippy each exit non-zero for those, and translating that
+# away would mean telling a real tool error from a leftover finding by exit
+# code alone.
+if ! language_capabilities has-any; then
+  echo "No project manifest found, so there is nothing to format yet."
+  exit 0
+fi
+
+language_capabilities run lint-fix format-write
+
+if tally; then
+  echo "Review the diff before committing."
+else
+  exit 1
+fi

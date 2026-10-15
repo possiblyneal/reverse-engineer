@@ -1,0 +1,93 @@
+name: Set up toolchains
+description: Installs a toolchain for each language manifest present in the repository.
+
+runs:
+  using: composite
+  steps:
+    # scripts/ci fails when a manifest is present but its toolchain is
+    # missing, so each toolchain installs only when this repository uses it.
+    #
+    # Detection comes from scripts/detect rather than being written out
+    # again here. This file used to carry its own copy, which is how a language ends
+    # up installed for the local scripts and missing in CI.
+    - name: Detect toolchains
+      id: detect
+      shell: bash
+      run: scripts/detect github-output >> "$GITHUB_OUTPUT"
+
+    # Ahead of every toolchain, because the need belongs to no one language:
+    # a Rust -sys crate, a wheel built from source, and node-gyp all resolve
+    # their headers through pkg-config. The reading of
+    # .github/system-packages.txt is scripts/system-packages' own, for the
+    # reason the step above states about scripts/detect.
+    - name: Install system packages
+      shell: bash
+      run: scripts/system-packages install
+
+    - name: Set up Node
+      if: steps.detect.outputs.node == 'true'
+      uses: actions/setup-node@v7
+      with:
+        node-version: lts/*
+
+    - name: Install Node dependencies
+      if: steps.detect.outputs.node == 'true'
+      shell: bash
+      run: |
+        if [[ -s package-lock.json ]]; then
+          npm ci --no-audit --no-fund
+        else
+          npm install --no-audit --no-fund
+        fi
+
+    - name: Set up Python
+      if: steps.detect.outputs.python == 'true'
+      uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+      with:
+        enable-cache: true
+
+    - name: Set up Go
+      if: steps.detect.outputs.go == 'true'
+      uses: actions/setup-go@v7
+      with:
+        go-version: stable
+
+    # rustup is a host prerequisite here, not something this step installs. A
+    # hosted image ships it; a self-hosted host may not, and `rustup component
+    # add` there fails on an unknown command -- a message about a subcommand,
+    # in a job whose real problem is that the machine has no Rust. The guard
+    # turns that into one line naming the host and the fix.
+    #
+    # Installing it instead would mean piping a network script into a shell in
+    # every generated repository, and writing the new bin directory to
+    # GITHUB_PATH for the steps that follow. Both are worse than a prerequisite
+    # the host owner satisfies once, and both sit against the rule that the
+    # toolchains are the machine's.
+    - name: Set up Rust
+      if: steps.detect.outputs.rust == 'true'
+      shell: bash
+      run: |
+        if ! command -v rustup > /dev/null 2>&1; then
+          echo "::error::rustup is not on this runner. A GitHub-hosted image ships it; a self-hosted host must install it for the runner user before a Rust repository can build here."
+          exit 1
+        fi
+        rustup component add clippy rustfmt
+
+    # GitHub's Ubuntu runners include Swift, but this controls the requested
+    # version rather than inheriting whatever the runner image happens to ship.
+    - name: Set up Swift
+      if: steps.detect.outputs.swift == 'true'
+      uses: swift-actions/setup-swift@364295d9c23900ce04d4e5cc708387921b4e50f9 # v3
+      with:
+        swift-version: latest
+
+    - name: Set up Java
+      if: steps.detect.outputs.kotlin == 'true'
+      uses: actions/setup-java@v6
+      with:
+        distribution: temurin
+        java-version: "21"
+
+    - name: Set up Gradle
+      if: steps.detect.outputs.kotlin == 'true'
+      uses: gradle/actions/setup-gradle@9c971963bec38e04b3d30dcc455b5382be2fdbfb # v6

@@ -1,0 +1,110 @@
+name: Security
+
+on:
+  pull_request:
+  push:
+    branches:
+      - main
+  schedule:
+    - cron: "17 9 * * 1"
+
+permissions:
+  contents: read
+
+concurrency:
+  group: security-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  security:
+    name: Security
+    # Hosted by default. A repository that sets a `RUNNER` variable runs this
+    # job on its own machine instead, and must leave it unset while it is
+    # public: a self-hosted runner there lets any fork's pull request run
+    # arbitrary code on the host.
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 20
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+        with:
+          # Full history: gitleaks scans commits, and a shallow clone hides any
+          # secret that was committed earlier and later removed from the tip.
+          fetch-depth: 0
+
+      # Detection comes from scripts/detect rather than being written out
+      # again here, so the audit tools installed are the ones
+      # scripts/security looks for. The trivy flag covers Swift and Gradle, which have no first-party
+      # audit command and are scanned through their committed lockfiles.
+      - name: Detect toolchains
+        id: detect
+        run: scripts/detect github-output >> "$GITHUB_OUTPUT"
+
+      - name: Set up Node
+        if: steps.detect.outputs.node == 'true'
+        uses: actions/setup-node@v7
+        with:
+          node-version: lts/*
+
+      - name: Set up Python
+        if: steps.detect.outputs.python == 'true'
+        uses: astral-sh/setup-uv@bec219d24cd3e171d82865faccec33120bb574f4 # v10.1.0
+        with:
+          enable-cache: true
+
+      - name: Set up Go
+        if: steps.detect.outputs.go == 'true'
+        uses: actions/setup-go@v7
+        with:
+          go-version: stable
+
+      # govulncheck and cargo-audit both float rather than pinning, unlike the
+      # action versions above.
+      # Dependabot reads no version out of a run step, so a pin here is one
+      # nothing upgrades: it would hold whatever release was current the day
+      # this file was written and go stale in every repository cloned from the
+      # template. These two read the advisory databases, so a stale one reports
+      # a clean audit by knowing about fewer vulnerabilities, which is the
+      # failure this job exists to catch.
+      - name: Install govulncheck
+        if: steps.detect.outputs.go == 'true'
+        run: go install golang.org/x/vuln/cmd/govulncheck@latest
+
+      # +stable rather than bare cargo: this runs in the workspace, so a root
+      # rust-toolchain.toml applies as a rustup directory override and would
+      # build the auditor with the product's pinned toolchain. A floating
+      # cargo-audit raises its own MSRV, so that pin eventually sits below it
+      # and the install fails. The audit tool's toolchain is not the product's.
+      # +stable is rustup's syntax, not cargo's, so this assumes rustup rather
+      # than a distribution cargo. That holds on ubuntu-latest; a self-hosted
+      # host may have no rustup at all, where a bare `cargo +stable` fails on
+      # an unknown subcommand and says nothing about the machine. The guard is
+      # the same one .github/actions/setup-toolchains makes, repeated because
+      # this job sets up its toolchains inline rather than through that action.
+      - name: Install cargo-audit
+        if: steps.detect.outputs.rust == 'true'
+        run: |
+          if ! command -v rustup > /dev/null 2>&1; then
+            echo "::error::rustup is not on this runner. A GitHub-hosted image ships it; a self-hosted host must install it for the runner user before a Rust repository can be audited here."
+            exit 1
+          fi
+          cargo +stable install cargo-audit --locked
+
+      - name: Install trivy
+        if: steps.detect.outputs.trivy == 'true'
+        uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          # Pinning the action is not enough. It downloads a trivy binary from
+          # the release page and its version input defaults to latest, so the
+          # scanner deciding whether this repository has a vulnerability would
+          # otherwise change with no diff here. Bump alongside the action pin.
+          version: v0.73.0
+
+      # No gitleaks install. Secret prevention belongs to GitHub push protection,
+      # which blocks a secret before it reaches the remote; a CI scan only finds
+      # one that is already pushed. Installing a scanner here meant curling an
+      # unverified binary into the job that exists to check supply-chain safety.
+      # Enable push protection in repository settings, and run gitleaks locally
+      # from .pre-commit-config.yaml.
+      - name: Run local security checks
+        run: scripts/security

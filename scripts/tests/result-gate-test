@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# The result library's contract -- the four states enforced, findings deduped
+# -- and one assertion per command that ends with its tally: an unavailable
+# line or a recorded orphan is a failing exit. Each fixture is a Node
+# package naming no script and no bin, so every Node adapter answers NO_RUNNER
+# and the line is unavailable rather than FAIL -- the outcome that used to be
+# decoded from a return value by each command, and by two of them into a green
+# exit.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+# Present, and with nothing any adapter can run. Holds whether or not node is
+# installed: without it the script lookup fails the same way.
+bare_package() {
+  mkdir -p "$1"
+  printf '{"name":"n","version":"1.0.0"}\n' > "$1/package.json"
+}
+
+# Asserts a command exited non-zero and printed the named pair as unavailable.
+assert_unavailable() {
+  local status="$1" line="$2" out="$3"
+  if (( status != 0 )) && grep -qE "^$line$" <<< "$out"; then
+    pass
+  else
+    fail "wanted '$line' and a failing exit, got exit $status: $out"
+  fi
+}
+
+echo "result-gate-test"
+
+# --- the library itself ------------------------------------------------------
+
+# shellcheck source-path=SCRIPTDIR/..
+# shellcheck source=libs/result.sh
+source "$repo_root/scripts/libs/result.sh"
+
+current="a word that is not a state is refused"
+out="$(result lint green "detail" 2>&1)"
+status=$?
+if (( status == 1 )) && [[ "$out" == "result: 'green' is not a Result state"* ]]; then
+  pass
+else
+  fail "exit $status: $out"
+fi
+
+current="a finding recorded twice is reported once"
+record "the same finding"
+record "the same finding"
+out="$(verdict lint "clean")"
+if grep -qE '^lint +FAIL +1 violation\(s\)$' <<< "$out" && (( $(grep -c 'the same finding' <<< "$out") == 1 )); then
+  pass
+else
+  fail "$out"
+fi
+result_failed=0
+
+# --- the commands ------------------------------------------------------------
+
+fixture "ci fails on an unavailable capability"
+bare_package "$work"
+out="$(cd "$work" && scripts/ci 2>&1)"
+assert_unavailable $? 'lint +unavailable +node' "$out"
+
+fixture "fix fails on a language with no formatter"
+bare_package "$work"
+out="$(cd "$work" && scripts/fix 2>&1)"
+assert_unavailable $? 'format-write +unavailable +node' "$out"
+
+# doctor's PATH holds what doctor itself needs and not npm, so the toolchain
+# line is the one that cannot pass.
+fixture "doctor fails on a missing toolchain"
+bare_package "$work"
+out="$(cd "$work" && PATH="$(minimal_path bash git dirname basename find sort sed awk grep gh jq)" scripts/doctor 2>&1)"
+assert_unavailable $? 'toolchain +unavailable +node' "$out"
+
+fixture "security fails on an unavailable audit"
+bare_package "$work"
+out="$(cd "$work" && scripts/security 2>&1)"
+assert_unavailable $? 'audit +unavailable +node' "$out"
+
+# run checks the environment first, so the workspace root keeps the unit from
+# being an orphan and a stub npm keeps the toolchain line passing on any host.
+fixture "run fails on a unit with no run adapter"
+declare_unit web oneshot executable linux-amd64
+bare_package "$work/apps/web"
+printf '{"name":"n","version":"1.0.0","workspaces":["apps/*"]}\n' > "$work/package.json"
+stub npm <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+out="$(cd "$work" && scripts/run 2>&1)"
+assert_unavailable $? 'run +unavailable +node' "$out"
+
+fixture "package fails on a language with no package adapter"
+declare_unit web oneshot executable linux-amd64
+bare_package "$work/apps/web"
+out="$(cd "$work" && scripts/package 2>&1)"
+assert_unavailable $? 'package +unavailable +node' "$out"
+
+# --- an orphan manifest is a finding under detection ------------------------
+
+# A package under apps/ with no root manifest of its language is what none of
+# the checks can see, so each command that runs them records it first.
+assert_orphan_finding() {
+  local status="$1" out="$2"
+  if (( status != 0 )) && grep -qE '^detection +FAIL' <<< "$out" && grep -qE '^ +apps/web/package.json has no root package.json' <<< "$out"; then
+    pass
+  else
+    fail "wanted a detection FAIL with the orphan as its finding and a failing exit, got exit $status: $out"
+  fi
+}
+
+fixture "ci reports an orphan manifest as a finding"
+bare_package "$work/apps/web"
+out="$(cd "$work" && scripts/ci 2>&1)"
+assert_orphan_finding $? "$out"
+
+fixture "doctor reports an orphan manifest as a finding"
+bare_package "$work/apps/web"
+out="$(cd "$work" && scripts/doctor 2>&1)"
+assert_orphan_finding $? "$out"
+
+fixture "security reports an orphan manifest as a finding"
+bare_package "$work/apps/web"
+out="$(cd "$work" && scripts/security 2>&1)"
+assert_orphan_finding $? "$out"
+
+report

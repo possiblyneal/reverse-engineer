@@ -1,0 +1,156 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Refuse to let the two .github/ trees diverge. A repository that ships a
+# template payload holds its own configuration at .github/ and the copy every
+# generated repository is cut from at
+# apps/github-repository-template/src/base-repo/.github/, and the two are
+# byte-identical by discipline rather than by mechanism. Runs from
+# scripts/check and from pre-commit on every commit.
+#
+# Dependabot is what ends that discipline. Its github-actions ecosystem reaches
+# root only -- the reference requires directory / to find workflow files -- so
+# a bump lands on the root copy and leaves the payload pinned to the old SHA,
+# through a pull request that looks routine. This does not update anything: it
+# fails until the bump is mirrored, which turns each root bump into a complete
+# one. A hand edit to one tree fails the same way.
+#
+# Not folded into scripts/structure, which audits where a file sits. This is a
+# question about content equality between two trees.
+#
+# A repository with no payload has one .github/ and nothing to compare it
+# against, which is not-applicable rather than a pass -- and it is the state
+# most repositories carrying this script are in. It is shipped to them anyway
+# because a generated repository that later grows a payload of its own is not
+# hypothetical: this repository is one, generated from the payload it now
+# holds.
+#
+# Everything is read from the Git index, both which paths exist and what each
+# one contains. The index is the tree being committed, and this runs at
+# pre-commit: reading content from the working tree instead would pass a staged
+# divergence whose fix is sitting unstaged beside it, and fail a staged
+# agreement carrying an unstaged scratch edit. Both are the wrong answer to
+# "may this commit proceed".
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/result.sh
+source "$repo_root/scripts/libs/result.sh"
+
+root=".github"
+payload="apps/github-repository-template/src/base-repo/.github"
+record_file=".repo-template.json"
+
+# Content that differs deliberately, by named path rather than by pattern, so a
+# second divergence cannot join it silently. Presence is still checked: the
+# exception says the two copies may differ, not that either may be missing.
+#
+# dependabot.yml is the one, and it differs twice. The payload ships no
+# pyproject.toml, so its copy must not carry the root's uv entry -- an
+# ecosystem naming a manifest that is not there fails the run rather than being
+# skipped. And where a repository tracks a .pre-commit-config.yaml under a
+# payload, its pre-commit entry names that second directory so a bump reaches
+# both copies; a repository with no payload has no such directory to name.
+content_exceptions="dependabot.yml"
+
+# A payload file the root deliberately dropped. The record is
+# .repo-template.json's generation.features, where the resolution is already
+# written down; this table maps a feature name to the path its omission
+# accounts for. Only a feature naming a file appears here -- features records
+# deliberate absences of settings too, and those have no path.
+feature_path() {
+  case "$1" in
+    codeql) echo "workflows/codeql.yml" ;;
+    *) return 1 ;;
+  esac
+}
+
+# Membership in a newline-joined list of paths. One predicate for every list
+# here, since each answers the same question about the same kind of value.
+holds() {
+  [[ $'\n'"$1"$'\n' == *$'\n'"$2"$'\n'* ]]
+}
+
+# The paths under each tree, relative to that tree. quotePath is off so a
+# non-ASCII filename arrives literally rather than C-quoted into a path that
+# does not exist.
+tree_paths() {
+  git -c core.quotePath=false ls-files "$1" | sed "s|^$1/||"
+}
+
+if ! command -v git > /dev/null 2>&1; then
+  result github-parity unavailable "git is required to enumerate the two trees"
+  tally
+  exit
+fi
+
+if ! git rev-parse --is-inside-work-tree > /dev/null 2>&1; then
+  result github-parity unavailable "$repo_root is not a Git repository; both trees are read from its index"
+  tally
+  exit
+fi
+
+root_paths="$(tree_paths "$root")"
+payload_paths="$(tree_paths "$payload")"
+
+if [[ -z "$payload_paths" ]]; then
+  result github-parity not-applicable "no template payload at $payload"
+  tally
+  exit
+fi
+
+# The payload files the root does not hold. These are the only findings the
+# record can excuse, so resolving them first is what keeps the jq gate below
+# narrow: a root-only file and a content difference are both answerable without
+# jq, and reporting them unavailable would name the wrong reason.
+payload_only=""
+while IFS= read -r path; do
+  [[ -n "$path" ]] || continue
+  holds "$root_paths" "$path" || payload_only+="$path"$'\n'
+done <<< "$payload_paths"
+
+# Which of those omissions the record accounts for, resolved once.
+omitted=""
+if [[ -n "$payload_only" && -f "$record_file" ]]; then
+  if ! command -v jq > /dev/null 2>&1; then
+    result github-parity unavailable "jq is required to read generation.features in $record_file"
+    tally
+    exit
+  fi
+  while IFS= read -r feature; do
+    path="$(feature_path "$feature")" || continue
+    omitted+="$path"$'\n'
+  done < <(jq -r '.generation.features // {} | to_entries[] | select(.value == "omitted-by-choice") | .key' "$record_file")
+fi
+
+while IFS= read -r path; do
+  [[ -n "$path" ]] || continue
+
+  if ! holds "$payload_paths" "$path"; then
+    record "$path is in $root and not in the payload; add it to $payload/"
+  elif holds "$payload_only" "$path"; then
+    holds "$omitted" "$path" ||
+      record "$path is in the payload and not in $root; mirror it, or record the omission under generation.features in $record_file"
+  elif ! holds "$content_exceptions" "$path"; then
+    # Readability is asked before content, because a process substitution's
+    # exit status is invisible: an unmerged path makes git show fail, and
+    # comparing the two empty streams it leaves behind would report agreement.
+    if ! git cat-file -e ":$root/$path" 2> /dev/null ||
+      ! git cat-file -e ":$payload/$path" 2> /dev/null; then
+      record "$path cannot be read from the index; finish the merge before asking whether the trees agree"
+    elif ! cmp -s <(git show ":$root/$path") <(git show ":$payload/$path"); then
+      record "$path differs between the two trees; mirror the change into the other"
+    fi
+  fi
+done < <(printf '%s\n%s\n' "$root_paths" "$payload_paths" | sort -u)
+
+verdict github-parity "the two .github/ trees agree"
+
+if tally; then
+  echo "The root and payload .github/ trees agree."
+else
+  echo "The root and payload .github/ trees have diverged; each finding above names the fix."
+  exit 1
+fi

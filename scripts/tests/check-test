@@ -1,0 +1,127 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# What scripts/check prints, writes, and exits with. The gate's steps are
+# stubbed in a scratch copy of the scripts, so the cases assert the wrapper's
+# contract -- table only by default, the whole run in tmp/check.log every time,
+# raw output under --verbose, the gate's own exit status -- and not the output
+# of any real check.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+echo "check-test"
+
+# A scratch repository whose gate steps are stubs: every step chatters, ci
+# then reports a lint line plus $2 (extra shell, e.g. a FAIL), and security
+# exits with $3. The scratch repository has no pre-commit config, so that
+# sweep stands down.
+gate_fixture() {
+  fixture "$1"
+  local step
+  for step in doctor script-tests structure github-parity; do
+    printf '#!/usr/bin/env bash\necho "chatter from %s"\n' "$step" > "$work/scripts/$step"
+  done
+  printf '#!/usr/bin/env bash\necho "lint               pass             python"\n%s\n' \
+    "${2:-}" > "$work/scripts/ci"
+  printf '#!/usr/bin/env bash\necho "chatter from security"\nexit %s\n' "${3:-0}" \
+    > "$work/scripts/security"
+  chmod +x "$work"/scripts/*
+}
+
+gate_fixture "default prints the Result table and drops the chatter"
+out="$(cd "$work" && scripts/check 2>&1)"
+status=$?
+if (( status == 0 )) \
+  && grep -qE '^lint +pass' <<< "$out" \
+  && ! grep -q 'chatter' <<< "$out"; then
+  pass
+else
+  fail "wanted the table alone and exit 0, got exit $status: $out"
+fi
+
+current="the log holds the whole run after a passing run"
+log="$work/tmp/check.log"
+if grep -q 'chatter from doctor' "$log" \
+  && grep -q 'chatter from security' "$log" \
+  && grep -qE '^lint +pass' "$log"; then
+  pass
+else
+  fail "wanted every step's output in tmp/check.log, got: $(cat "$log" 2>&1)"
+fi
+
+gate_fixture "--verbose streams the whole run and writes the same log"
+out="$(cd "$work" && scripts/check --verbose 2>&1)"
+status=$?
+if (( status == 0 )) \
+  && grep -q 'chatter from doctor' <<< "$out" \
+  && grep -qE '^lint +pass' <<< "$out" \
+  && [[ "$out" == "$(cat "$work/tmp/check.log")" ]]; then
+  pass
+else
+  fail "wanted the full run on stdout matching tmp/check.log, got exit $status: $out"
+fi
+
+gate_fixture "a failing gate exits non-zero and shows its FAIL" \
+  'echo "audit              FAIL             1 violation(s)"; echo "                     apps/x has no manifest"; exit 1'
+out="$(cd "$work" && scripts/check 2>&1)"
+status=$?
+if (( status != 0 )) \
+  && grep -qE '^audit +FAIL' <<< "$out" \
+  && grep -q 'apps/x has no manifest' <<< "$out" \
+  && ! grep -q 'chatter' <<< "$out"; then
+  pass
+else
+  fail "wanted a non-zero exit and the FAIL with its finding, got exit $status: $out"
+fi
+
+current="the log holds the whole run after a failing run"
+if grep -q 'chatter from doctor' "$work/tmp/check.log" \
+  && grep -qE '^audit +FAIL' "$work/tmp/check.log"; then
+  pass
+else
+  fail "wanted the whole failing run in tmp/check.log"
+fi
+
+gate_fixture "--verbose passes the gate's exit status through" '' 7
+(cd "$work" && scripts/check --verbose >/dev/null 2>&1)
+status=$?
+if (( status == 7 )); then
+  pass
+else
+  fail "wanted the failing step's status 7, got $status"
+fi
+
+gate_fixture "summarize still reads check" \
+  'echo "audit              FAIL             1 violation(s)"; exit 1'
+out="$(cd "$work" && scripts/summarize scripts/check 2>&1)"
+status=$?
+if (( status != 0 )) && grep -qE '^audit +FAIL' <<< "$out" && ! grep -q 'chatter' <<< "$out"; then
+  pass
+else
+  fail "wanted the FAIL line and a non-zero exit through summarize, got exit $status: $out"
+fi
+
+gate_fixture "runs from a subdirectory"
+mkdir -p "$work/sub"
+out="$(cd "$work/sub" && ../scripts/check 2>&1)"
+status=$?
+if (( status == 0 )) && grep -qE '^lint +pass' <<< "$out"; then
+  pass
+else
+  fail "wanted the table and exit 0 from a subdirectory, got exit $status: $out"
+fi
+
+gate_fixture "an unknown argument is a usage error"
+(cd "$work" && scripts/check --bogus >/dev/null 2>&1)
+status=$?
+if (( status == 2 )); then
+  pass
+else
+  fail "wanted exit 2, got $status"
+fi
+
+report

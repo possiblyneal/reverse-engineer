@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# scripts/clean once carried its own copy of the pruned-directory list, and it
+# had drifted from libs/detect.sh's DETECT_PRUNE_DIRS: .venv, venv, vendor, and
+# target were searched and cleaned here even though detect.sh prunes all of
+# them as directories holding another project's files. Cleaning inside a
+# virtualenv or a vendored tree deletes gitignored files with nothing in git
+# status to show for it. So this asserts that clean prunes the directories
+# libs/detect.sh names.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+echo "clean-test"
+
+scratch_repo
+current="scripts/clean does not search inside a pruned directory"
+for dir in .venv venv vendor target .git node_modules .build tmp; do
+  mkdir -p "$work/$dir/__pycache__"
+  : > "$work/$dir/__pycache__/marker.pyc"
+done
+(cd "$work" && scripts/clean) >/dev/null 2>&1
+missing=""
+for dir in .venv venv vendor target .git node_modules .build tmp; do
+  [[ -d "$work/$dir/__pycache__" ]] || missing="$missing $dir"
+done
+if [[ -z "$missing" ]]; then
+  pass
+else
+  fail "scripts/clean deleted __pycache__ inside pruned dir(s):$missing"
+fi
+
+scratch_repo
+current="scripts/clean still removes this repository's own generated caches"
+mkdir -p "$work/apps/a/dist" "$work/apps/a/__pycache__"
+: > "$work/apps/a/dist/bundle.js"
+: > "$work/apps/a/__pycache__/m.pyc"
+(cd "$work" && scripts/clean) >/dev/null 2>&1
+if [[ ! -d "$work/apps/a/dist" && ! -d "$work/apps/a/__pycache__" ]]; then
+  pass
+else
+  fail "scripts/clean left a generated dist/ or __pycache__/ directory in place"
+fi
+
+report

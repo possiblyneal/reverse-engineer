@@ -1,0 +1,87 @@
+# Only the ecosystems whose manifests this template ships are listed. An entry
+# naming a manifest that is not there fails the run with dependency_file_not_found
+# rather than being skipped, so npm, pip, cargo, gomod, gradle, swift, and docker
+# cannot be listed ahead of the manifest that would justify one.
+#
+# Every /repo-builder flow that writes this file derives the ecosystem entries
+# from the manifests the repository tracks and appends them below, re-deriving
+# the whole set each run -- so an entry survives by being rebuilt rather than by
+# being carried, and this file being replaced whole by an update cannot drop it.
+# `directory` is the manifest's own directory, /apps/<name> where the module
+# lives under apps/, so the entry cannot be derived from the ecosystem name
+# alone.
+#
+# The ecosystem per manifest: npm for package.json, pip for pyproject.toml,
+# gomod for go.mod, cargo for Cargo.toml, gradle for build.gradle.kts, swift for
+# Package.swift, and docker for a Dockerfile or Containerfile, one entry per
+# directory holding any, since the docker updater reads every such file there.
+# go.work and settings.gradle.kts are workspace files and earn no entry of their
+# own; they say where the modules are, and the modules are what Dependabot
+# reads. A pyproject.toml beside a uv.lock earns uv instead of pip, since pip's
+# updater leaves uv.lock pinning the old version.
+#
+# A workspace also takes a single entry for several manifests. The root
+# Cargo.toml holding [workspace], the root pyproject.toml holding
+# [tool.uv.workspace], or the root package.json holding workspaces, earns it and
+# a member listed there earns none: the fetcher reads that list and bumps every
+# member from the root's job, moving the root lockfile with it. A member entry
+# opens a duplicate pull request, and where a cargo member pins its own versions
+# rather than inheriting with { workspace = true } that job sees no lockfile at
+# all.
+#
+# An entry for an ecosystem outside that list -- terraform, nuget and the rest
+# Dependabot supports -- stays yours to keep here. The derivation rebuilds only
+# what it maps, so a flow reads this file before replacing it and reports such
+# an entry by name on its gate rather than dropping it silently.
+#
+# This file governs version updates, the scheduled bumps for dependencies with
+# nothing wrong with them. Security updates are a separate feature that reads
+# the dependency graph, needs no entry here, and is switched on in repository
+# settings rather than in this file. That distinction decides who fixes a CVE:
+# scripts/security fails the pull request that introduces one, and the security
+# update opens the pull request that resolves it. With the setting off, the
+# first half happens and the second does not.
+version: 2
+updates:
+  # Keeps the action pins in .github/workflows/ current, so a third-party
+  # action's immutable commit is reviewed in a pull request rather than moving
+  # beneath an unchanged workflow file.
+  #
+  # "/" covers .github/workflows/ and a root action.yml only. Composite actions
+  # under .github/actions/ are not reached from it, so their pins would age
+  # silently while the workflow copies stay current. The glob below covers them,
+  # and needs `directories`, which supports globbing where `directory` does not.
+  #
+  # The cooldown is the reason a bump here is not just noise deferred. Dependabot
+  # waits three days by default; a week is long enough that an opportunistic
+  # package compromise is usually taken down before an update pull request
+  # proposes it, and short enough that a real fix is not held back.
+  - package-ecosystem: github-actions
+    directories:
+      - /
+      - /.github/actions/*
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      actions:
+        patterns:
+          - "*"
+
+  # Reads the rev of every hook repo in .pre-commit-config.yaml, and the
+  # version pinned in a hook's additional_dependencies. Those revs are
+  # exact tags rather than major ones, because pre-commit resolves a rev to
+  # a single revision and offers no floating form, so nothing here updates
+  # without a bump. The scanners are the reason it matters: a stale gitleaks
+  # reports a clean tree by knowing about fewer secret formats.
+  - package-ecosystem: pre-commit
+    directory: /
+    schedule:
+      interval: weekly
+    cooldown:
+      default-days: 7
+    groups:
+      pre-commit:
+        patterns:
+          - "*"

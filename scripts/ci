@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+
+# Before the checks, which would run green over the package none of them sees.
+judge_orphan_manifests
+tally || exit 1
+
+if ! language_capabilities has-any; then
+  echo "No project manifest found, so there is nothing to check yet."
+  echo "Every check becomes required as soon as a manifest is added."
+  exit 0
+fi
+
+args=()
+[[ -z "${CI_DRY_RUN:-}" ]] || args+=(--dry-run)
+language_capabilities run "${args[@]}" lint format-check typecheck test build
+
+[[ -z "${CI_DRY_RUN:-}" ]] || exit 0
+
+tally

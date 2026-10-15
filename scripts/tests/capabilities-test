@@ -1,0 +1,1174 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Guards the one bug this detection work exists to prevent: a repository that
+# gains a second language has that language silently skipped while the run stays
+# green. Nothing else here fails visibly when it regresses, which is why it is
+# worth a test at all.
+#
+# Everything is asked through the public surface -- scripts/ci, scripts/run,
+# scripts/package, scripts/detect, and the `language_capabilities` subcommands
+# -- from a scratch repository holding nothing but the manifests a case names.
+# Where a real run is wanted, the toolchain is a stub on PATH that records what
+# it was asked, so the dispatch is under test and no compiler is. Wiring is
+# asked of `language_capabilities probe`, and dispatch of `CI_DRY_RUN=1`, which
+# reports each pairing scripts/ci would run and runs none of them.
+#
+# Covered: the twelve-by-six probe table, dispatch under CI_DRY_RUN=1, and real
+# runs of ci, security, run, integration, fix, and package against stubbed
+# toolchains. fix is asked for both halves in order, and a language with no
+# lint autofix must not fail it. The integration tier's cases run in both
+# directions: not-applicable with no tier, dispatch on a tier under a unit, the
+# gate's pytest and `go test` runs leaving it out, and the tier's own run
+# naming it.
+#
+# Not `set -e`: a failing assertion is recorded and the remaining cases still
+# run, so one break does not hide the rest.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+# The supported set and the probe are the module's interface; a suite calling
+# them is a caller like any other. Sourced once, here, and every subcommand
+# below is run from inside the fixture so the manifests it reads are the case's.
+# shellcheck source-path=SCRIPTDIR/..
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+
+# The gate, as scripts/ci reports it under the dry run. Stdin is /dev/null for
+# every command below that a stub might answer: a stub that drains stdin would
+# otherwise block on the suite's own.
+ci() {
+  (cd "$work" && CI_DRY_RUN=1 scripts/ci 2>&1 </dev/null)
+}
+ci_real() {
+  (cd "$work" && scripts/ci 2>&1 </dev/null)
+}
+
+# scripts/run starts with scripts/doctor, which is another suite's subject and
+# would fail here on the toolchains each case deliberately does not have. The
+# copy of scripts in the fixture is where a stub answers it.
+#
+# run_stdin hands the program whatever stdin the suite was given. That is what
+# scripts/run is for, and one case below is about it; every other case takes
+# run_real, which closes it like the rest of the suite.
+run_stdin() {
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$work/scripts/doctor"
+  chmod +x "$work/scripts/doctor"
+  (cd "$work" && scripts/run "$@" 2>&1)
+}
+run_real() {
+  run_stdin "$@" </dev/null
+}
+
+capabilities() {
+  (cd "$work" && language_capabilities "$@" 2>&1 </dev/null)
+}
+
+# Whether scripts/ci found a manifest no root manifest names. The detection
+# verdict comes before any dispatch, so the dry run answers it.
+orphaned() {
+  grep -qE '^detection +FAIL' <<<"$(ci)"
+}
+
+go_mod() {
+  printf 'module example.com/%s\n\ngo 1.22\n' "$(basename "$1")" > "$1/go.mod"
+}
+
+assert_dispatches() {
+  local lang="$1" out="$2" check expected
+  for check in lint format-check typecheck test build; do
+    expected=would-run
+    case "$check:$lang" in
+      typecheck:go|typecheck:rust|typecheck:swift|typecheck:kotlin|build:python)
+        expected=not-applicable
+        ;;
+    esac
+
+    if ! grep -qE "^$check +${expected} +$lang$" <<<"$out"; then
+      fail "$check does not report $expected for $lang"
+      return
+    fi
+  done
+  pass
+}
+
+assert_absent() {
+  local lang="$1" out="$2"
+  if grep -q " $lang\$" <<<"$out"; then
+    fail "$lang dispatches in a repository that does not contain it"
+    return
+  fi
+  pass
+}
+
+echo "capabilities-test"
+
+current="supported languages"
+expected=$'node\npython\ngo\nrust\nswift\nkotlin'
+if [[ "$(language_capabilities supported)" == "$expected" ]]; then
+  pass
+else
+  fail "the interface does not report the six supported languages in order"
+fi
+
+# --- every pairing, wired or absent, held as one table -------------------------
+
+# The whole point of the probe: a language dropped from one capability, or an
+# adapter deleted by accident, changes one line here. The absent cells are the
+# ones this template has chosen not to wire -- typecheck where the compiler is
+# the typecheck, build where Python has none, and the delivery adapters whose
+# gap the capabilities module explains beside where each would go. Every other
+# cell is wired, and a `dev` capability no longer exists to have a row at all.
+current="the probe reports every capability and language pairing"
+absent='typecheck:go typecheck:rust typecheck:swift typecheck:kotlin build:python
+integration:rust integration:swift integration:kotlin
+lint-fix:go lint-fix:swift lint-fix:kotlin
+run:swift package:node package:python package:swift package:kotlin'
+out="$(language_capabilities probe)"
+missing=""
+for cap in lint format-check typecheck test build audit toolchain format-write lint-fix integration run package; do
+  for lang in node python go rust swift kotlin; do
+    expected=wired
+    [[ " ${absent//$'\n'/ } " != *" $cap:$lang "* ]] || expected=absent
+    grep -qE "^$cap +$expected +$lang$" <<<"$out" || missing="$missing $cap:$lang=$expected"
+  done
+done
+if [[ -n "$missing" ]]; then
+  fail "the probe does not report:$missing"
+elif (( $(wc -l <<<"$out") != 72 )); then
+  fail "the probe reports $(wc -l <<<"$out") pairings rather than 72 -- a capability or language it was not asked about"
+elif grep -q '^dev ' <<<"$out"; then
+  fail "a dev capability survives in the probe"
+else
+  pass
+fi
+
+# --- one language, and only that one -----------------------------------------
+
+fixture "capability outcomes"
+go_mod "$work"
+out="$(capabilities run --dry-run lint typecheck)"
+status=$?
+if (( status == 0 )) &&
+  grep -qE '^lint +would-run +go$' <<<"$out" &&
+  grep -qE '^typecheck +not-applicable +go$' <<<"$out"; then
+  pass
+else
+  fail "the interface does not distinguish runnable and inapplicable capabilities"
+fi
+
+fixture "python only"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+out="$(ci)"
+assert_dispatches python "$out"
+assert_absent node "$out"
+
+fixture "node only"
+printf '{"name":"n","version":"1.0.0"}\n' > "$work/package.json"
+out="$(ci)"
+assert_dispatches node "$out"
+assert_absent python "$out"
+
+# --- the regression this file exists for -------------------------------------
+
+# A Python CLI that gains a JavaScript UI. Every check used to stop at its first
+# match, so package.json arriving meant pytest, ruff, and ty silently stopped
+# running while CI stayed green.
+fixture "python + node"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+printf '{"name":"n","version":"1.0.0","scripts":{"test":"exit 0"}}\n' > "$work/package.json"
+out="$(ci)"
+assert_dispatches python "$out"
+assert_dispatches node "$out"
+
+fixture "go + rust + kotlin"
+go_mod "$work"
+printf '[package]\nname = "c"\nversion = "0.1.0"\n' > "$work/Cargo.toml"
+printf 'rootProject.name = "k"\n' > "$work/settings.gradle.kts"
+out="$(ci)"
+assert_dispatches go "$out"
+assert_dispatches rust "$out"
+assert_dispatches kotlin "$out"
+
+# Swift is the one language with no root manifest, so it is detected by search
+# and must not be reported as an orphan.
+fixture "swift package"
+mkdir -p "$work/apps/ios"
+printf '// swift-tools-version:5.9\n' > "$work/apps/ios/Package.swift"
+out="$(ci)"
+assert_dispatches swift "$out"
+if orphaned; then
+  fail "a Swift package with no root manifest is reported as an orphan"
+else
+  pass
+fi
+
+# --- a manifest no check can see ---------------------------------------------
+
+# The failure mode that has no symptom: nothing at the root names this package,
+# so every check runs from the root and reports a clean pass over code it never
+# read.
+fixture "nested manifest, no root"
+mkdir -p "$work/apps/web"
+printf '{"name":"w","version":"1.0.0"}\n' > "$work/apps/web/package.json"
+out="$(ci)"
+status=$?
+if (( status != 0 )) && grep -q "apps/web/package.json" <<<"$out"; then
+  pass
+else
+  fail "scripts/ci did not fail naming the orphaned manifest"
+fi
+
+# A root manifest makes nested ones ordinary workspace members.
+fixture "nested manifest under a root"
+mkdir -p "$work/apps/web"
+printf '{"name":"root","version":"1.0.0","workspaces":["apps/*"]}\n' > "$work/package.json"
+printf '{"name":"w","version":"1.0.0"}\n' > "$work/apps/web/package.json"
+if orphaned; then
+  fail "a workspace member under a root manifest was reported as an orphan"
+else
+  pass
+fi
+
+# --- root manifest specificity -------------------------------------------------
+
+# has_go accepts go.mod or go.work, and has_kotlin accepts build.gradle.kts or
+# settings.gradle.kts, but the pairs table's root manifest for each is
+# specifically go.work / settings.gradle.kts. A root go.mod (a plain module,
+# not a workspace) or a root build.gradle.kts (a single-project build, not a
+# multi-project settings file) wires up nothing for a nested module, so the
+# orphan rule must still fire.
+fixture "root go.mod alone does not wire up a nested module"
+go_mod "$work"
+mkdir -p "$work/apps/a"
+go_mod "$work/apps/a"
+if orphaned; then
+  pass
+else
+  fail "a nested go.mod under a root go.mod (no go.work) passed as wired up"
+fi
+
+fixture "root build.gradle.kts alone does not wire up a nested project"
+printf 'plugins { }\n' > "$work/build.gradle.kts"
+mkdir -p "$work/apps/a"
+printf 'plugins { }\n' > "$work/apps/a/build.gradle.kts"
+if orphaned; then
+  pass
+else
+  fail "a nested build.gradle.kts under a root build.gradle.kts (no settings.gradle.kts) passed as wired up"
+fi
+
+# node_modules holds another project's manifests, and reporting them as this
+# project's would fail every repository that has ever run npm install.
+fixture "node_modules is not searched"
+mkdir -p "$work/node_modules/dep"
+printf '{"name":"dep","version":"1.0.0"}\n' > "$work/node_modules/dep/package.json"
+if orphaned; then
+  fail "a manifest inside node_modules was reported as an orphan"
+else
+  pass
+fi
+
+# tmp/ is this repository's gitignored scratch, and the repo-builder skill
+# materializes a whole candidate repository into it. Every manifest that
+# candidate carries is another repository's, and scripts/check runs doctor
+# first, so searching tmp/ would abort the gate for the length of a build.
+fixture "tmp is not searched"
+mkdir -p "$work/tmp/candidate/apps/api"
+printf '{"name":"candidate","version":"1.0.0"}\n' > "$work/tmp/candidate/package.json"
+go_mod "$work/tmp/candidate/apps/api"
+if orphaned; then
+  fail "a manifest inside tmp was reported as an orphan"
+else
+  pass
+fi
+
+# --- an audit with nothing to scan is not-applicable, not unavailable --------
+
+# Package.resolved and gradle.lockfile only exist once a package has resolved
+# dependencies or Gradle locking is turned on, neither of which is guaranteed.
+# No lockfile means nothing to scan, which must read as not-applicable rather
+# than as a missing tool -- the tool may well be installed.
+fixture "swift audit with no Package.resolved is not-applicable"
+mkdir -p "$work/apps/ios"
+printf '// swift-tools-version:5.9\n' > "$work/apps/ios/Package.swift"
+out="$(capabilities run --dry-run audit)"
+if grep -qE '^audit +not-applicable +swift$' <<<"$out"; then
+  pass
+else
+  fail "a Swift package with no Package.resolved reports audit as unavailable instead of not-applicable"
+fi
+
+fixture "kotlin audit with no gradle.lockfile is not-applicable"
+printf 'rootProject.name = "k"\n' > "$work/settings.gradle.kts"
+out="$(capabilities run --dry-run audit)"
+if grep -qE '^audit +not-applicable +kotlin$' <<<"$out"; then
+  pass
+else
+  fail "a Gradle project with no gradle.lockfile reports audit as unavailable instead of not-applicable"
+fi
+
+# --- a command that reads stdin must not steal the list it is run over --------
+
+# Swift packages and Kotlin lockfiles are found by search and the command runs
+# once per find. A command that drains stdin would, if the list were fed to it
+# on stdin, consume the rest of the list and silently skip every package after
+# the first -- so each stub here reads stdin dry before recording its visit, and
+# the count is the assertion.
+fixture "every swift package is tested even when swift reads stdin"
+mkdir -p "$work/apps/a" "$work/apps/b"
+printf '// swift-tools-version:5.9\n' > "$work/apps/a/Package.swift"
+printf '// swift-tools-version:5.9\n' > "$work/apps/b/Package.swift"
+stub swift <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+[[ "$1" != test ]] || pwd >> "${MARKER:?}"
+STUB
+out="$(MARKER="$work/visited" ci_real)"
+status=$?
+if (( status != 0 )); then
+  fail "the gate failed though every stubbed swift call succeeded (exit $status): $out"
+elif [[ "$(sort "$work/visited" | tr '\n' ' ')" == "$work/apps/a $work/apps/b " ]]; then
+  pass
+else
+  fail "swift test ran in $(tr '\n' ' ' < "$work/visited")rather than in both packages"
+fi
+
+fixture "every gradle lockfile is scanned even when trivy reads stdin"
+printf 'rootProject.name = "k"\n' > "$work/settings.gradle.kts"
+mkdir -p "$work/apps/a" "$work/apps/b"
+printf 'lock\n' > "$work/apps/a/gradle.lockfile"
+printf 'lock\n' > "$work/apps/b/gradle.lockfile"
+stub trivy <<'STUB'
+#!/usr/bin/env bash
+cat >/dev/null
+printf '%s\n' "$*" >> "${MARKER:?}"
+STUB
+# The secret scan shares the command and is not the question here.
+stub gitleaks <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+out="$(cd "$work" && MARKER="$work/scanned" scripts/security 2>&1 </dev/null)"
+status=$?
+if (( status != 0 )); then
+  fail "the audit failed though every stubbed trivy call succeeded (exit $status): $out"
+elif grep -q 'apps/a/gradle.lockfile' "$work/scanned" && grep -q 'apps/b/gradle.lockfile' "$work/scanned"; then
+  pass
+else
+  fail "trivy scanned $(tr '\n' ' ' < "$work/scanned")rather than both lockfiles"
+fi
+
+# --- go checks must reach a module that is not at the repository root --------
+
+# `./...` matches only packages inside a module, and the root of a Go workspace
+# is not itself in one, so a single `go build ./...` from the root refuses the
+# pattern and exits 1 -- every Go check failing on the invocation rather than on
+# the code. Each Go check enters each module instead, and the stub drains stdin
+# for the reason given above.
+fixture "go checks run in every workspace module"
+mkdir -p "$work/apps/one" "$work/apps/two"
+printf 'go 1.22\n\nuse (\n\t./apps/one\n\t./apps/two\n)\n' > "$work/go.work"
+go_mod "$work/apps/one"
+go_mod "$work/apps/two"
+stub go <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == list ]]; then
+  printf '%s\n' "${MODULES:?}"
+  exit 0
+fi
+cat >/dev/null
+printf '%s %s\n' "$PWD" "$1" >> "${MARKER:?}"
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+out="$(MODULES="$work/apps/one"$'\n'"$work/apps/two" MARKER="$work/visited" ci_real)"
+status=$?
+# Two conditions, two messages: a status-only failure that printed the visited
+# list would send the next reader hunting for a visiting bug that is not there.
+if (( status != 0 )); then
+  fail "the gate failed though every stubbed module succeeded (exit $status): $out"
+elif [[ "$(grep ' build$' "$work/visited" | tr '\n' ' ')" == "$work/apps/one build $work/apps/two build " ]]; then
+  pass
+else
+  fail "go build ran in $(grep ' build$' "$work/visited" | tr '\n' ' ')rather than in both workspace modules"
+fi
+
+# --- the go build writes no binary -------------------------------------------
+
+# `go build ./...` writes an executable only where the pattern resolves to a
+# single package: cmd/go names it after that package's own directory and leaves
+# it in the module root. Under this repository's layout a lone main package sits
+# directly in src/, so the name it would write is `src` -- the directory it was
+# built from -- and go refuses rather than overwriting it. The check exists to
+# compile, not to deliver, so it discards the output, and the collision cannot
+# arise whatever the module holds. scripts/package is where a binary is produced.
+fixture "go build discards its output"
+go_mod "$work"
+stub go <<'STUB'
+#!/usr/bin/env bash
+if [[ "$1" == list ]]; then
+  pwd
+  exit 0
+fi
+cat >/dev/null
+printf '%s\n' "$*" >> "${MARKER:?}"
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+out="$(MARKER="$work/invoked" ci_real)"
+status=$?
+if (( status != 0 )); then
+  fail "the gate failed though every stubbed go call succeeded (exit $status): $out"
+elif grep -qx 'build -o /dev/null ./\.\.\.' "$work/invoked"; then
+  pass
+else
+  fail "go build was invoked as $(grep '^build' "$work/invoked") rather than discarding its output"
+fi
+
+# --- a check never inherits the stdin it was called with ---------------------
+
+# The three cases above prove the list travels on fd 3. This is the other half:
+# whatever the caller's stdin holds, a check never sees it. A tool that drains
+# fd 0 -- swift test, gradle, npm test -- would otherwise read until the
+# caller's stdin reaches EOF, which for a terminal or an agent harness is never,
+# and the whole gate hangs with nothing printed to diagnose from.
+fixture "a check does not read the stdin the gate was called with"
+mkdir -p "$work/apps/a"
+printf '// swift-tools-version:5.9\n' > "$work/apps/a/Package.swift"
+stub swift <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" != test ]] || wc -c >> "${MARKER:?}"
+STUB
+out="$(cd "$work" && MARKER="$work/read" scripts/ci 2>&1 <<<"the caller's stdin")"
+status=$?
+# One line per call, each the byte count that call read, so a fixture that later
+# holds two packages still reads as two answers rather than as one number.
+if (( status != 0 )); then
+  fail "the gate failed though the stubbed swift call succeeded (exit $status): $out"
+elif [[ ! -s "$work/read" ]]; then
+  fail "swift test never ran, so the case proved nothing: $out"
+elif ! grep -qvE '^ *0$' "$work/read"; then
+  pass
+else
+  fail "swift test read $(tr -s ' \n' ' ' < "$work/read")bytes of the gate's own stdin"
+fi
+
+# run is the exception and has to stay one: it starts the unit's own program in
+# the foreground, and a program that cannot read its stdin is not running.
+fixture "run hands the program the stdin scripts/run was called with"
+declare_unit one oneshot
+go_mod "$work/apps/one"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1:$2" in
+  list:-m) pwd; exit 0 ;;
+  list:*)  printf '%s\n' example.com/app; exit 0 ;;
+  run:*)   cat > "${MARKER:?}"; exit 0 ;;
+esac
+STUB
+out="$(MARKER="$work/stdin" run_stdin one <<<"typed at the program")"
+status=$?
+if (( status != 0 )); then
+  fail "run returned $status though the stubbed run succeeded: $out"
+elif [[ "$(cat "$work/stdin")" == "typed at the program" ]]; then
+  pass
+else
+  fail "the program read '$(cat "$work/stdin")' rather than the stdin scripts/run was given"
+fi
+
+# A listing that fails means the module graph could not be read. Reporting that
+# as a pass is the silent green run this suite exists to prevent.
+fixture "a failed module listing is not read as a passing build"
+mkdir -p "$work/apps/one"
+printf 'go 1.22\n\nuse ./apps/one\n' > "$work/go.work"
+go_mod "$work/apps/one"
+stub go <<'STUB'
+#!/usr/bin/env bash
+# Fails the listing only. Every other invocation succeeds, so the case cannot
+# pass by the build itself failing.
+if [[ "$1" == list ]]; then
+  printf '%s\n' "${MODULES:?}"
+  exit 1
+fi
+exit 0
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+out="$(MODULES="$work/apps/one" ci_real)"
+if grep -qE '^build +FAIL +go' <<<"$out"; then
+  pass
+else
+  fail "a failed module listing was reported as a passing build: $out"
+fi
+
+# An empty listing is the same failure wearing a zero exit status: no module was
+# entered, so nothing was built.
+fixture "an empty module listing is not read as a passing build"
+go_mod "$work"
+stub go <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+out="$(ci_real)"
+if grep -qE '^build +FAIL +go' <<<"$out"; then
+  pass
+else
+  fail "an empty module listing was reported as a passing build: $out"
+fi
+
+# --- a format-check adapter must not swallow the tool's own failure ----------
+
+# gofmt exits nonzero with empty stdout on a file it cannot parse. Reading only
+# `gofmt -l .`'s output and not its exit status reports that as "nothing to
+# format" -- a pass -- instead of the tool failure it is.
+fixture "gofmt's own failure is not read as nothing to format"
+go_mod "$work"
+stub go <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" != list ]] || printf '%s\n' "$PWD"
+exit 0
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+echo "gofmt: bad.go:1:1: expected declaration, found EOF" >&2
+exit 2
+STUB
+out="$(ci_real)"
+if grep -qE '^format-check +FAIL +go \(exit 2\)$' <<<"$out"; then
+  pass
+else
+  fail "gofmt's exit status was not surfaced as the format check's: $out"
+fi
+
+# --- the go run adapter must find the main package, not assume it is here ----
+
+# `go run .` needs a main package in the current directory. The workspace root
+# has none, and a unit whose entry point sits under src/ has none at its own
+# root either, so the command reported `no Go files` in both places.
+fixture "run go runs the module's one main package wherever it sits"
+declare_unit one oneshot
+go_mod "$work/apps/one"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1:$2" in
+  list:-m) pwd; exit 0 ;;
+  list:*)  cat >/dev/null; printf '%s\n' example.com/app/src/app; exit 0 ;;
+  run:*)   printf '%s\n' "$2" > "${MARKER:?}"; exit 0 ;;
+esac
+STUB
+out="$(MARKER="$work/ran" run_real one)"
+status=$?
+if (( status != 0 )); then
+  fail "run go returned $status though the stubbed run succeeded: $out"
+elif [[ "$(cat "$work/ran")" == example.com/app/src/app ]]; then
+  pass
+else
+  fail "run go ran $(cat "$work/ran") rather than the module's main package"
+fi
+
+# A run is one foreground process, so which of several to start has to be said.
+# Picking one would start the wrong program as often as the right one.
+fixture "run go refuses several main packages rather than choosing one"
+declare_unit one oneshot
+go_mod "$work/apps/one"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1:$2" in
+  list:-m) pwd; exit 0 ;;
+  list:*)  cat >/dev/null; printf '%s\n' example.com/a example.com/b; exit 0 ;;
+  run:*)   exit 0 ;;
+esac
+STUB
+out="$(run_real one)"
+status=$?
+if (( status == 0 )); then
+  fail "run go started something with two main packages to choose between"
+elif [[ "$out" == *example.com/a* && "$out" == *example.com/b* ]]; then
+  pass
+else
+  fail "run go refused without naming the candidates: $out"
+fi
+
+# A module with no main package has nothing to start, which is unavailable
+# rather than a failure -- a library is not broken for being a library.
+fixture "run go reports a module with no main package as unavailable"
+declare_unit one oneshot
+go_mod "$work/apps/one"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1:$2" in
+  list:-m) pwd; exit 0 ;;
+  list:*)  cat >/dev/null; exit 0 ;;
+  run:*)   exit 0 ;;
+esac
+STUB
+out="$(run_real one)"
+status=$?
+if (( status != 0 )) && grep -qE '^run +unavailable +go$' <<<"$out"; then
+  pass
+else
+  fail "a module with no main package was not reported unavailable (exit $status): $out"
+fi
+
+# --- fix rewrites both halves ------------------------------------------------
+
+# The lint fix runs, and runs before the formatter: it rewrites code and leaves
+# the layout of what it wrote to whatever runs next, so formatting last is what
+# makes the result the same as a formatted commit.
+fixture "fix fixes lint before formatting"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+stub uv <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *--version* ]]; then exit 0; fi
+shift 1 # run
+printf '%s\n' "$*" >> "${MARKER:?}"
+STUB
+(cd "$work" && MARKER="$work/uv-args" scripts/fix > /dev/null 2>&1 </dev/null)
+if [[ "$(cat "$work/uv-args" 2>/dev/null)" == $'ruff check --fix .\nruff format .' ]]; then
+  pass
+else
+  fail "scripts/fix ran $(tr '\n' '; ' < "$work/uv-args" 2>/dev/null) rather than the lint fix then the formatter"
+fi
+
+# The one place this module's usual rule would mislead. Go, Swift and Kotlin have
+# no lint autofix at all, so there is no tool to install and an `unavailable`
+# would fail scripts/fix on every Go repository over a gap nothing can close.
+fixture "a language with no lint autofix does not fail fix"
+go_mod "$work"
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+out="$(cd "$work" && scripts/fix 2>&1 </dev/null)"
+status=$?
+if (( status != 0 )); then
+  fail "scripts/fix failed on a Go repository (exit $status): $out"
+elif grep -qE '^lint-fix +not-applicable +go$' <<<"$out"; then
+  pass
+else
+  fail "lint-fix does not report not-applicable for go: $out"
+fi
+
+# --- the integration tier ----------------------------------------------------
+
+# The tier is a directory the layout owns, so a repository without one has
+# nothing to run and no missing runner either. not-applicable rather than
+# unavailable is the whole difference between a clean run and a failed one.
+fixture "no tests/integration is not-applicable rather than unavailable"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+out="$(cd "$work" && CI_DRY_RUN=1 scripts/integration 2>&1 </dev/null)"
+if grep -qE '^integration +not-applicable +python$' <<<"$out"; then
+  pass
+else
+  fail "a repository with no tier does not report integration not-applicable: $out"
+fi
+
+# The tier found at a unit's scope, not only the root's: tests/ nests at every
+# scope holder, and the tier has to be found wherever tests/ is allowed to sit.
+fixture "a unit's tier dispatches"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+mkdir -p "$work/apps/api/tests/integration"
+out="$(cd "$work" && CI_DRY_RUN=1 scripts/integration 2>&1 </dev/null)"
+if grep -qE '^integration +would-run +python$' <<<"$out"; then
+  pass
+else
+  fail "a tier under a unit does not dispatch: $out"
+fi
+
+# The latent defect this capability exists to fix. pytest walks the tree, so
+# without the exclusion `scripts/check` collects the integration suite and fails
+# on a database nobody asked it to have. media-encoder hand-wrote a testpaths to
+# work around it; the exclusion belongs here, once.
+fixture "the gate's pytest run leaves the tier out"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+mkdir -p "$work/apps/api/tests/integration"
+stub uv <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *--version* ]]; then exit 0; fi
+shift 2 # run pytest
+printf '%s\n' "$*" >> "${MARKER:?}"
+STUB
+MARKER="$work/pytest-args" ci_real > /dev/null 2>&1
+if grep -q -- '--ignore=./apps/api/tests/integration' "$work/pytest-args" 2>/dev/null; then
+  pass
+else
+  fail "the gate's pytest run does not ignore the tier: $(cat "$work/pytest-args" 2>/dev/null)"
+fi
+
+# And the other side of it: the tier's own run names those directories on the
+# command line, which overrides any testpaths the project set.
+fixture "the tier's pytest run names the tier"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+mkdir -p "$work/apps/api/tests/integration"
+stub uv <<'STUB'
+#!/usr/bin/env bash
+if [[ "$*" == *--version* ]]; then exit 0; fi
+shift 2 # run pytest
+printf '%s\n' "$*" >> "${MARKER:?}"
+STUB
+(cd "$work" && MARKER="$work/pytest-args" scripts/integration > /dev/null 2>&1 </dev/null)
+if [[ "$(cat "$work/pytest-args" 2>/dev/null)" == "./apps/api/tests/integration" ]]; then
+  pass
+else
+  fail "the tier's pytest run asks for $(cat "$work/pytest-args" 2>/dev/null) rather than the tier"
+fi
+
+# go test discovers by walking too, so the same exclusion is owed there. The
+# stub answers go list with a package under the tier and one outside it; only
+# the second may reach go test.
+fixture "the gate's go test leaves the tier out"
+go_mod "$work"
+mkdir -p "$work/tests/integration"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    if [[ "$2" == -m ]]; then printf '%s\n' "$PWD"; exit 0; fi
+    printf 'example.com/work/src\nexample.com/work/tests/integration\n'
+    exit 0
+    ;;
+  test) printf '%s\n' "$*" >> "${MARKER:?}" ;;
+esac
+exit 0
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+MARKER="$work/go-args" ci_real > /dev/null 2>&1
+if [[ "$(grep '^test ' "$work/go-args" 2>/dev/null)" == "test example.com/work/src" ]]; then
+  pass
+else
+  fail "the gate's go test asks for $(grep '^test ' "$work/go-args" 2>/dev/null) rather than the packages outside the tier"
+fi
+
+# A tier in one language must not fail the run for another. Rust, Swift and
+# Kotlin each name their integration tests where their own build file decides,
+# so the tier is nothing to them whether or not the repository has one -- an
+# unavailable here would turn any Python tier into a red run for the Rust beside
+# it.
+fixture "a tier in another language leaves rust not-applicable"
+printf '[package]\nname = "c"\nversion = "0.1.0"\n' > "$work/Cargo.toml"
+mkdir -p "$work/tests/integration"
+out="$(cd "$work" && CI_DRY_RUN=1 scripts/integration 2>&1 </dev/null)"
+if grep -qE '^integration +not-applicable +rust$' <<<"$out"; then
+  pass
+else
+  fail "a tier present makes rust something other than not-applicable: $out"
+fi
+
+# The other direction of the same fact: the tier is a path every language
+# shares, so a Go repository holds tiers written in something else. go test
+# there reports no Go files, which says nothing about the tests in it.
+fixture "the tier's go run skips a directory holding no Go package"
+go_mod "$work"
+mkdir -p "$work/tests/integration"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    if [[ "$2" == -m ]]; then printf '%s\n' "$PWD"; exit 0; fi
+    [[ "$PWD" != */tests/integration ]] || exit 0
+    printf 'example.com/work/src\n'
+    exit 0
+    ;;
+  test) printf '%s\n' "$*" >> "${MARKER:?}" ;;
+esac
+exit 0
+STUB
+if (cd "$work" && MARKER="$work/go-args" scripts/integration > /dev/null 2>&1 </dev/null) &&
+  ! grep -q '^test ' "$work/go-args" 2>/dev/null; then
+  pass
+else
+  fail "the tier's go run entered a directory with no Go package: $(cat "$work/go-args" 2>/dev/null)"
+fi
+
+# The exclusion is anchored at the path segment. A package merely named like the
+# tier is not the tier, and a substring filter would stop testing it silently.
+fixture "a package named like the tier still runs at the gate"
+go_mod "$work"
+mkdir -p "$work/tests/integration"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    if [[ "$2" == -m ]]; then printf '%s\n' "$PWD"; exit 0; fi
+    printf 'example.com/work/tests/integrationutil\nexample.com/work/tests/integration\n'
+    exit 0
+    ;;
+  test) printf '%s\n' "$*" >> "${MARKER:?}" ;;
+esac
+exit 0
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+MARKER="$work/go-args" ci_real > /dev/null 2>&1
+if [[ "$(grep '^test ' "$work/go-args" 2>/dev/null)" == "test example.com/work/tests/integrationutil" ]]; then
+  pass
+else
+  fail "the gate's go test asks for $(grep '^test ' "$work/go-args" 2>/dev/null) rather than the package outside the tier"
+fi
+
+# --- the rename left nothing behind ------------------------------------------
+
+# `dev` promised a dev server, which is one of the three things a unit can do.
+# The probe above shows no adapter answers to the name; this shows the dispatch
+# does not know it either, so nothing can ask for the old promise.
+fixture "no dev capability survives"
+out="$(capabilities run --dry-run dev)"
+status=$?
+if (( status == 2 )) && grep -q 'Unknown capability: dev' <<<"$out"; then
+  pass
+else
+  fail "dev is still a capability the dispatch accepts (exit $status): $out"
+fi
+
+# --- a unit that ships nothing is skipped, not failed ------------------------
+
+# Packaging a library is not an error to report, it is work that does not
+# exist. Failing here would make `ships: none` a state a repository has to
+# route around rather than one it can simply declare.
+fixture "package skips a unit that ships nothing"
+if command -v jq >/dev/null 2>&1; then
+  declare_unit lib
+  printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/apps/lib/pyproject.toml"
+  out="$(cd "$work" && scripts/package lib 2>&1)"
+  status=$?
+  if (( status == 0 )) && grep -q "ships: none" <<<"$out"; then
+    pass
+  else
+    fail "a unit that ships nothing was not skipped cleanly (exit $status): $out"
+  fi
+else
+  # The declaration is JSON, so reading it needs jq. scripts/doctor requires it
+  # once a unit declares; a machine without it skips the case rather than
+  # reporting the missing tool as a defect here.
+  skip "jq is not installed"
+fi
+
+# --- nothing to check yet -----------------------------------------------------
+
+# A repository with no manifest has to say so. Reporting it as a pass makes the
+# first real run indistinguishable from the empty one before it.
+fixture "empty repository"
+out="$(ci_real)"
+status=$?
+if (( status == 0 )) && grep -q "nothing to check yet" <<<"$out"; then
+  pass
+else
+  fail "an empty repository did not report that there is nothing to check"
+fi
+
+# --- the workflows read this ---------------------------------------------------
+
+fixture "github output"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+output="$(cd "$work" && scripts/detect github-output)"
+if grep -qx 'python=true' <<<"$output" &&
+  grep -qx 'node=false' <<<"$output" &&
+  [[ "$(grep -Ec '^(node|python|go|rust|swift|kotlin)=(true|false)$' <<<"$output")" -eq 6 ]]; then
+  pass
+else
+  fail "github-output does not return one boolean for every supported language"
+fi
+
+current="setup-toolchains adapter"
+supported="$(language_capabilities supported)"
+action="$repo_root/.github/actions/setup-toolchains/action.yml"
+missing=""
+while IFS= read -r lang; do
+  [[ -n "$lang" ]] || continue
+  if ! grep -q "steps.detect.outputs.$lang" "$action"; then
+    missing="$missing $lang"
+  fi
+done <<<"$supported"
+if [[ -z "$missing" ]]; then
+  pass
+else
+  fail "setup-toolchains has no adapter guard for:$missing"
+fi
+
+fixture "codeql matrix"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+matrix="$(cd "$work" && scripts/detect codeql-matrix)"
+matrix="${matrix#matrix=}"
+if command -v jq >/dev/null 2>&1; then
+  if jq -e '.include | map(.language) | index("python") and index("actions")' <<<"$matrix" >/dev/null 2>&1; then
+    pass
+  else
+    fail "the CodeQL matrix is not valid JSON naming python and actions"
+  fi
+else
+  # jq is not required to run the checks, so its absence skips this one rather
+  # than failing a machine that is otherwise correctly set up.
+  skip "jq is not installed"
+fi
+
+# --- the Node run adapter chooses between two programs ------------------------
+
+# The run dispatch is a no-op in Go, Rust and Kotlin, so these are the cases
+# that show it is not dead weight: the same unit, the same directory, and a
+# different program depending on the declared fact. Each goes through
+# scripts/run with the fact declared, since the declaration is the only way the
+# fact reaches the adapter. Real node and npm: what is under test is which
+# program is picked, and the pick is theirs to run.
+if command -v jq >/dev/null 2>&1 && command -v node >/dev/null 2>&1 && command -v npm >/dev/null 2>&1; then
+  fixture "a one-shot runs the entry point bin names"
+  declare_unit web oneshot
+  printf '{"name":"n","version":"1.0.0","bin":{"n":"./cli.js"}}\n' > "$work/apps/web/package.json"
+  printf 'console.log("cli:" + process.argv.slice(2).join(","));\n' > "$work/apps/web/cli.js"
+  out="$(run_real web -- --flag value)"
+  status=$?
+  if (( status == 0 )) && grep -qx 'cli:--flag,value' <<<"$out"; then
+    pass
+  else
+    fail "a one-shot did not run its bin entry with the arguments after --: $out"
+  fi
+
+  fixture "several bin entries are refused by name"
+  declare_unit web oneshot
+  printf '{"name":"n","version":"1.0.0","bin":{"a":"./a.js","b":"./b.js"}}\n' > "$work/apps/web/package.json"
+  out="$(run_real web)"
+  status=$?
+  # The bin key rather than the path it points at, because the key is what
+  # --entry takes and the refusal is the line to copy.
+  if (( status != 0 )) && grep -q -- '--entry a' <<<"$out" && grep -q -- '--entry b' <<<"$out"; then
+    pass
+  else
+    fail "several bin entries did not refuse and name each one: $out"
+  fi
+
+  fixture "a named bin entry is the one that runs"
+  declare_unit web oneshot
+  printf '{"name":"n","version":"1.0.0","bin":{"a":"./a.js","b":"./b.js"}}\n' > "$work/apps/web/package.json"
+  printf 'console.log("ran:a");\n' > "$work/apps/web/a.js"
+  printf 'console.log("ran:b");\n' > "$work/apps/web/b.js"
+  out="$(run_real web --entry b)"
+  status=$?
+  if (( status == 0 )) && grep -qx 'ran:b' <<<"$out"; then
+    pass
+  else
+    fail "--entry did not select the named bin entry (exit $status): $out"
+  fi
+
+  # bin as a string names no key, so npm's own rule supplies one: the package
+  # name. A unit with one entry point needs no --entry, but the name it would
+  # answer to has to be the one npm installs.
+  fixture "a string bin answers to the package name"
+  declare_unit web oneshot
+  printf '{"name":"solo","version":"1.0.0","bin":"./cli.js"}\n' > "$work/apps/web/package.json"
+  printf 'console.log("ran:solo");\n' > "$work/apps/web/cli.js"
+  out="$(run_real web --entry solo)"
+  status=$?
+  if (( status == 0 )) && grep -qx 'ran:solo' <<<"$out"; then
+    pass
+  else
+    fail "a string bin did not answer to the package name (exit $status): $out"
+  fi
+
+  # A long-lived unit runs a dev server, which bin does not name, so --entry
+  # reaches the dev:<name> scripts instead.
+  fixture "a named dev server runs the dev: script"
+  declare_unit web longlived
+  printf '{"name":"n","version":"1.0.0","scripts":{"dev:api":"node api.js","dev:dash":"node dash.js"}}\n' \
+    > "$work/apps/web/package.json"
+  printf 'console.log("dev:dash ran");\n' > "$work/apps/web/dash.js"
+  out="$(run_real web --entry dash)"
+  status=$?
+  if (( status == 0 )) && grep -q 'dev:dash ran' <<<"$out"; then
+    pass
+  else
+    fail "--entry did not reach the dev: script (exit $status): $out"
+  fi
+
+  # A one-shot that is not a CLI -- a script, a scheduled job -- names no bin,
+  # and npm start is the only thing left that says how it starts.
+  fixture "a one-shot with no bin falls back to npm start"
+  declare_unit web oneshot
+  printf '{"name":"n","version":"1.0.0","scripts":{"start":"echo started"}}\n' > "$work/apps/web/package.json"
+  out="$(run_real web)"
+  status=$?
+  if (( status == 0 )) && grep -q 'started' <<<"$out"; then
+    pass
+  else
+    fail "a one-shot with no bin did not fall back to npm start: $out"
+  fi
+
+  # A TypeScript bin conventionally names build output, which a fresh clone does
+  # not have. Node's own failure for that is a module-not-found trace naming a
+  # file rather than the build that was never run, and the unit is well-formed
+  # and the command correct -- so the absence is caught here and what to do is
+  # named. Nothing about it is TypeScript-specific: the condition is a bin that
+  # is not on disk, and a plain JavaScript unit whose bin is a source file never
+  # reaches it.
+  fixture "a bin that is not built names the build rather than failing in node"
+  declare_unit web oneshot
+  printf '{"name":"n","version":"1.0.0","bin":{"n":"./dist/cli.js"},"scripts":{"build":"echo built"}}\n' > "$work/apps/web/package.json"
+  out="$(run_real web)"
+  status=$?
+  if (( status == 0 )); then
+    fail "a bin pointing at output that is not built was treated as runnable: $out"
+  elif grep -q 'MODULE_NOT_FOUND\|Cannot find module' <<<"$out"; then
+    fail "the failure was node's rather than the adapter's: $out"
+  elif grep -q './dist/cli.js' <<<"$out" && grep -q 'npm run build' <<<"$out"; then
+    pass
+  else
+    fail "the refusal named neither the missing path nor the build command: $out"
+  fi
+
+  # The same absence in a package that builds nothing. Naming a build command
+  # that does not exist would send whoever is holding the failure to a command
+  # that fails differently.
+  fixture "a bin that is not built and no build script says so"
+  declare_unit web oneshot
+  printf '{"name":"n","version":"1.0.0","bin":{"n":"./dist/cli.js"}}\n' > "$work/apps/web/package.json"
+  out="$(run_real web)"
+  status=$?
+  if (( status == 0 )); then
+    fail "a bin pointing at a file that is not there was treated as runnable: $out"
+  elif grep -q 'MODULE_NOT_FOUND\|Cannot find module' <<<"$out"; then
+    fail "the failure was node's rather than the adapter's: $out"
+  elif grep -q './dist/cli.js' <<<"$out" && ! grep -q 'npm run build' <<<"$out"; then
+    pass
+  else
+    fail "a missing bin with no build script named a build command anyway: $out"
+  fi
+
+  # has_npm_script needs npm on the PATH, so with node installed and npm not it
+  # is false for the tool rather than for package.json. Saying the package names
+  # no build script would then be a fact about the file asserted from a missing
+  # tool, so that branch stays quiet and the line above it -- true either way --
+  # is the whole refusal. The PATH here holds what scripts/run itself needs and
+  # node, and no npm.
+  fixture "a missing npm is not reported as a missing build script"
+  declare_unit web oneshot
+  printf '{"name":"n","version":"1.0.0","bin":{"n":"./dist/cli.js"},"scripts":{"build":"echo built"}}\n' > "$work/apps/web/package.json"
+  out="$(PATH="$(minimal_path bash chmod dirname basename find sort sed awk grep cat jq node)" run_real web)"
+  status=$?
+  if (( status == 0 )); then
+    fail "a bin pointing at output that is not built was treated as runnable: $out"
+  elif grep -q 'no build script' <<<"$out"; then
+    fail "an npm that is not installed was reported as a package that has no build script: $out"
+  elif grep -q './dist/cli.js' <<<"$out"; then
+    pass
+  else
+    fail "the refusal did not name the missing path: $out"
+  fi
+
+  # The bug the dispatch prevents, from the other side: a package that ships a
+  # CLI and also serves is started as the service it declared itself to be.
+  fixture "a long-lived unit runs the dev server even with a bin"
+  declare_unit web longlived
+  printf '{"name":"n","version":"1.0.0","bin":{"n":"./cli.js"},"scripts":{"dev":"echo serving"}}\n' > "$work/apps/web/package.json"
+  printf 'console.log("cli");\n' > "$work/apps/web/cli.js"
+  out="$(run_real web)"
+  status=$?
+  if (( status == 0 )) && grep -q 'serving' <<<"$out" && ! grep -qx 'cli' <<<"$out"; then
+    pass
+  else
+    fail "a long-lived unit ran the CLI entry instead of the dev server: $out"
+  fi
+else
+  current="the Node run adapter"
+  skip "jq, node, or npm is not installed"
+fi
+
+# --- an impossible build is not a broken install -----------------------------
+
+# The distinction the package capability exists to keep: a target this host
+# cannot reach is not-applicable with the reason named, and a language with no
+# adapter wired is unavailable. Both produce no file, which is why collapsing
+# them is easy and wrong -- one is a fact about the host, the other a gap in
+# this repository. The go stub answers the listing and would fail on a build,
+# so the target being skipped is what keeps the case green.
+if command -v jq >/dev/null 2>&1; then
+  fixture "an unreachable target is not-applicable"
+  declare_unit tool none executable windows-arm64
+  go_mod "$work/apps/tool"
+  stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1:$2" in
+  list:-m) pwd; exit 0 ;;
+  list:*)  cat >/dev/null; printf '%s\n' example.com/tool; exit 0 ;;
+  *)       echo "go $1 was called for a target no host here can build" >&2; exit 1 ;;
+esac
+STUB
+  out="$(cd "$work" && scripts/package tool 2>&1 </dev/null)"
+  status=$?
+  if (( status != 0 )); then
+    fail "an unreachable target failed the build instead of being skipped: $out"
+  elif grep -qE '^windows-arm64 +not-applicable' <<<"$out" && grep -qE '^package +pass +go$' <<<"$out"; then
+    pass
+  else
+    fail "an unreachable target was not reported not-applicable by name: $out"
+  fi
+
+  fixture "an unwired language is unavailable"
+  declare_unit tool none executable linux-amd64
+  printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/apps/tool/pyproject.toml"
+  out="$(cd "$work" && scripts/package tool 2>&1 </dev/null)"
+  status=$?
+  if (( status != 0 )) && grep -qE '^package +unavailable +python$' <<<"$out"; then
+    pass
+  else
+    fail "a language with no packaging adapter was not reported unavailable (exit $status): $out"
+  fi
+else
+  current="the package target outcomes"
+  skip "jq is not installed"
+fi
+
+# --- aggregate outcomes ------------------------------------------------------
+
+# run returns nothing about the outcome: the result line carries it, and the
+# tally the command ends with turns it into the exit status. So each case here
+# asserts the line, and that run itself came back 0 rather than encoding the
+# outcome a second way.
+fixture "unavailable capability"
+printf '{"name":"n","version":"1.0.0"}\n' > "$work/package.json"
+out="$(capabilities run lint)"
+status=$?
+if (( status == 0 )) && grep -qE '^lint +unavailable +node$' <<<"$out"; then
+  pass
+else
+  fail "an absent runner is not reported as unavailable on its line with run returning 0: exit $status: $out"
+fi
+
+fixture "failure does not stop polyglot dispatch"
+printf '{"name":"n","version":"1.0.0","scripts":{"lint":"exit 7"}}\n' > "$work/package.json"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+stub uv <<'STUB'
+#!/usr/bin/env bash
+if [[ "${3:-}" == "--version" ]]; then exit 0; fi
+if [[ "${1:-}" == "run" && "${2:-}" == "--quiet" ]]; then exit 0; fi
+if [[ "${1:-}" == "run" && "${2:-}" == "ruff" ]]; then exit 0; fi
+exit 1
+STUB
+out="$(capabilities run lint)"
+status=$?
+if (( status == 0 )) &&
+  grep -qE '^lint +FAIL +node \(exit 7\)$' <<<"$out" &&
+  grep -qE '^lint +pass +python$' <<<"$out"; then
+  pass
+else
+  fail "a failed adapter hides a later language or run encodes the outcome in its return: exit $status: $out"
+fi
+
+report

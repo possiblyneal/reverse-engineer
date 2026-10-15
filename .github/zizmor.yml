@@ -1,0 +1,28 @@
+# Configuration for zizmor, wired into .pre-commit-config.yaml.
+#
+# Only the pinning policy is set here. Every other audit runs at its default,
+# because a template that ships suppressions teaches every generated repository
+# to inherit them.
+rules:
+  unpinned-uses:
+    config:
+      policies:
+        # Matches the pinning convention the workflows already follow, which is
+        # a trust boundary rather than an inconsistency. A first-party action
+        # can move under its tag, but a compromise there is a compromise of the
+        # platform the workflow already runs on, so a hash buys nothing a
+        # tag does not. A third-party action is a different repository with
+        # different owners, and tj-actions/changed-files was compromised by
+        # force-pushing over exactly such a tag.
+        #
+        # zizmor required hashes only for third-party actions until v1.20.0,
+        # when the default became hash-pin everywhere. This restores the older
+        # split deliberately rather than by inertia: dropping it means hashing
+        # actions/checkout in every workflow, and the diff that produces is
+        # noise that hides the pins that matter.
+        actions/*: ref-pin
+        github/codeql-action/*: ref-pin
+
+        # Everything else, including any namespace added later. Listed last and
+        # least specific, so a rule above wins where both match.
+        "*": hash-pin

@@ -1,0 +1,118 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Validate only the changelog paths supplied by pre-commit. Whether a change is
+# notable remains a judgment for the pull request; this script checks the
+# structure of an entry that was chosen to be recorded. It runs at pre-push,
+# and again in ci.yml over the pull request's range.
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/result.sh
+source "$(dirname "${BASH_SOURCE[0]}")/libs/result.sh"
+
+for path in "$@"; do
+  [[ "$(basename "$path")" == "CHANGELOG.md" ]] || continue
+
+  if [[ ! -f "$path" ]]; then
+    result changelog FAIL "$path does not exist"
+    continue
+  fi
+
+  # Every line awk prints is one rule broken, so the lines are the findings.
+  # awk exits 1 when it printed one; anything higher means it did not run,
+  # which is the one thing the lines cannot say.
+  status=0
+  findings="$(awk '
+    function fail(message) {
+      printf "%s:%d: %s\n", FILENAME, NR, message
+      failed = 1
+    }
+
+    /^# Changelog$/ {
+      title_count++
+      if (NR != 1) fail("# Changelog must be the first line")
+    }
+
+    /^## |^### |^#### / {
+      if (current_category != "" && !current_has_item) {
+        fail("category " current_category " must contain a list entry")
+      }
+      current_category = ""
+      current_has_item = 0
+    }
+
+    /^## / {
+      h2_count++
+      if ($0 == "## [Unreleased]") {
+        unreleased_count++
+        if (h2_count != 1) fail("[Unreleased] must be the first release section")
+      } else if ($0 !~ /^## \[[0-9]+\.[0-9]+\.[0-9]+\] - [0-9]{4}-[0-9]{2}-[0-9]{2}$/) {
+        fail("release headings must use ## [x.y.z] - YYYY-MM-DD")
+      } else {
+        version = $0
+        sub(/^## \[/, "", version)
+        sub(/\] - .*/, "", version)
+        versions[version] = NR
+      }
+    }
+
+    /^### / {
+      category = $0
+      sub(/^### /, "", category)
+      if (category !~ /^(Added|Changed|Deprecated|Removed|Fixed|Security)$/) {
+        fail("category must be Added, Changed, Deprecated, Removed, Fixed, or Security")
+      }
+      current_category = category
+      current_has_item = 0
+    }
+
+    /^#### / { fail("changelog sections stop at level three") }
+
+    /^- / {
+      if (current_category != "") current_has_item = 1
+    }
+
+    /^\[[^]]+\]: / {
+      reference = $0
+      sub(/^\[/, "", reference)
+      sub(/\]: .*/, "", reference)
+      references[reference] = NR
+    }
+
+    END {
+      if (title_count != 1) {
+        printf "%s: expected exactly one # Changelog heading\n", FILENAME
+        failed = 1
+      }
+      if (unreleased_count != 1) {
+        printf "%s: expected exactly one ## [Unreleased] section\n", FILENAME
+        failed = 1
+      }
+      if (current_category != "" && !current_has_item) {
+        printf "%s: category %s must contain a list entry\n", FILENAME, current_category
+        failed = 1
+      }
+      if (!("Unreleased" in references)) {
+        printf "%s: missing [Unreleased] link reference\n", FILENAME
+        failed = 1
+      }
+      for (version in versions) {
+        if (!(version in references)) {
+          printf "%s:%d: missing [%s] link reference\n", FILENAME, versions[version], version
+          failed = 1
+        }
+      }
+      exit failed
+    }
+  ' "$path")" || status=$?
+  if (( status > 1 )); then
+    result changelog unavailable "awk could not check $path (exit $status)"
+    continue
+  fi
+  while IFS= read -r finding; do
+    [[ -n "$finding" ]] && record "$finding"
+  done <<< "$findings"
+  verdict changelog "$path is well-formed"
+done
+
+tally

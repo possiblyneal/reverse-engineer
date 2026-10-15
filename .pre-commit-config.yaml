@@ -1,0 +1,283 @@
+# Install once per clone with `pre-commit install`, otherwise these never run.
+
+# attribute-commit runs at prepare-commit-msg, commitlint at commit-msg,
+# changelog-check at pre-push, and worktree-cleanup at post-checkout and
+# post-merge -- five git hook files distinct from the one every other hook here
+# uses. `pre-commit install` writes only the pre-commit hook unless it is told
+# otherwise, and a hook that was never installed fails silently: pushes and
+# checkouts succeed while changelog entries and stale worktree metadata go
+# unchecked, and nothing reports it. This line is what makes the plain command
+# install every one of them.
+#
+# The first two are a pair and fail loudly rather than silently: without the
+# prepare-commit-msg hook nothing writes the attribution trailer, and the
+# commit-msg hook then rejects every message for the trailer that is missing.
+default_install_hook_types: [pre-commit, prepare-commit-msg, commit-msg, pre-push, post-checkout, post-merge]
+
+# Scopes the hooks below to the commit, so a git hook type this file never
+# asked for cannot run them. A clone that once ran `pre-commit install -t
+# post-merge` (or -t pre-push, or -t post-checkout) keeps that hook file
+# forever -- uninstalling is per clone and nothing here reaches it -- and
+# without this line those stray hooks run the whole set. `no-commit-to-branch`
+# is always_run with pass_filenames false, so it fires with no files and
+# fails, and `git pull` on main ends in a red "don't commit to branch...
+# Failed" and a non-zero exit for a pull that succeeded. A false alarm on a
+# routine command is worse than none: it is the one that teaches you to skim
+# past the real failure.
+#
+# Whole-file rather than per-hook because the next hook added should inherit
+# the right scope instead of quietly misfiring.
+#
+# It does not reach every hook, and the exceptions are not a gap to close.
+# A `stages` in the hook's own manifest wins over this. Six upstream hooks
+# declare `[pre-commit, pre-push, manual]`; five of them are enabled here --
+# end-of-file-fixer, trailing-whitespace, check-added-large-files,
+# check-executables-have-shebangs, check-shebang-scripts-are-executable -- and
+# those five still run before a push. They take filenames and they pass, which
+# is the upstream intent and is not the failure above. commitlint is the one
+# exception declared here, at `stages: [commit-msg]`, because it reads a
+# message that does not exist at pre-commit time.
+default_stages: [pre-commit]
+
+repos:
+  # Catches a secret while it is still only in the working tree, which is the
+  # one point where the fix is editing a file rather than rotating a credential.
+  - repo: https://github.com/gitleaks/gitleaks
+    rev: v8.30.1
+    hooks:
+      - id: gitleaks
+
+  # docs/adrs/index.md is derived from the records beside it. Regeneration is
+  # the check: the script rewrites the index and exits non-zero when the content
+  # changed, so a stale index fails the commit rather than being committed
+  # alongside the record that outdated it.
+  #
+  # always_run with no files filter, because a filter would decide from the
+  # staged paths whether the hook runs at all, and pre-commit's staged-file list
+  # excludes deletions. Deleting a record is exactly when the index goes stale,
+  # and it is the case a filter cannot see: `git rm` of an ADR would commit an
+  # index still listing it, linking a file that is no longer there. The script
+  # reads the whole directory and costs nothing on a commit that touches no ADR.
+  - repo: local
+    hooks:
+      - id: adr-index
+        name: regenerate the ADR index
+        entry: scripts/adr-index
+        language: script
+        always_run: true
+        pass_filenames: false
+
+      # .github/ can exist twice: a repository that ships a template payload
+      # holds its own configuration and the copy generated repositories are cut
+      # from. Dependabot's github-actions ecosystem reaches the root one only,
+      # so a merged bump leaves the payload pinned to the old SHA through a
+      # pull request that looks routine. This refuses the divergence rather
+      # than repairing it, which turns each root bump into a complete one, and
+      # reports not-applicable where there is no payload.
+      #
+      # always_run with no files filter, for the same reason as adr-index
+      # above: a path filter reads the staged paths, which exclude deletions,
+      # and deleting a workflow from one tree is exactly the divergence to
+      # catch.
+      - id: github-parity
+        name: check the two .github/ trees agree
+        entry: scripts/github-parity
+        language: script
+        always_run: true
+        pass_filenames: false
+
+      # always_run with no files filter, for the same reason as adr-index above.
+      # Structure breaks on a move or a delete, and a path filter reads the
+      # staged paths, which exclude deletions -- so `git rm` emptying the last
+      # file out of a directory is exactly when the tree changes shape and
+      # exactly what a filter cannot see. The script reads the Git index rather
+      # than any argument, so it costs one enumeration on a commit touching
+      # nothing structural.
+      - id: structure
+        name: audit the repository structure
+        entry: scripts/structure
+        language: script
+        always_run: true
+        pass_filenames: false
+
+      # Changelog content is judged in the pull request, but once an entry is
+      # chosen its Keep a Changelog structure is deterministic. Running only
+      # when the file changed preserves that division rather than inventing a
+      # policy that every source change must add an entry.
+      - id: changelog-check
+        name: validate changed changelog entries
+        entry: scripts/changelog-check
+        language: script
+        files: (^|/)CHANGELOG\.md$
+        stages: [pre-push]
+
+      # `no-commit-to-branch` above refuses a commit made while HEAD is main,
+      # which is not the way main actually gets written: `git push origin
+      # HEAD:main` from a feature branch never makes HEAD main and so never
+      # reaches it. This reads the destination ref instead, the only place that
+      # push is visible. It matters most where push protection and branch
+      # rulesets are not offered by the plan, which is every private repository.
+      #
+      # always_run with pass_filenames false because the destination is not a
+      # path: pre-commit hands it over as PRE_COMMIT_REMOTE_BRANCH, and a
+      # filter would decide whether to check the push by which files it carries.
+      - id: protect-branch
+        name: refuse a push to a protected branch
+        entry: scripts/protect-branch
+        language: script
+        always_run: true
+        pass_filenames: false
+        stages: [pre-push]
+
+      # Writes the agent's attribution trailer before commitlint reads the
+      # message. It has to run at prepare-commit-msg rather than commit-msg:
+      # both stages get the message file, but hooks within a stage have no
+      # ordering guarantee against a third-party repo's, so a hook sharing
+      # commit-msg with commitlint could land after the rule that reads it.
+      #
+      # pass_filenames is left at its default: at this stage the one filename
+      # pre-commit passes is the message file, which is the argument the script
+      # takes. always_run has nothing to do here -- the file is always present.
+      - id: attribute-commit
+        name: record the model that generated the commit
+        entry: scripts/attribute-commit
+        language: script
+        stages: [prepare-commit-msg]
+
+      # These hooks let Git remove only stale administrative records for linked
+      # worktrees whose directories have already disappeared. They never remove
+      # a live worktree directory, and SessionStart reports candidates without
+      # mutating them.
+      - id: worktree-cleanup
+        name: prune stale worktree metadata
+        entry: scripts/worktree-cleanup
+        language: script
+        pass_filenames: false
+        stages: [post-checkout, post-merge]
+
+  # The only static analysis the shell scripts in scripts/ get. Every one there
+  # is extensionless, so pre-commit recognizes it as shell by reading its
+  # shebang, which it only does for files that are executable. The two shebang
+  # hooks below keep that true; without them a script committed without its
+  # executable bit is skipped silently rather than reported.
+  #
+  # -x follows `source` into the detection library, so it is analyzed with
+  # its caller rather than reported as unreadable. Without it every script that
+  # sources the detection library fails on SC1091.
+  - repo: https://github.com/shellcheck-py/shellcheck-py
+    rev: v0.11.0.1
+    hooks:
+      - id: shellcheck
+        args: [-x]
+
+  # Workflow errors otherwise surface as a failed run after the push, since
+  # nothing validates workflow syntax, action inputs, or shell snippets locally.
+  - repo: https://github.com/rhysd/actionlint
+    rev: v1.7.12
+    hooks:
+      - id: actionlint
+
+  # Sits beside actionlint deliberately, and the overlap is smaller than it
+  # looks: actionlint asks whether a workflow is valid — syntax, action inputs,
+  # embedded shell — while zizmor asks whether a valid workflow is unsafe.
+  # Template injection reaching a `run:` block, credential persistence, an
+  # unpinned third-party action, permissions wider than the job needs. Neither
+  # reports the other's findings.
+  #
+  # --min-severity medium, with the pinning policy in .github/zizmor.yml, is
+  # what this repository passes at. Nothing is suppressed to reach it: the two
+  # medium findings it once left — workflow-level security-events: write in
+  # codeql.yml and an unpinned trivy binary in security.yml — were fixed rather
+  # than ignored. Keep it that way. A per-rule ignore is a claim the finding is
+  # wrong, and neither of those was.
+  #
+  # The remaining low findings are artipacked, which wants persist-credentials:
+  # false on every checkout. Dropping to low means setting that on each one.
+  - repo: https://github.com/zizmorcore/zizmor-pre-commit
+    rev: v1.30.1
+    hooks:
+      - id: zizmor
+        args: ["--no-progress", "--config", ".github/zizmor.yml", "--min-severity", "medium"]
+
+  - repo: https://github.com/pre-commit/pre-commit-hooks
+    rev: v6.0.0
+    hooks:
+      - id: check-merge-conflict
+      # A unified diff writes a blank context line as a single space, so
+      # stripping it, or the blank lines a patch ends on, makes `git apply`
+      # reject the patch. A patch is reproduced byte for byte, never tidied:
+      # mixed-line-ending below excludes it too, since a patch against a CRLF
+      # file carries LF headers and CRLF content.
+      - id: end-of-file-fixer
+        exclude: \.(patch|diff)$
+      - id: trailing-whitespace
+        exclude: \.(patch|diff)$
+      - id: check-yaml
+      # devcontainer.json is JSON with comments by specification -- the dev
+      # container schema sets allowComments -- and the file ships with its
+      # guidance in them. check-json parses strict JSON and fails on the first
+      # `//`, so it would reject a valid devcontainer.json. Excluded whether or
+      # not this repository has one; the pattern matches nothing until it does.
+      - id: check-json
+        exclude: ^\.devcontainer/devcontainer\.json$
+      - id: check-toml
+
+      # Guards against a file committed by accident, not against a large
+      # repository: only newly added files are weighed, so anything already
+      # tracked may grow past the limit freely, and a file matched by a
+      # git-lfs filter in .gitattributes is exempt whatever its size.
+      #
+      # The 500KB default is deliberately left as it is. A file that large
+      # arriving in a commit is more often a build artifact, a database
+      # dump, or a stray recording than something intended, and reversing it
+      # after the fact means rewriting history rather than deleting a file.
+      # Raise it here only when the whole repository's floor has moved;
+      # a known large file belongs in `exclude` below it, named, where the
+      # exception stays visible instead of widening the limit for everything.
+      - id: check-added-large-files
+
+      # scripts/check exits early when a script it calls is not executable,
+      # and shell detection depends on the same bit.
+      - id: check-executables-have-shebangs
+      - id: check-shebang-scripts-are-executable
+
+      # Catches a key committed under a name the ignore rules do not cover.
+      - id: detect-private-key
+
+      # A submodule adds code from another repository that arrives without
+      # review here and is pinned by a commit no tool in this repo audits.
+      - id: forbid-submodules
+
+      # A path that differs only by case is one file on macOS or Windows and
+      # two on Linux, so the clone that lands second silently overwrites.
+      - id: check-case-conflict
+
+      # Enforces the LF rule in .gitattributes at commit time. Defaults to
+      # rewriting to the majority ending in the file.
+      - id: mixed-line-ending
+        exclude: \.(patch|diff)$
+
+      # Keeps main reviewable: work lands through a pull request, where the
+      # template and CODEOWNERS apply, rather than as a direct commit.
+      - id: no-commit-to-branch
+
+  # The only hook here that runs at commit-msg rather than pre-commit, because
+  # it reads the message, which does not exist yet when the others run. That is
+  # also why `pre-commit run --all-files` skips it and scripts/check does not
+  # cover it -- scripts/tests/commitlint-test drives real commits instead.
+  #
+  # Rules live in .commitlintrc.yaml. commitlint refuses to lint at all without
+  # a config naming a shared preset, so that file is required, not optional.
+  #
+  # @commitlint/config-conventional is pinned to an exact version, because an
+  # entry naming no version follows whatever npm serves the day a hook
+  # environment is built, and a commit rule would change with no diff. The pin
+  # is not bumped by hand: Dependabot's pre-commit ecosystem reads
+  # additional_dependencies and raises the bump alongside `rev`, but only
+  # because a version is written there for it to read.
+  - repo: https://github.com/alessandrojcm/commitlint-pre-commit-hook
+    rev: v9.27.0
+    hooks:
+      - id: commitlint
+        stages: [commit-msg]
+        additional_dependencies: ["@commitlint/config-conventional@21.2.3"]

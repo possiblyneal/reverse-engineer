@@ -1,0 +1,116 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# What summarize keeps and what it drops. The cases run a stub command rather
+# than a real check, so they assert the filter's contract -- the layout
+# libs/result.sh documents -- and not the current output of any one check. They
+# also hold that it exits with the command's own status, and that a failure
+# outside the table leaves the whole run in tmp/summarize-failure.log.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+echo "summarize-test"
+
+# A command printing one of each state, findings under the FAIL, and noise
+# around all of it. Exits non-zero, as a run with a FAIL in it does.
+noisy() {
+  cat <<'OUT'
+Some tool's own chatter, unindented and not a result line.
+lint               pass             python
+   Compiling libc v0.2.189
+audit              FAIL             2 violation(s)
+                     apps/web/package.json has no root package.json
+                     apps/api/go.mod has no root go.work
+    Checking log v0.4.34
+Compiled 41 files.
+build              not-applicable   python
+secret-scan        unavailable      gitleaks is not on PATH
+OUT
+  return 1
+}
+export -f noisy
+
+current="keeps every state line and drops the surrounding noise"
+out2="$(scripts/summarize bash -c noisy 2>&1)"
+status=$?
+out="$out2"
+if grep -qE '^lint +pass' <<< "$out" \
+  && grep -qE '^audit +FAIL' <<< "$out" \
+  && grep -qE '^build +not-applicable' <<< "$out" \
+  && grep -qE '^secret-scan +unavailable' <<< "$out" \
+  && ! grep -q 'chatter' <<< "$out" \
+  && ! grep -q 'Compiled' <<< "$out"; then
+  pass
+else
+  fail "wanted four state lines and no noise, got: $out"
+fi
+
+current="drops a tool's indented output, after a pass and after a FAIL's findings"
+if ! grep -q 'Compiling' <<< "$out" && ! grep -q 'Checking' <<< "$out"; then
+  pass
+else
+  fail "wanted no indented tool output, got: $out"
+fi
+
+current="keeps the findings recorded under a failed check"
+if grep -qE '^ +apps/web/package.json has no root package.json' <<< "$out" \
+  && grep -qE '^ +apps/api/go.mod has no root go.work' <<< "$out"; then
+  pass
+else
+  fail "wanted both findings under the FAIL, got: $out"
+fi
+
+current="exits with the command's own status"
+if (( status == 1 )); then
+  pass
+else
+  fail "wanted exit 1 from the command, got $status"
+fi
+
+current="a failing exit with no failing result line says where the failure was"
+rm -f tmp/summarize-failure.log
+out="$(scripts/summarize bash -c 'echo "lint               pass             python"; echo "hook rewrote a file"; exit 3' 2>&1)"
+notice_status=$?
+if (( notice_status == 3 )) && grep -q 'outside the' <<< "$out"; then
+  pass
+else
+  fail "wanted exit 3 and a notice, got exit $notice_status: $out"
+fi
+
+# The notice names a log rather than telling the reader to run the command
+# again, because a fixer hook that repaired the file passes on the second run.
+current="the whole run is kept for a failure outside the table"
+if grep -q 'hook rewrote a file' tmp/summarize-failure.log; then
+  pass
+else
+  fail "wanted the dropped output in tmp/summarize-failure.log"
+fi
+
+current="a FAIL in the table needs no such notice"
+if ! grep -q 'outside the' <<< "$out2"; then
+  pass
+else
+  fail "wanted no notice where the table already carries the FAIL: $out2"
+fi
+
+current="a passing command exits zero"
+if scripts/summarize true > /dev/null; then
+  pass
+else
+  fail "wanted exit 0"
+fi
+
+current="no command is a usage error"
+scripts/summarize > /dev/null 2>&1
+usage_status=$?
+if (( usage_status == 2 )); then
+  pass
+else
+  fail "wanted exit 2 with no command named, got $usage_status"
+fi
+
+report

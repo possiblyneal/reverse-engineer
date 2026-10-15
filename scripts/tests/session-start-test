@@ -1,0 +1,69 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Exercises the operator's global session-start.sh, which ships outside this
+# repository, so the suite declares itself not_applicable where it is absent.
+#
+# SessionStart must report stale worktree metadata without pruning it, and a
+# missing optional cleanup script must not cost the session context that
+# follows it. Both are silent failures: the first mutates a clone at startup,
+# the second leaves an agent with no orientation and nothing saying why.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+hook="$HOME/.claude/hooks/session-start.sh"
+
+fixture() {
+  scratch_repo
+  current="$1"
+  git -C "$work" commit --allow-empty -qm initial
+}
+
+stale_worktree() {
+  local path="$work/stale"
+  git -C "$work" worktree add -q -b stale "$path"
+  rm -rf "$path"
+}
+
+has_prunable_worktree() {
+  local listed
+  listed="$(git -C "$work" worktree list --porcelain)"
+  [[ "$listed" == *$'\nprunable '* ]]
+}
+
+echo "session-start-test"
+
+# Not a skip: a skip is a case the host could not run, and is counted so a
+# suite that skipped everything fails. The hook ships outside this repository,
+# so a host without it has no case here at all -- a CI runner, or a clone whose
+# operator has not set it up. Declared, so this suite is told apart from one
+# that reached its cases and ran none.
+if [[ ! -x "$hook" ]]; then
+  not_applicable "$hook is not present"
+  report
+  exit
+fi
+
+fixture "reports stale metadata without pruning"
+stale_worktree
+output="$(CLAUDE_PROJECT_DIR="$work" "$hook")"
+if [[ "$output" == *"Stale worktree metadata:"* ]] && [[ "$output" == *"Branch: "* ]] && has_prunable_worktree; then
+  pass
+else
+  fail "reporting changed metadata or lost context: '$output'"
+fi
+
+fixture "keeps session context when cleanup is absent"
+rm "$work/scripts/worktree-cleanup"
+output="$(CLAUDE_PROJECT_DIR="$work" "$hook")"
+if [[ "$output" == *"Branch: "* ]]; then
+  pass
+else
+  fail "missing cleanup script hid session context: '$output'"
+fi
+
+report

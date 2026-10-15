@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Verifies local toolchains, dependencies, hooks, and configuration, without
+# reading hosted GitHub state.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# Sourced by absolute path so this works from any working directory, and marked
+# SCRIPTDIR-relative so shellcheck follows it without being run from the root.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/precommit.sh
+source "$repo_root/scripts/libs/precommit.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/dependabot.sh
+source "$repo_root/scripts/libs/dependabot.sh"
+
+check_required() {
+  local tool="$1"
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    result "$tool" pass "$(command -v "$tool")"
+  else
+    result "$tool" unavailable "not on PATH"
+  fi
+}
+
+# An optional tool that is absent is not-applicable rather than unavailable:
+# nothing here fails for the lack of it, and the detail says what it would add.
+check_optional() {
+  local tool="$1" absent="$2"
+
+  if command -v "$tool" >/dev/null 2>&1; then
+    result "$tool" pass "$(command -v "$tool")"
+  else
+    result "$tool" not-applicable "$absent"
+  fi
+}
+
+check_required git
+check_required bash
+
+# gh is required rather than optional because both scripts that need it fail
+# quietly without it: release dies at its last line once the whole gate has
+# already run, and repo-settings reports nothing while still exiting 0. Marking
+# it optional here would reproduce exactly that silence. release used to check
+# at runtime and no longer does, so this is the one place stating the
+# prerequisite, and it states it before a release rather than after.
+# A PATH lookup is not a hosted read, so this stays inside the boundary that
+# keeps doctor off GitHub state.
+check_required gh
+
+# Language toolchains are private adapters in the capabilities module, which
+# reports each missing one as unavailable without doctor knowing its command.
+language_capabilities run toolchain
+
+# A package nested under apps/ or libs/ whose language has no root manifest is
+# invisible to every check, so its toolchain goes unreported here too.
+judge_orphan_manifests
+
+# -print -quit rather than a pipe into `grep -q`: grep exits at its first match
+# and closes the pipe, so find dies of SIGPIPE and pipefail reports 141, which
+# reads as "no container files" and silently skips the check.
+if [[ -n "$(detect_find Dockerfile -print -quit)$(detect_find compose.yml -print -quit)$(detect_find docker-compose.yml -print -quit)" ]]; then
+  check_optional docker "not on PATH; the container files here are built with it"
+fi
+
+# A pre-commit config does nothing until `pre-commit install` writes a hook
+# into the git hooks directory, which is local to each clone and never checked
+# in. Both failures are silent: commits succeed as normal while the configured
+# hooks, including the secret scan, never run.
+#
+# There is more than one hook file. commit-msg is installed by the same command
+# only because the config asks for it, so the config decides what is required
+# here rather than this script, and a repository that drops the commit-message
+# check is not reported as broken for having done so. libs/precommit.sh reads
+# that list and answers which hooks this clone is missing.
+if [[ -s .pre-commit-config.yaml ]]; then
+  if ! command -v pre-commit >/dev/null 2>&1; then
+    result pre-commit unavailable ".pre-commit-config.yaml is present but the tool is not installed; install it, then run: pre-commit install"
+  else
+    uninstalled="$(pre_commit_hooks_missing .pre-commit-config.yaml)"
+
+    if [[ -n "$uninstalled" ]]; then
+      while IFS= read -r hook_type; do
+        record "no $hook_type hook in this clone; run: pre-commit install"
+      done <<<"$uninstalled"
+    fi
+    verdict pre-commit "every configured hook is installed"
+  fi
+fi
+
+# Dependabot opens no update pull request for a manifest no entry names, and
+# says nothing about it: the file is valid, the check run is green, and the only
+# symptom is a bump that never arrives. An entry is derived per repository from
+# the manifests that repository tracks -- the rule is "Dependabot entries follow
+# the manifests present" -- so a manifest added since the last /repo-builder
+# update flow has none, and this is where that shows.
+#
+# A passing row carrying the advisory rather than a finding: nothing here fails
+# for the lack of an entry, and the detail says which manifests owe one. A
+# finding would fail the gate, and so CI, in every repository that gains a
+# manifest before its next update flow runs -- which would make adding a module
+# a red build rather than a line to read.
+#
+# It is not not-applicable either. That state means the check did not apply, the
+# way an absent optional tool is reported above, and here the check applied and
+# found something. The detail is where the difference between the two passing
+# rows reads.
+if [[ -s .github/dependabot.yml ]]; then
+  if ! unwatched="$(dependabot_unwatched_manifests .github/dependabot.yml)"; then
+    # An empty answer and an unread tracked set look identical, so a check that
+    # could not run is reported as one rather than as a green row.
+    result dependabot unavailable "the tracked file list could not be read, so no manifest was compared against the config"
+  elif [[ -n "$unwatched" ]]; then
+    result dependabot pass "no updates entry for ${unwatched//$'\n'/, }; run the /repo-builder update flow to derive one. A Cargo, uv or npm workspace member is the exception: it is bumped through the workspace root's entry and earns none of its own"
+  else
+    result dependabot pass "every tracked manifest has an entry"
+  fi
+fi
+
+# jq is required whether or not anything here reads a file with it yet. The
+# PreToolUse and ConfigChange hooks parse their input with it, and a hook that
+# exits non-zero for any reason other than a deliberate block is a non-blocking
+# error, so a missing jq lets writes outside the repository through without a
+# prompt. scripts/structure reads every unit's .unit.json with it, from
+# pre-commit on every commit. And the suites that exercise a unit skip every
+# case without it, which the gate reads as a suite that verified nothing, so a
+# host this passes has to be one where scripts/check can run.
+check_required jq
+
+if tally; then
+  echo "Environment checks passed. Add project-specific checks to scripts/doctor."
+else
+  echo "Fix what is reported above, then rerun scripts/doctor."
+  exit 1
+fi

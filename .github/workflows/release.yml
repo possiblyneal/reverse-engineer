@@ -1,0 +1,54 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Tag to release, e.g. v1.2.3"
+        required: true
+  push:
+    tags:
+      - "v*"
+
+# scripts/release creates the GitHub release, which needs a write token, and it
+# verifies in the same process so a release cannot be published without the gate
+# having run. That token is therefore live while scripts/ci executes the
+# project's own toolchains. Splitting verification into a read-only job would
+# narrow that window at the cost of running the whole gate twice.
+permissions:
+  contents: write
+
+# Not cancel-in-progress, unlike the other workflows: a publisher can stop after
+# publishing some artifacts and none of the rest. Overlapping runs queue instead.
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+
+jobs:
+  release:
+    name: Release
+    # Hosted by default. A repository that sets a `RUNNER` variable runs this
+    # job on its own machine instead, and must leave it unset while it is
+    # public: a self-hosted runner there lets any fork's pull request run
+    # arbitrary code on the host.
+    runs-on: ${{ vars.RUNNER || 'ubuntu-latest' }}
+    timeout-minutes: 30
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v7
+
+      # scripts/release runs scripts/ci before publishing, and that fails when a
+      # manifest is present but its toolchain is missing.
+      - name: Set up toolchains
+        uses: ./.github/actions/setup-toolchains
+
+      # On a tag push GITHUB_REF_NAME is the tag. A workflow_dispatch run is
+      # dispatched against a branch, so the tag comes from the input instead.
+      # The value crosses into the step as an environment variable rather than
+      # through ${{ }} interpolation, which would paste a dispatch input
+      # straight into the shell command.
+      - name: Verify and publish
+        env:
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/release "$RELEASE_TAG"

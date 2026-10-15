@@ -1,0 +1,174 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# The apt packages a build needs before any toolchain is set up.
+#
+# A crate, wheel, or native module that links against a system library resolves
+# its headers through pkg-config, and a runner image ships neither the headers
+# nor the .pc file. Such a build passes on a developer machine that happens to
+# have the package and fails in CI with a message about the build script rather
+# than about the missing library. A repository that has one of these lists the
+# package in .github/system-packages.txt; a repository with no such file runs
+# no apt at all. The file is an addition by occasion, so as shipped this
+# installs nothing.
+#
+# The parsing lives here rather than in the composite action so it runs locally
+# exactly as it runs in GitHub Actions, and so scripts/tests/ can reach it. The
+# action calls `install`; `list` is how a person sees what CI will install
+# without installing it.
+#
+# Not tied to a language, because the need is not: a Rust -sys crate, a wheel
+# built from source, and node-gyp all hit it. The install therefore runs ahead
+# of every toolchain rather than inside one language's setup.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+manifest=".github/system-packages.txt"
+
+usage() {
+  cat <<'EOF'
+Usage: scripts/system-packages <command>
+
+  list      The packages .github/system-packages.txt names, one per line
+  install   Install the ones this host lacks with apt-get; a no-op where the
+            file is absent or every package is already present
+EOF
+}
+
+# One package per line, "#" starts a comment. A line naming two packages is
+# refused rather than joined or split: the file is small and hand-written, and
+# a silent reading of "libasound2-dev pkg-config" as one package name or as two
+# is a guess either way.
+#
+# A leading "-" is refused because apt-get would read it as a flag. A trailing
+# "-", "+", or "^" is refused because apt-get reads each as an instruction
+# rather than as part of the name: "libfoo-" REMOVES libfoo, "libfoo+" installs
+# it, and "task^" installs a whole tasksel task. A typed hyphen at the end of a
+# line would otherwise uninstall a package while the step reported success.
+# "=" is left alone, since "libfoo=1.2" is ordinary version pinning.
+#
+# No guard on readability: the redirection below fails under `set -e` when the
+# file cannot be read, which is the point. Testing existence and then letting
+# sed fail quietly would report success having installed nothing, and the
+# missing header would resurface later as an opaque compile error -- the exact
+# symptom this script exists to remove.
+list() {
+  [[ -f $manifest ]] || return 0
+  local line fields=()
+  while IFS= read -r line || [[ -n $line ]]; do
+    line="${line%%#*}"
+    read -ra fields <<<"$line"
+    (( ${#fields[@]} == 0 )) && continue
+    if (( ${#fields[@]} > 1 )); then
+      echo "$manifest: one package per line, found ${#fields[@]}: $line" >&2
+      return 1
+    fi
+    if [[ ${fields[0]} == -* || ${fields[0]} == *[-+^] ]]; then
+      echo "$manifest: not a package name: ${fields[0]}" >&2
+      return 1
+    fi
+    # "*", "?" and "[" are refused for the same reason as the suffixes above:
+    # both apt-get and dpkg-query read a name holding one as a pattern, so
+    # "libfoo*" would install whatever matched and the installed check below
+    # would answer about the first match rather than about this line.
+    if [[ ${fields[0]} == *[][*?]* ]]; then
+      echo "$manifest: not a package name, reads as a pattern: ${fields[0]}" >&2
+      return 1
+    fi
+    printf '%s\n' "${fields[0]}"
+  done < "$manifest"
+}
+
+# Whether dpkg already holds the package this spec names. A "name=version"
+# spec counts only when that exact version is the installed one, since the pin
+# is there to ask for it. A host with no dpkg-query is not a Debian host and
+# cannot answer, so nothing counts as installed and apt-get decides -- the
+# behavior this script had before the check existed.
+installed() {
+  local spec=$1 name=${1%%=*} pin="" records record
+  [[ $spec == *=* ]] && pin=${spec#*=}
+  command -v dpkg-query > /dev/null 2>&1 || return 1
+  # The trailing newline in the format is not cosmetic. -W emits one record per
+  # match with no separator of its own, so without it a package present for two
+  # architectures comes back as two records run together on one line and every
+  # field read off it is wrong. list() refuses a name that reads as a pattern,
+  # so the only way here is multi-arch, where any installed record answers the
+  # question: dpkg holds the package.
+  records="$(dpkg-query -W -f='${Status}|${Version}\n' "$name" 2> /dev/null)" || return 1
+  while IFS= read -r record; do
+    [[ ${record%%|*} == "install ok installed" ]] || continue
+    [[ -z $pin || ${record#*|} == "$pin" ]] && return 0
+  done <<< "$records"
+  return 1
+}
+
+# Command substitution rather than process substitution, so a failure in list
+# reaches `set -e` instead of arriving as an empty array.
+#
+# What is already installed is skipped, and the skip is the whole install on a
+# machine that persists between runs: a self-hosted runner keeps its packages,
+# so a repository with a manifest would otherwise reach apt on every job for
+# headers that have been there since the first one. A hosted image starts
+# clean and nothing is skipped there, which is the unchanged case.
+#
+# Root is required only when something is actually missing, and that ordering
+# is the point rather than an optimization. The runner host this was written
+# for has no sudo by design -- fleet keys live elsewhere -- so a manifest whose
+# packages the operator installed by hand must pass there. One whose packages
+# are genuinely absent must fail naming them, because the alternative is a
+# build failing later on the header the manifest exists to name.
+install() {
+  local packages=() missing=() names package
+  local -a as_root=()
+  names="$(list)"
+  if [[ -z $names ]]; then
+    # Named here rather than nowhere: the reader of this log is usually someone
+    # whose build just failed on a missing header, and this is the one line in
+    # the run that says where the fix goes.
+    echo "No packages to install: .github/system-packages.txt is absent or names none."
+    return 0
+  fi
+  mapfile -t packages <<<"$names"
+
+  for package in "${packages[@]}"; do
+    installed "$package" || missing+=("$package")
+  done
+
+  if (( ${#missing[@]} == 0 )); then
+    echo "Already installed, nothing to do: ${packages[*]}"
+    return 0
+  fi
+
+  # The probe runs apt-get rather than true, and does so under -n. Under -n
+  # because the failing case on the runner is a sudo that exists and asks: a
+  # password prompt on a non-interactive job hangs until the step times out,
+  # and the timeout says nothing about the missing package. Against apt-get
+  # because a sudoers entry of the common `NOPASSWD: /usr/bin/apt-get` shape
+  # refuses `sudo -n true` while permitting every call this script makes, and
+  # a probe that fails where the work would succeed is a refusal invented here.
+  if (( EUID != 0 )); then
+    if command -v sudo > /dev/null 2>&1 && sudo -n apt-get --version > /dev/null 2>&1; then
+      as_root=(sudo)
+    else
+      echo "$manifest names packages this host does not have, and root is not available to install them:" >&2
+      printf '  %s\n' "${missing[@]}" >&2
+      echo "Install them on the runner host, or run this where sudo works." >&2
+      return 1
+    fi
+  fi
+
+  "${as_root[@]}" apt-get update
+  "${as_root[@]}" apt-get install -y --no-install-recommends "${missing[@]}"
+}
+
+case "${1:-}" in
+  list) list ;;
+  install) install ;;
+  ""|-h|--help|help) usage ;;
+  *)
+    echo "Unknown command: $1" >&2
+    usage >&2
+    exit 2
+    ;;
+esac

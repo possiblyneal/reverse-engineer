@@ -1,0 +1,401 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# The script's value is a narrow substitution, and both halves of it can fail
+# quietly. Rewriting too much takes a human co-author's GitHub attribution away;
+# rewriting too little leaves the message without the trailer commitlint
+# requires, so the commit is refused for a reason that reads as a rule problem
+# rather than a hook that never ran.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+script="$repo_root/scripts/attribute-commit"
+
+# Writes the message to a file, rewrites it in place, and prints the result --
+# the same shape prepare-commit-msg hands the script. The second argument is
+# CLAUDE_COMMIT_MODEL, cleared when absent so a real session's value cannot
+# leak in; the session variables are cleared too, and the cache is under $work.
+# Runs inside the case's scratch repository, so the caller's rebase or
+# cherry-pick cannot make every case a replay.
+rewrite() {
+  local msg_file="$work/COMMIT_EDITMSG"
+  printf '%s\n' "$1" > "$msg_file"
+  (cd "$work" && env -u CLAUDE_COMMIT_MODEL -u CLAUDE_CODE_SESSION_ID \
+    -u CLAUDE_PID XDG_CACHE_HOME="$work/cache" \
+    ${2:+CLAUDE_COMMIT_MODEL="$2"} "$script" "$msg_file" > /dev/null 2>&1)
+  cat "$msg_file"
+}
+
+# The command a case runs: the script on the message file, as a commit would.
+commit_cmd() {
+  printf '"%s" "%s"' "$script" "$work/COMMIT_EDITMSG"
+}
+
+# Runs the second argument as Claude Code's Bash tool would, after writing the
+# first as the message. An outer shell stands in for Claude Code as CLAUDE_PID,
+# and its child shell runs the command in the same eval wrapper, quoting each
+# ' as '"'"', so the script finds that shell and reads the command off it.
+# Neither shell is the last command of its -c, so bash cannot exec it away.
+# The rest are env assignments; CLAUDE_PID= stands for Claude Code's absence.
+claude_rewrite() {
+  local msg_file="$work/COMMIT_EDITMSG" q
+  printf '%s\n' "$1" > "$msg_file"
+  q="${2//\'/\'\"\'\"\'}"
+  # shellcheck disable=SC2016 # $$ and $1 belong to the outer shell
+  (cd "$work" && env -u CLAUDE_COMMIT_MODEL -u CLAUDE_CODE_SESSION_ID \
+    -u CLAUDE_PID XDG_CACHE_HOME="$work/cache" "${@:3}" \
+    bash -c 'export CLAUDE_PID="${CLAUDE_PID-$$}"; bash -c "$1"; :' _ \
+    "true && eval '$q' && :" > /dev/null 2>&1)
+  cat "$msg_file"
+}
+
+# Writes an entry as the agent-side hook does: the model, a newline, then the
+# exact command, in the session's directory. The hook names it by a hash of
+# the agent and command; any unique name serves here.
+entry() {
+  local dir="$work/cache/claude-commit-model/$1"
+  mkdir -p "$dir"
+  printf '%s\n%s' "$2" "$3" > "$(mktemp "$dir/entry.XXXXXX")"
+}
+
+# Asserts on the trailers git itself reads, not on the raw text: the rule this
+# feeds matches through `git interpret-trailers --parse`, so a line that looks
+# right in the file and does not parse as a trailer is the failure to catch.
+trailers() {
+  git interpret-trailers --parse <<< "$1"
+}
+
+
+echo "attribute-commit-test"
+
+fixture "the agent trailer becomes Generated-By"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>")"
+if [[ "$(trailers "$out")" == "Generated-By: Claude Opus 5" ]]; then
+  pass
+else
+  fail "the rewritten message parses as: $(trailers "$out")"
+fi
+
+fixture "a human co-author is left alone"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+Co-Authored-By: A Human <human@example.com>")"
+if [[ "$(trailers "$out")" == "Co-Authored-By: A Human <human@example.com>" ]]; then
+  pass
+else
+  fail "a human co-author was rewritten to: $(trailers "$out")"
+fi
+
+# Both at once is the case that matters: the address is what separates them, and
+# a pattern anchored on the token alone would take the human's attribution too.
+fixture "the agent trailer is rewritten beside a human co-author"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
+Co-Authored-By: A Human <human@example.com>")"
+if [[ "$(trailers "$out")" == $'Generated-By: Claude Opus 5\nCo-Authored-By: A Human <human@example.com>' ]]; then
+  pass
+else
+  fail "the pair parses as: $(trailers "$out")"
+fi
+
+# Without CLAUDE_COMMIT_MODEL nothing is inserted. If the script supplied a
+# trailer here, the commitlint rule it feeds would pass on every hand-written
+# message and prove nothing.
+fixture "a message with no trailer gains none"
+out="$(rewrite "feat: add a thing
+
+A body with no trailer at all.")"
+if [[ -z "$(trailers "$out")" ]]; then
+  pass
+else
+  fail "a trailer was inserted where none existed: $(trailers "$out")"
+fi
+
+fixture "the session's model is inserted as the trailer"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+Refs: #12" glm-5.1)"
+if [[ "$(trailers "$out")" == $'Refs: #12\nGenerated-By: glm-5.1' ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+fixture "a hand-written Generated-By is kept over the session's model"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+Generated-By: by hand" claude-opus-5-5)"
+if [[ "$(trailers "$out")" == "Generated-By: by hand" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+fixture "a rewritten Co-Authored-By is kept over the session's model"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" claude-opus-5-5)"
+if [[ "$(trailers "$out")" == "Generated-By: Claude Opus 5" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# commitlint reads trailers from the last paragraph, so a Generated-By line in
+# the body is prose to it and the commit still needs one inserted.
+fixture "a Generated-By line in the body does not block the insert"
+out="$(rewrite "feat: add a thing
+
+Generated-By: is the trailer this adds.
+
+Refs: #3" glm-5.1)"
+if [[ "$(trailers "$out")" == $'Refs: #3\nGenerated-By: glm-5.1' ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# commitlint matches the key case-sensitively, so a lowercase trailer leaves the
+# commit unattributed to it and the insert is still owed.
+fixture "a lowercase generated-by trailer still gets the insert"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+generated-by: by hand" glm-5.1)"
+if [[ "$(trailers "$out")" == $'generated-by: by hand\nGenerated-By: glm-5.1' ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# git's own default skips a trailer whose key and value already appear in any
+# case, so the same model in lowercase would block the insert silently.
+fixture "a lowercase trailer naming the same model still gets the insert"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+generated-by: glm-5.1" glm-5.1)"
+if [[ "$(trailers "$out")" == $'generated-by: glm-5.1\nGenerated-By: glm-5.1' ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# A `---` line is a patch divider to interpret-trailers by default, which would
+# put the trailer above it, mid-body, and stop the footers below from parsing.
+fixture "a --- line in the body does not move the trailer"
+out="$(rewrite "feat: add a thing
+
+Intro.
+---
+More body.
+
+Refs: #1" glm-5.1)"
+if [[ "$(tail -n 2 <<< "$out")" == $'Refs: #1\nGenerated-By: glm-5.1' ]]; then
+  pass
+else
+  fail "the message reads: $out"
+fi
+
+# A rebase or cherry-pick replays commits someone else wrote; stamping them with
+# the session's model would record a model that did not write them.
+fixture "a replayed commit is not stamped"
+mkdir -p "$work/.git/rebase-merge"
+out="$(rewrite "feat: a human's commit
+
+A body." glm-5.1)"
+if [[ -z "$(trailers "$out")" ]]; then
+  pass
+else
+  fail "a replayed commit gained: $(trailers "$out")"
+fi
+
+# Claude Code ignores a hook's rewritten environment unless it also grants a
+# permission, so the agent-side hook leaves the model in an entry naming the
+# exact command. Subagents share the session ID, so only the command can tell
+# which agent's model a commit belongs to.
+fixture "the model is read from the entry for the running command"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ "$(trailers "$out")" == "Generated-By: glm-5.1" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# The closing quote is what stops `git commit` matching `git commit --amend`.
+fixture "an entry for a shorter command does not match"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$(commit_cmd) # --amend" CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ -z "$(trailers "$out")" ]]; then
+  pass
+else
+  fail "a trailer was inserted: $(trailers "$out")"
+fi
+
+fixture "two matching entries naming one model agree"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ "$(trailers "$out")" == "Generated-By: glm-5.1" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# Two agents on different models ran the same command: either could be this
+# one, and a wrong trailer is worse than commitlint's refusal.
+fixture "matching entries naming different models insert nothing"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+entry sess-1 claude-opus-5-5 "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ -z "$(trailers "$out")" ]]; then
+  pass
+else
+  fail "a trailer was inserted: $(trailers "$out")"
+fi
+
+fixture "an entry with an empty model inserts nothing"
+entry sess-1 "" "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ -z "$(trailers "$out")" ]]; then
+  pass
+else
+  fail "a trailer was inserted: $(trailers "$out")"
+fi
+
+fixture "CLAUDE_COMMIT_MODEL wins over a matching entry"
+entry sess-1 from-entry "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=sess-1 \
+  CLAUDE_COMMIT_MODEL=from-env)"
+if [[ "$(trailers "$out")" == "Generated-By: from-env" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# Without CLAUDE_PID there is no Bash tool shell to read the command from.
+fixture "no CLAUDE_PID inserts nothing"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=sess-1 CLAUDE_PID=)"
+if [[ -z "$(trailers "$out")" ]]; then
+  pass
+else
+  fail "a trailer was inserted: $(trailers "$out")"
+fi
+
+# The ID is joined into a path, so one that climbs out of the cache directory
+# must not be read even when the entry it names exists.
+fixture "a malformed session ID is not read"
+entry ../x glm-5.1 "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=../x)"
+if [[ -z "$(trailers "$out")" ]]; then
+  pass
+else
+  fail "a trailer was inserted: $(trailers "$out")"
+fi
+
+# A heredoc commit is the common shape: its quotes are rewritten by the eval
+# wrapper and its newlines survive into the shell's command line.
+fixture "a command with quotes and newlines still matches"
+heredoc="$(commit_cmd) <<'EOF'
+it's a heredoc
+EOF"
+entry sess-1 glm-5.1 "$heredoc"
+out="$(claude_rewrite "feat: add a thing
+
+A body." "$heredoc" CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ "$(trailers "$out")" == "Generated-By: glm-5.1" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+fixture "a replayed commit is not stamped from an entry"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+mkdir -p "$work/.git/rebase-merge"
+out="$(claude_rewrite "feat: a human's commit
+
+A body." "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ -z "$(trailers "$out")" ]]; then
+  pass
+else
+  fail "a replayed commit gained: $(trailers "$out")"
+fi
+
+fixture "a hand-written Generated-By is kept over an entry"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body.
+
+Generated-By: by hand" "$(commit_cmd)" CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ "$(trailers "$out")" == "Generated-By: by hand" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+fixture "a rewritten Co-Authored-By is kept over an entry"
+entry sess-1 glm-5.1 "$(commit_cmd)"
+out="$(claude_rewrite "feat: add a thing
+
+A body.
+
+Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" "$(commit_cmd)" \
+  CLAUDE_CODE_SESSION_ID=sess-1)"
+if [[ "$(trailers "$out")" == "Generated-By: Claude Opus 5" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# git calls this hook for every commit, including ones whose message is already
+# a trailer's worth of nothing. Rewriting an absent file must not fail the commit.
+fixture "a missing message file is not an error"
+"$script" "$work/does-not-exist" > /dev/null 2>&1
+status=$?
+if (( status == 0 )); then
+  pass
+else
+  fail "a missing message file exited $status, which would block the commit"
+fi
+
+report

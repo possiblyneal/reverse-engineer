@@ -1,0 +1,85 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+cd "$repo_root"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/detect.sh
+source "$repo_root/scripts/libs/detect.sh"
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/unit.sh
+source "$repo_root/scripts/libs/unit.sh"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/quadlet.sh
+source "$repo_root/scripts/libs/quadlet.sh"
+
+# Delivers what the unit declared it ships: an executable per declared target
+# into its dist/, or its deploy/quadlet/ files validated and nothing built. The
+# unit's context reaches the adapters as the libs/unit.sh globals.
+#
+# Packaging is not a check, so nothing in the gate calls this. It exists as a
+# command because a developer building and trying a binary should not have to
+# cut a release to do it.
+unit="$(unit_resolve "${1:-}" package)" || exit 1
+
+if [[ -z "$unit" ]]; then
+  echo "apps/ has no units, so there is nothing to package."
+  exit 0
+fi
+
+cd "apps/$unit"
+unit_read
+
+case "$unit_ships" in
+  none)
+    echo "apps/$unit declares ships: none, so there is nothing to package."
+    exit 0
+    ;;
+  quadlet)
+    quadlet_validate deploy/quadlet "apps/$unit"
+    exit
+    ;;
+esac
+
+mapfile -t languages < <(language_capabilities present)
+if (( ${#languages[@]} == 0 )); then
+  echo "No project manifest found in apps/$unit, so there is nothing to package."
+  exit 0
+fi
+
+# What is left is a unit that ships an executable, and for a language that
+# packages, dist/ is this command's output rather than a directory it adds to. A
+# binary left there by an earlier build satisfies the guard scripts/release
+# makes -- that a unit declaring an executable produced a file -- without having
+# been built from the tagged commit, so a release could be cut with an asset the
+# guard was written to prevent, arriving by a route it cannot see. So the
+# directory is emptied by the dispatch that refills it.
+#
+# Only when a present language actually packages into it. Four of the six have
+# no packaging adapter, and for a unit in one of those dist/ holds whatever its
+# own build wrote -- which is what scripts/ci produces before the release walk
+# reads it. Emptying that would leave the unit with less than it started with
+# and abort the release it was meant to protect, so packaging_writes_dist is
+# asked first and the knowledge of which adapters write there stays beside them.
+#
+# Cleared here rather than in the release walk, so the knowledge that dist/ is
+# the packaging output stays in the one script that writes it, and cleared
+# before the dispatch rather than inside a target loop, since one invocation
+# builds every declared target and every present language: nothing this run
+# produces is removed by it.
+#
+# Not in a dry run, which reports what would be dispatched and runs nothing.
+if [[ -z "${CI_DRY_RUN:-}" ]] && packaging_writes_dist "${languages[@]}"; then
+  rm -rf dist
+fi
+
+# Every present language, unlike scripts/run: a build is not one foreground
+# process, so a unit written in two of them has two artifacts rather than an
+# ambiguity to refuse.
+args=(package)
+[[ -z "${CI_DRY_RUN:-}" ]] || args=(--dry-run package)
+
+language_capabilities run "${args[@]}"
+tally

@@ -1,0 +1,640 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# The two commands that act on one unit: scripts/run and scripts/package. What
+# is under test here is the command line rather than the dispatch -- which unit
+# an invocation resolves to, what the declared facts make it do, and what
+# reaches the program -- because that is where a wrong answer is silent. A
+# command that picked a unit rather than refusing would start the wrong program
+# as often as the right one, and nothing in the output would say so.
+#
+# Covered: unit resolution, `run: none` and `ships: none`, quadlet validation
+# with no container runtime, arguments after --, a declared run fact reaching
+# the adapter rather than gating it, dist/ cleared only where a language
+# packages there, and --entry in each direction: refused with the names
+# printed when a unit holds two and none was given, starting the one named,
+# passing the program its own arguments, naming what the unit declares when an
+# undeclared one is asked for, and a usage error with no value. Skips without
+# jq.
+#
+# Every case sets CI_DRY_RUN, which is the seam scripts/ci already uses: the
+# commands report what they would dispatch and run nothing, so the result comes
+# from the resolution alone and is the same on a machine with no toolchains.
+#
+# Not `set -e`: a failing assertion is recorded and the remaining cases still
+# run, so one break does not hide the rest.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+# A manifest, so a language is present for the unit to dispatch to.
+go_mod() {
+  printf 'module example.com/%s\n\ngo 1.22\n' "$1" > "$work/apps/$1/go.mod"
+}
+
+run_in() {
+  (cd "$work" && CI_DRY_RUN=1 "$@" 2>&1)
+}
+
+# The cases that need the real thing. Nothing is held back: the harness leaves
+# CI_DRY_RUN unset and GOWORK off, and says why.
+run_real() {
+  (cd "$work" && "$@" 2>&1)
+}
+
+echo "unit-commands-test"
+
+# jq reads the declaration, and scripts/doctor requires it. Without it every
+# case here would fail on the tool rather than on the command, so the suite
+# skips every case, which the harness reports as a failure.
+if ! command -v jq > /dev/null 2>&1; then
+  skip "jq is not installed"
+  report
+  exit
+fi
+
+# --- resolving which unit ----------------------------------------------------
+
+# One unit needs no naming. Requiring it would make the common repository --
+# one deployable, one command -- the awkward case.
+fixture "one unit needs no name"
+declare_unit only oneshot
+go_mod only
+out="$(run_in scripts/run)"
+if grep -qE '^run +would-run +go$' <<< "$out"; then
+  pass
+else
+  fail "a lone unit was not resolved without being named: $out"
+fi
+
+# Several units and no name is the ambiguity the command must not resolve on
+# its own, so it lists what it could have meant as lines to copy.
+fixture "several units must be named"
+declare_unit alpha oneshot
+go_mod alpha
+declare_unit beta oneshot
+go_mod beta
+out="$(run_in scripts/run)"
+status=$?
+if (( status == 0 )); then
+  fail "a run with two units to choose between started something"
+elif grep -q 'scripts/run alpha' <<< "$out" && grep -q 'scripts/run beta' <<< "$out"; then
+  pass
+else
+  fail "the refusal did not list the candidates: $out"
+fi
+
+fixture "a name that is not a unit is refused"
+declare_unit alpha oneshot
+go_mod alpha
+out="$(run_in scripts/run beta)"
+status=$?
+if (( status != 0 )) && grep -q 'No apps/beta directory' <<< "$out"; then
+  pass
+else
+  fail "a name matching no unit was not refused: $out"
+fi
+
+# --- what the declaration decides --------------------------------------------
+
+# A library is not broken for being a library. Failing here would make
+# `run: none` a state a repository has to route around rather than declare.
+fixture "run: none has nothing to run and says so"
+declare_unit lib none
+go_mod lib
+out="$(run_in scripts/run lib)"
+status=$?
+if (( status == 0 )) && grep -q 'run: none' <<< "$out"; then
+  pass
+else
+  fail "a unit that runs as nothing did not exit 0 saying so (exit $status): $out"
+fi
+
+fixture "a unit with no declaration is named rather than assumed"
+mkdir -p "$work/apps/undeclared"
+go_mod undeclared
+out="$(run_in scripts/run undeclared)"
+status=$?
+if (( status != 0 )) && grep -q '.unit.json' <<< "$out"; then
+  pass
+else
+  fail "a unit with no declaration was not named (exit $status): $out"
+fi
+
+fixture "ships: none has nothing to package"
+declare_unit lib none
+go_mod lib
+out="$(run_in scripts/package lib)"
+status=$?
+if (( status == 0 )) && grep -q 'ships: none' <<< "$out"; then
+  pass
+else
+  fail "a unit that ships nothing did not exit 0 saying so (exit $status): $out"
+fi
+
+fixture "a declared executable reaches the package adapter"
+declare_unit tool oneshot executable linux-amd64
+go_mod tool
+out="$(run_in scripts/package tool)"
+if grep -qE '^package +would-run +go$' <<< "$out"; then
+  pass
+else
+  fail "a unit shipping an executable did not dispatch package: $out"
+fi
+
+# --- packaging owns the unit's dist/ -----------------------------------------
+
+# scripts/release aborts when a unit declaring an executable produced no file,
+# and a binary left by an earlier build satisfies that guard without having been
+# built from the tagged commit -- the outcome the guard exists to prevent,
+# arriving by a route it cannot see. So for a language that packages, dist/ is
+# the command's whole output rather than a directory it adds to.
+#
+# Go is present here by its manifest alone, and the clearing runs before the
+# dispatch, so this case sees the clearing whether or not a Go toolchain is
+# installed: a module with no main package is unavailable to package either
+# way, and the exit is the failing one, but dist/ was emptied first.
+fixture "packaging clears a file an earlier build left"
+declare_unit tool oneshot executable linux-amd64
+go_mod tool
+mkdir -p "$work/apps/tool/dist"
+printf 'stale\n' > "$work/apps/tool/dist/tool-linux-amd64"
+out="$(run_real scripts/package tool)"
+status=$?
+if [[ -e "$work/apps/tool/dist/tool-linux-amd64" ]]; then
+  fail "a file from an earlier build survived packaging: $out"
+elif (( status == 0 )) || ! grep -qE '^package +unavailable +go' <<< "$out"; then
+  fail "a unit with nothing to build did not report unavailable (exit $status): $out"
+else
+  pass
+fi
+
+# The other side of the same rule. Four of the six languages have no packaging
+# adapter, and for a unit in one of those dist/ is not this command's output --
+# it holds whatever the unit's own build wrote, which scripts/ci produces before
+# the release walk reads it. Emptying it there would leave the unit with less
+# than it started with and abort the release the clearing exists to protect.
+#
+# Node needs no toolchain to reach this: package.json alone makes the language
+# present, and its packaging adapter is dispatched and reports unavailable. The
+# exit is the failing one, since a unit that promised an executable got none,
+# and the file the unit's own build wrote is still there.
+fixture "a language that packages nothing keeps its dist/"
+declare_unit tscli oneshot executable linux-amd64
+mkdir -p "$work/apps/tscli/dist"
+printf '{"name": "tscli", "version": "1.0.0", "bin": "./dist/cli.js"}\n' \
+  > "$work/apps/tscli/package.json"
+printf 'built\n' > "$work/apps/tscli/dist/cli.js"
+out="$(run_real scripts/package tscli)"
+status=$?
+if [[ ! -f "$work/apps/tscli/dist/cli.js" ]]; then
+  fail "packaging deleted a build it cannot replace: $out"
+elif (( status == 0 )) || ! grep -qE '^package +unavailable +node' <<< "$out"; then
+  fail "a language with no adapter did not report unavailable (exit $status): $out"
+else
+  pass
+fi
+
+# A dry run reports what would be dispatched and runs nothing. Deleting the last
+# build while claiming to have done nothing is the one way it could be worse
+# than the real thing.
+fixture "a dry run deletes nothing"
+declare_unit tool oneshot executable linux-amd64
+go_mod tool
+mkdir -p "$work/apps/tool/dist"
+printf 'binary\n' > "$work/apps/tool/dist/tool-linux-amd64"
+out="$(run_in scripts/package tool)"
+if [[ -f "$work/apps/tool/dist/tool-linux-amd64" ]]; then
+  pass
+else
+  fail "a dry run deleted the unit's dist/: $out"
+fi
+
+# The other half of the same rule: one invocation builds every declared target,
+# so clearing once before the dispatch cannot remove what this run produced.
+# Clearing inside the per-target loop would pass the case above and leave only
+# the last target's binary here.
+fixture "every declared target survives the clearing"
+declare_unit cli oneshot executable linux-amd64 macos-arm64
+go_mod cli
+mkdir -p "$work/apps/cli/src/hello" "$work/apps/cli/dist"
+printf 'package main\n\nfunc main() {}\n' > "$work/apps/cli/src/hello/main.go"
+printf 'go 1.22\n\nuse ./apps/cli\n' > "$work/go.work"
+# A name no build here produces, so being overwritten cannot stand in for being
+# cleared.
+printf 'stale\n' > "$work/apps/cli/dist/hello-windows-arm64"
+if command -v go > /dev/null 2>&1; then
+  out="$(run_real scripts/package cli)"
+  status=$?
+  if (( status != 0 )); then
+    fail "packaging two targets failed (exit $status): $out"
+  elif [[ -e "$work/apps/cli/dist/hello-windows-arm64" ]]; then
+    fail "a stale binary survived a build that produced files: $out"
+  elif [[ -f "$work/apps/cli/dist/hello-linux-amd64" && -f "$work/apps/cli/dist/hello-macos-arm64" ]]; then
+    pass
+  else
+    fail "not every declared target is in dist/: $(ls "$work/apps/cli/dist")"
+  fi
+else
+  skip "go is not installed"
+fi
+
+# --- a quadlet unit is validated, not built ----------------------------------
+
+# systemd and podman build the image on the deploy host when the unit starts, or
+# pull it from a registry, so packaging one checks the unit files rather than
+# producing anything. Every case here runs on a machine with no container
+# runtime, which is the property being kept: a repository shipping a service
+# must not need podman to pass its own gate.
+fixture "a well-formed quadlet pair validates and builds nothing"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status != 0 )); then
+  fail "a well-formed pair did not validate (exit $status): $out"
+elif [[ -e "$work/apps/svc/dist" ]]; then
+  fail "validating a quadlet unit produced a dist/"
+else
+  pass
+fi
+
+# quadlet resolves an Image naming a .build file to what that build produces, so
+# both spellings are the same reference and both have to be accepted.
+fixture "an Image naming the .build unit is accepted"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+printf '[Container]\nImage=svc.build\n' > "$work/apps/svc/deploy/quadlet/svc.container"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status == 0 )); then
+  pass
+else
+  fail "an Image naming the build unit was rejected (exit $status): $out"
+fi
+
+# The failure this catches is a service that will not start on the deploy host,
+# where the build runs and the Containerfile is not where the unit said.
+fixture "a .build naming a Containerfile that does not exist is refused"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+rm "$work/apps/svc/deploy/quadlet/Containerfile"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status != 0 )) && grep -q 'Containerfile' <<< "$out"; then
+  pass
+else
+  fail "a missing Containerfile was not refused (exit $status): $out"
+fi
+
+fixture "a .container asking for an image no .build produces is refused"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+printf '[Container]\nImage=localhost/other:latest\n' > "$work/apps/svc/deploy/quadlet/svc.container"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status != 0 )) && grep -q 'localhost/other:latest' <<< "$out"; then
+  pass
+else
+  fail "an image no build produces was not refused (exit $status): $out"
+fi
+
+# A unit whose image CI publishes runs it by registry reference and ships no
+# .build, so the .container alone is a whole quadlet.
+fixture "a registry image with no .build unit is accepted"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+rm "$work/apps/svc/deploy/quadlet/svc.build"
+printf '[Container]\nImage=ghcr.io/owner/svc:latest\n' > "$work/apps/svc/deploy/quadlet/svc.container"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status == 0 )); then
+  pass
+else
+  fail "a registry image was rejected (exit $status): $out"
+fi
+
+# localhost/ and a bare name both resolve to an image on the deploy host, so
+# with no .build to produce it the service would not start there.
+for image in localhost/svc:latest svc:latest; do
+  fixture "an image only the deploy host could hold, with no .build, is refused: $image"
+  declare_unit svc longlived quadlet
+  go_mod svc
+  quadlet_pair svc
+  rm "$work/apps/svc/deploy/quadlet/svc.build"
+  printf '[Container]\nImage=%s\n' "$image" > "$work/apps/svc/deploy/quadlet/svc.container"
+  out="$(run_in scripts/package svc)"
+  status=$?
+  if (( status != 0 )) && grep -qF "$image" <<< "$out"; then
+    pass
+  else
+    fail "$image with no .build was not refused (exit $status): $out"
+  fi
+done
+
+fixture "a missing .container unit is refused"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+rm "$work/apps/svc/deploy/quadlet/svc.container"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status != 0 )) && grep -q '.container' <<< "$out"; then
+  pass
+else
+  fail "a missing .container unit was not refused (exit $status): $out"
+fi
+
+# podman reads the Containerfile out of the working directory when the build
+# names no File, so requiring File would reject a unit podman accepts.
+fixture "a .build with SetWorkingDirectory and no File is accepted"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+printf '[Build]\nImageTag=localhost/svc:latest\nSetWorkingDirectory=unit\n' \
+  > "$work/apps/svc/deploy/quadlet/svc.build"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status == 0 )); then
+  pass
+else
+  fail "a build using the working directory was rejected (exit $status): $out"
+fi
+
+fixture "a .build naming no ImageTag is refused"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+printf '[Build]\nFile=./Containerfile\n' > "$work/apps/svc/deploy/quadlet/svc.build"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status != 0 )) && grep -q 'names no ImageTag' <<< "$out"; then
+  pass
+else
+  fail "a build producing no image was not refused (exit $status): $out"
+fi
+
+fixture "a .build naming neither File nor SetWorkingDirectory is refused"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+printf '[Build]\nImageTag=localhost/svc:latest\n' > "$work/apps/svc/deploy/quadlet/svc.build"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status != 0 )) && grep -q 'neither File nor SetWorkingDirectory' <<< "$out"; then
+  pass
+else
+  fail "a build with no Containerfile to read was not refused (exit $status): $out"
+fi
+
+fixture "a .container naming no Image is refused"
+declare_unit svc longlived quadlet
+go_mod svc
+quadlet_pair svc
+printf '[Container]\n' > "$work/apps/svc/deploy/quadlet/svc.container"
+out="$(run_in scripts/package svc)"
+status=$?
+if (( status != 0 )) && grep -q 'names no Image' <<< "$out"; then
+  pass
+else
+  fail "a container running nothing was not refused (exit $status): $out"
+fi
+
+# --- what reaches the program ------------------------------------------------
+
+# The program's flags and this script's own must not compete for the same
+# argument. Everything after `--` is the program's, whatever it spells them.
+fixture "arguments after -- reach the program unchanged"
+declare_unit cli oneshot
+go_mod cli
+mkdir -p "$work/apps/cli/src/hello"
+cat > "$work/apps/cli/src/hello/main.go" <<'GO'
+package main
+
+import (
+	"fmt"
+	"os"
+	"strings"
+)
+
+func main() { fmt.Println("args:" + strings.Join(os.Args[1:], "|")) }
+GO
+printf 'go 1.22\n\nuse ./apps/cli\n' > "$work/go.work"
+if command -v go > /dev/null 2>&1; then
+  out="$(run_real scripts/run cli -- --verbose 'two words')"
+  if grep -q 'args:--verbose|two words' <<< "$out"; then
+    pass
+  else
+    fail "the arguments did not reach the program unchanged: $out"
+  fi
+else
+  # One of the two real-program cases here, because argument passing is one of
+  # the things a dry run cannot show; the Python run-fact group below is the
+  # other.
+  skip "go is not installed"
+fi
+
+# --- the declared run fact reaches the adapter -------------------------------
+
+# Python names its entry point in [project.scripts] whichever way the unit runs,
+# so a unit declaring `longlived` starts the same way a `oneshot` one does. The
+# adapter gated on `oneshot` once, which left a dashboard declaring itself
+# honestly with nothing to start it. Real rather than dry, because a dry run
+# reports the language and never reaches the adapter that held the gate.
+for declared in longlived oneshot; do
+  fixture "a $declared Python unit starts from its console script"
+  declare_unit dash "$declared"
+  mkdir -p "$work/apps/dash/src/dash"
+  cat > "$work/apps/dash/pyproject.toml" <<'TOML'
+[project]
+name = "dash"
+version = "1.0.0"
+requires-python = ">=3.11"
+
+[project.scripts]
+dash = "dash:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/dash"]
+TOML
+  printf 'def main():\n    print("dash started")\n' \
+    > "$work/apps/dash/src/dash/__init__.py"
+  # The orphan-manifest rule: a package no root manifest lists is a doctor
+  # failure, and doctor runs before the dispatch.
+  cat > "$work/pyproject.toml" <<'TOML'
+[tool.uv.workspace]
+members = ["apps/dash"]
+TOML
+  if command -v uv > /dev/null 2>&1; then
+    out="$(run_real scripts/run dash)"
+    status=$?
+    if [ "$status" -eq 0 ] && grep -q 'dash started' <<< "$out"; then
+      pass
+    else
+      fail "a $declared Python unit did not start (exit $status): $out"
+    fi
+  else
+    skip "uv is not installed"
+  fi
+done
+
+# --- refusals that survived the rename ---------------------------------------
+
+# A run is one foreground process, so a unit holding two stacks is an ambiguity
+# to name rather than resolve.
+fixture "a unit holding several stacks is refused with the stacks named"
+declare_unit both oneshot
+go_mod both
+printf '{"name":"b","version":"1.0.0"}\n' > "$work/apps/both/package.json"
+out="$(run_in scripts/run both)"
+status=$?
+if (( status == 0 )); then
+  fail "a unit with two stacks started one of them"
+elif grep -q 'node' <<< "$out" && grep -q 'go' <<< "$out"; then
+  pass
+else
+  fail "the refusal did not name both stacks: $out"
+fi
+
+# --- naming an entry point within a unit -------------------------------------
+
+# A unit with two programs is the case scripts/run used to refuse outright,
+# leaving the repository to write its own script. The refusal is still right
+# when nothing says which program; --entry is what says it.
+py_two_entries() {
+  declare_unit "$1" "$2"
+  mkdir -p "$work/apps/$1/src/svc"
+  cat > "$work/apps/$1/pyproject.toml" <<TOML
+[project]
+name = "$1"
+version = "1.0.0"
+requires-python = ">=3.11"
+
+[project.scripts]
+svc-api = "svc:api"
+svc-dashboard = "svc:dashboard"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/svc"]
+TOML
+  cat > "$work/apps/$1/src/svc/__init__.py" <<'PYSRC'
+import sys
+
+
+def api():
+    print("api started:" + "|".join(sys.argv[1:]))
+
+
+def dashboard():
+    print("dashboard started")
+PYSRC
+  cat > "$work/pyproject.toml" <<TOML
+[tool.uv.workspace]
+members = ["apps/$1"]
+TOML
+}
+
+fixture "two entry points and no name is refused with both named"
+py_two_entries svc longlived
+if command -v uv > /dev/null 2>&1; then
+  out="$(run_real scripts/run svc)"
+  status=$?
+  if (( status == 0 )); then
+    fail "a unit with two entry points started one of them"
+  elif grep -q -- '--entry svc-api' <<< "$out" && grep -q -- '--entry svc-dashboard' <<< "$out"; then
+    pass
+  else
+    fail "the refusal did not name both entry points as --entry: $out"
+  fi
+else
+  skip "uv is not installed"
+fi
+
+fixture "a named entry point starts that program"
+py_two_entries svc longlived
+if command -v uv > /dev/null 2>&1; then
+  out="$(run_real scripts/run svc --entry svc-dashboard)"
+  status=$?
+  if (( status == 0 )) && grep -q 'dashboard started' <<< "$out"; then
+    pass
+  else
+    fail "--entry did not start the named program (exit $status): $out"
+  fi
+else
+  skip "uv is not installed"
+fi
+
+# The flag and the program's own arguments are separate coordinates, so naming
+# an entry must not consume what follows `--`.
+fixture "a named entry point still passes the program its arguments"
+py_two_entries svc oneshot
+if command -v uv > /dev/null 2>&1; then
+  out="$(run_real scripts/run svc --entry=svc-api -- --verbose 'two words')"
+  if grep -q 'api started:--verbose|two words' <<< "$out"; then
+    pass
+  else
+    fail "the arguments did not reach the named entry point unchanged: $out"
+  fi
+else
+  skip "uv is not installed"
+fi
+
+# An entry point the unit does not declare is a typo to correct, so what it does
+# declare is what the refusal has to print.
+fixture "an entry point the unit does not declare names the ones it does"
+py_two_entries svc longlived
+if command -v uv > /dev/null 2>&1; then
+  out="$(run_real scripts/run svc --entry svc-worker)"
+  status=$?
+  if (( status == 0 )); then
+    fail "an undeclared entry point started something"
+  elif grep -q 'svc-worker' <<< "$out" && grep -q 'svc-api' <<< "$out"; then
+    pass
+  else
+    fail "the refusal did not name the declared entry points: $out"
+  fi
+else
+  skip "uv is not installed"
+fi
+
+# Needs no toolchain: the parse refuses before any language is detected.
+fixture "--entry without a value is a usage error"
+declare_unit svc oneshot
+out="$(run_in scripts/run svc --entry)"
+status=$?
+if (( status == 2 )) && grep -q -- '--entry needs a value' <<< "$out"; then
+  pass
+else
+  fail "a bare --entry was not refused as a usage error (exit $status): $out"
+fi
+
+# `--` is the program's separator, so it is never --entry's value. Taking it
+# would read the first program argument as the unit name and start the wrong
+# thing rather than refusing.
+fixture "--entry does not take the program separator as its value"
+declare_unit svc oneshot
+out="$(run_in scripts/run --entry -- svc)"
+status=$?
+if (( status == 2 )) && grep -q -- '--entry needs a value' <<< "$out"; then
+  pass
+else
+  fail "--entry consumed the -- separator (exit $status): $out"
+fi
+
+report
