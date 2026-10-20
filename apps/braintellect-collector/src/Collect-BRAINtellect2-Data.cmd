@@ -153,7 +153,7 @@ if($ShowUI){
     $form.MaximizeBox = $false
     $form.MinimizeBox = $false
     $form.ControlBox = $false   # only the end of the collection closes it
-    $form.BackColor = [System.Windows.Forms.Color]::White
+    $form.BackColor = [System.Drawing.Color]::White
 
     $title  = New-Object System.Windows.Forms.Label
     $title.Location = '20,18'; $title.Size = '500,20'
@@ -192,8 +192,8 @@ if($ShowUI){
     $timer.Interval = 500
     $timer.add_Tick({
       try{
-        if($script:progressFile -and (Test-Path $script:progressFile)){
-          $parts = (Get-Content -Path $script:progressFile -TotalCount 1 -ErrorAction Stop) -split '\|', 3
+        if($progressFile -and (Test-Path $progressFile)){
+          $parts = (Get-Content -Path $progressFile -TotalCount 1 -ErrorAction Stop) -split '\|', 3
           if($parts.Count -eq 3){
             $uiState.Pct = [int]$parts[0]; $uiState.Marquee = ($parts[1] -eq '1'); $uiState.Status = $parts[2]
           }
@@ -206,9 +206,8 @@ if($ShowUI){
         $uiState.ETA = Format-Dur ([timespan]::FromSeconds([Math]::Max(0, $totalSec - $elapsedSec)))
       } else { $uiState.ETA = '---' }
       $updateUI.Invoke()
-      if($script:child.HasExited){ $script:timer.Stop(); $script:form.Close() }
+      if($child.HasExited){ $timer.Stop(); $form.Close() }
     })
-    $form.Controls.Add($timer)
   }catch{
     # If the window can't be shown, keep going without it (logging still works).
     $ShowUI = $false
