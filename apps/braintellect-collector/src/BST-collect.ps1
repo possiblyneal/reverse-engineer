@@ -280,6 +280,7 @@ $collection = {
   & $reportProgress 0 4 'Collecting system information...' 20 $false
   $sysLog = Join-Path $work 'SYSTEM-INFO.txt'
   $sys = @()
+  $sysFails = 0
   try{
     $os = Get-CimInstance Win32_OperatingSystem
     $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -EA SilentlyContinue
@@ -292,7 +293,7 @@ $collection = {
     $sys += "Install:     " + $os.InstallDate
     $sys += "Last boot:   " + $os.LastBootUpTime
     $sys += "Arch:        " + $os.OSArchitecture
-  }catch{ $sys += "OS capture failed: " + $_.Exception.Message }
+  }catch{ $sysFails++; $sys += "OS capture failed: " + $_.Exception.Message }
   try{
     $cs   = Get-CimInstance Win32_ComputerSystem
     $cpu  = Get-CimInstance Win32_Processor
@@ -307,7 +308,7 @@ $collection = {
     $sys += "RAM (GB):     " + ([math]::Round($cs.TotalPhysicalMemory / 1GB, 1))
     $sys += "BIOS:         " + $bios.Manufacturer + " " + $bios.Version
     $sys += "Disks:        " + (($disk | ForEach-Object { $_.Model + " " + [math]::Round($_.Size/1GB,0) + "GB" }) -join ', ')
-  }catch{ $sys += "Hardware capture failed: " + $_.Exception.Message }
+  }catch{ $sysFails++; $sys += "Hardware capture failed: " + $_.Exception.Message }
   try{
     # Dependencies the tool actually needs. Captured raw (not friendly-mapped) so an
     # old machine's build number is unambiguous. $PSVersionTable exists since PS 2.0.
@@ -326,9 +327,11 @@ $collection = {
     $sys += "reg.exe:       " + $(if($reg){ $reg.Path }else{ 'MISSING' })
     $sys += "ZIP API:       " + $zipApi
     $sys += "Arch:          " + $os.OSArchitecture
-  }catch{ $sys += "Dependency capture failed: " + $_.Exception.Message }
+  }catch{ $sysFails++; $sys += "Dependency capture failed: " + $_.Exception.Message }
   $sys | Set-Content -Path $sysLog -Encoding UTF8
-  Set-SectionStatus '0. System information' 'ok'
+  if($sysFails -eq 0){ Set-SectionStatus '0. System information' 'ok' }
+  elseif($sysFails -ge 3){ Set-SectionStatus '0. System information' 'fail' }
+  else{ Set-SectionStatus '0. System information' 'partial' }
 
   # =====================================================================
   # 1. INSTALL FOLDER(S)  -- BRAINtellect2 / BST folders anywhere
@@ -337,7 +340,7 @@ $collection = {
   & $reportProgress 1 4 'Locating install folder(s)...' 40 $false
   $nameHits = @(Find-Dir 'BRAINtellect2')
   $nameHits += @(Find-Dir 'BST')
-  $instRoots = $nameHits | Sort-Object -Unique
+  $instRoots = $nameHits | Where-Object { $_ } | Sort-Object -Unique
   if(-not $instRoots){
     Say "   (no BRAINtellect2/BST folder found -- skipping install capture)"
     Set-SectionStatus '1. Install folder(s)' 'skip'
@@ -481,6 +484,7 @@ $collection = {
   $null = New-Item -ItemType Directory -Force -Path $regOut
   $regHives = @('HKCU:\Software','HKLM:\Software','HKCU:\Software\Wow6432Node','HKLM:\Software\Wow6432Node')
   $exported = 0
+  $regFailed = 0
   # reg.exe writes to stderr on any failure; under ErrorActionPreference=Stop that
   # would abort the whole export, so run this section as Continue (as the DB probe does).
   $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
@@ -494,13 +498,19 @@ $collection = {
         # never overwrite each other.
         $safe = ($_.Name -replace '[\\:*?"<>|]', '_')
         reg export $_.Name (Join-Path $regOut ("$safe.reg")) /y 2>$null
-        if($LASTEXITCODE -eq 0){ $exported++ }
+        if($LASTEXITCODE -eq 0){ $exported++ }else{ $regFailed++ }
       }
   }
   $ErrorActionPreference = $prevEAP
-  if($exported -eq 0){
+  if($exported -eq 0 -and $regFailed -eq 0){
     Say "   (no BRAINtellect/BST registry keys found)"
     Set-SectionStatus '3. Registry' 'skip'
+  }elseif($exported -eq 0){
+    Say ("   registry export failed for $regFailed key(s)")
+    Set-SectionStatus '3. Registry' 'fail'
+  }elseif($regFailed -gt 0){
+    Say ("   exported $exported registry key(s); $regFailed failed")
+    Set-SectionStatus '3. Registry' 'partial'
   }else{
     Say ("   exported $exported registry key(s)")
     Set-SectionStatus '3. Registry' 'ok'
