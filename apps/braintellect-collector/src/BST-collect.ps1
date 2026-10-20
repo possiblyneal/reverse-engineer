@@ -12,8 +12,8 @@
 # machine.
 #
 # Installs nothing: it never runs an installer or writes anywhere except the temp
-# folder. The database is read from a temporary copy that is removed when the run
-# ends, so the only file left behind is the export zip on your Desktop.
+# folder and the Desktop ZIP. The database is read from a temporary copy that is
+# removed when the run ends, so the only file left behind is the export ZIP.
 #
 # Discovers the important paths by searching, so it does not need to know exactly
 # where BRAINtellect2 is installed on this machine.
@@ -50,9 +50,9 @@ function Find-Dir($name){
   }
   return $null
 }
-function Find-Exe($name){
+function Find-Exe($name, $preferredRoots){
   $roots = @()
-  if($instRoots){ $roots += $instRoots }   # prefer the app's bundled engine
+  if($preferredRoots){ $roots += $preferredRoots }   # prefer the app's bundled engine
   $roots += $drives                         # then fall back to any drive
   foreach($r in $roots){
     $hit = Get-ChildItem -Path $r -Recurse -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
@@ -88,9 +88,12 @@ $sectionStatus = [ordered]@{
   '2. Database'           = 'pending'
   '3. Registry'           = 'pending'
 }
+function Get-StatusLabel($status){
+  switch($status){ 'ok'{'[OK]'} 'fail'{'[FAIL]'} 'skip'{'[SKIP]'} 'partial'{'[PARTIAL]'} default{'[? ]'} }
+}
 function Set-SectionStatus($name, $status){
   $sectionStatus[$name] = $status
-  $label = switch($status){ 'ok'{'[OK]'} 'fail'{'[FAIL]'} 'skip'{'[SKIP]'} 'partial'{'[PARTIAL]'} default{$status} }
+  $label = Get-StatusLabel $status
   Say ("   $label " + $name + ' --- done')
 }
 # Writes the per-section results table to the log. Called before the zip so it is
@@ -99,7 +102,7 @@ function Write-SectionSummary{
   Say ""
   Say "=== SECTION RESULTS ==="
   foreach($kv in $sectionStatus.GetEnumerator()){
-    $label = switch($kv.Value){ 'ok'{'[OK]'} 'fail'{'[FAIL]'} 'skip'{'[SKIP]'} 'partial'{'[PARTIAL]'} default{'[? ]'} }
+    $label = Get-StatusLabel $kv.Value
     Say ("   $label " + $kv.Key)
   }
 }
@@ -296,9 +299,9 @@ $collection = {
   Get-ChildItem $dataOut -Filter '*.err' -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
   # find the bundled engine so we can read the copy privately
-  $mysqld    = Find-Exe 'mysqld.exe'
-  $mysqldump = Find-Exe 'mysqldump.exe'
-  $mysqlcli  = Find-Exe 'mysql.exe'
+  $mysqld    = Find-Exe 'mysqld.exe' $instRoots
+  $mysqldump = Find-Exe 'mysqldump.exe' $instRoots
+  $mysqlcli  = Find-Exe 'mysql.exe' $instRoots
   $dbStatus = 'ok'
   if(-not $mysqld){
     Say "   (no mysqld.exe found on this tablet -- skipping SQL dump, raw files kept)"
@@ -320,7 +323,7 @@ $collection = {
     $mysqlArgs = @("--datadir=$dataOut","--basedir=$basedir",
           '--skip-networking','--enable-named-pipe',"--socket=$pipe",
           '--skip-grant-tables','--innodb-force-recovery=1')
-    $errmsg = Find-Exe 'errmsg.sys'
+    $errmsg = Find-Exe 'errmsg.sys' $instRoots
     if($errmsg){ $mysqlArgs += ("--lc-messages-dir=" + (Split-Path $errmsg -Parent)) }
     $proc = Start-Process -FilePath $mysqld -ArgumentList $mysqlArgs -WindowStyle Hidden -PassThru
     Start-Sleep -Seconds 2
@@ -412,21 +415,26 @@ $collection = {
     throw
   }
   finally{
-    # Release our private mysqld first: on Windows it holds the copied datadir's
-    # ibdata1/ib_logfile open exclusively, which would prevent archive creation.
-    if($proc -and -not $proc.HasExited){
-      Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-      Start-Sleep -Seconds 2
+    try{
+      # Release our private mysqld first: on Windows it holds the copied datadir's
+      # ibdata1/ib_logfile open exclusively, which would prevent archive creation.
+      if($proc -and -not $proc.HasExited){
+        Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        Start-Sleep -Seconds 2
+      }
+      # Always write the per-section results BEFORE zipping, so the export records
+      # success OR failure for every section even if one failed.
+      Write-SectionSummary
+      if(Test-Path $outZip){ Remove-Item $outZip -Force }
+      Say "Writing the archive to your Desktop (this can take a bit)..."
+      # ZipFile is available with .NET 4.5+, including the inbox PowerShell on
+      # Windows 8/8.1. Compress-Archive would require PowerShell 5.0+.
+      Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
+      [System.IO.Compression.ZipFile]::CreateFromDirectory($work, $outZip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
+    }finally{
+      # Never leave the private database or install copy behind, even on failure.
+      Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
     }
-    # Always write the per-section results BEFORE zipping, so the export records
-    # success OR failure for every section even if one failed.
-    Write-SectionSummary
-    if(Test-Path $outZip){ Remove-Item $outZip -Force }
-    Say "Writing the archive to your Desktop (this can take a bit)..."
-    # ZipFile is available with .NET 4.5+, including the inbox PowerShell on
-    # Windows 8/8.1. Compress-Archive would require PowerShell 5.0+.
-    Add-Type -AssemblyName System.IO.Compression.FileSystem -ErrorAction Stop
-    [System.IO.Compression.ZipFile]::CreateFromDirectory($work, $outZip, [System.IO.Compression.CompressionLevel]::Optimal, $false)
   }
   # Close the window once the export is written. Guarded so it runs even if the
   # finally above threw; skipped entirely when there is no window.
@@ -470,6 +478,3 @@ Say "Please email that one file to Neal (nealheinecke@gmail.com)."
 Say "If it is too big to email, upload it to Google Drive / WeTransfer"
 Say "and send Neal the link."
 Say "================================================================"
-
-# Remove all temp working files; the only thing left is the Desktop zip.
-Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue

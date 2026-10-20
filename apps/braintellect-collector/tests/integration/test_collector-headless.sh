@@ -61,6 +61,7 @@ cat "$out/guest.log"
 
 # --- ok case: the whole collection ---
 check "headless run exits zero" has "$out/guest.log" 'ok exit=0'
+check "successful run removes its private copy" has "$out/guest.log" 'ok temp leftovers=0'
 check "ZIP is a valid archive" unzip -tq "$out/ok.zip"
 mkdir "$out/ok"
 unzip -qq -o "$out/ok.zip" -d "$out/ok" 2>/dev/null || true # .NET 4.5 writes backslash separators; unzip warns, then extracts
@@ -87,6 +88,7 @@ check "SYSTEM-INFO: MySQL engine version" has_re "$info" 'MySQL engine: +.*mysql
 
 # --- fail case: the failure reaches the caller and the export ---
 check "missing database exits non-zero" has_re "$out/guest.log" 'fail exit=[1-9]'
+check "failed run removes its private copy" has "$out/guest.log" 'fail temp leftovers=0'
 mkdir "$out/fail"
 unzip -qq -o "$out/fail.zip" -d "$out/fail" 2>/dev/null || true
 check "failed stage is recorded" has "$out/fail/STATUS.txt" '[FAIL] 2. Database'

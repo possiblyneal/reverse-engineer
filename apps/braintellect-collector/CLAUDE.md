@@ -19,7 +19,8 @@ diagnostics, without changing the tablet. The unit runs nothing here and ships n
 ## Local Contracts
 
 - **One script, two modes.** Interactive by default (progress window, collection on a
-  background thread). `BST_NO_UI=1` skips the window and runs the collection synchronously, so
+  background thread). `-ShowUI:$false` or `BST_NO_UI=1` skips the window and runs the collection
+  synchronously, so
   a failure is an unhandled error in the caller and `powershell -File` exits non-zero. Never
   put the headless path on a thread: the error is then lost and the exit stays 0.
 - **Windows 8 floor: PowerShell 3, .NET 4.5.** The ZIP comes from

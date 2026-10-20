@@ -8,7 +8,7 @@ a private temporary copy and then cleans up after itself. It does not send
 anything anywhere on its own -- it just makes one file on your Desktop that YOU
 then email to me. You can keep using BRAINtellect2 normally while this runs. You
 can open the file BST-collect.ps1 in Notepad and read it first if you like;
-it's short and commented.
+it's commented and readable in Notepad.
 
 What the file will contain (everything BRAINtellect2 on your tablet):
   - which Windows and PowerShell versions your tablet runs, so I can fix a

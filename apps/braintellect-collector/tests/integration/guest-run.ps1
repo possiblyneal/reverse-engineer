@@ -11,12 +11,15 @@ $desktop = [Environment]::GetFolderPath('Desktop')
 
 function Invoke-Collector($case){
   Get-ChildItem $desktop -Filter 'BST-full-export-*.zip' -ErrorAction SilentlyContinue | Remove-Item -Force
+  $before = @(Get-ChildItem $env:TEMP -Directory -Filter 'bstcollect_*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
   $env:BST_NO_UI = '1'
   & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $share 'BST-collect.ps1') *>&1 |
     Out-File -FilePath (Join-Path $share "$case.out") -Encoding utf8
   L "$case exit=$LASTEXITCODE"
   $zip = Get-ChildItem $desktop -Filter 'BST-full-export-*.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
   if($zip){ Copy-Item $zip.FullName (Join-Path $share "$case.zip") -Force }
+  $after = @(Get-ChildItem $env:TEMP -Directory -Filter 'bstcollect_*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
+  L "$case temp leftovers=$(@($after | Where-Object { $before -notcontains $_ }).Count)"
 }
 
 # Registry keys the collector must export, as the real install writes them.
