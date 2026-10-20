@@ -1,0 +1,45 @@
+Hi -- Neal here. Thanks for helping. Your BRAINtellect tablet still has some
+data on it that mine is missing, and this little tool copies EVERYTHING BRAIN
+tellect2 has on it so I can get my own device working again.
+
+What it does NOT touch: it does not change, delete, or modify anything on your
+tablet -- not your data, not the app, not the settings. It reads your data from
+a private temporary copy and then cleans up after itself. It does not send
+anything anywhere on its own -- it just makes one file on your Desktop that YOU
+then email to me. You can keep using BRAINtellect2 normally while this runs. You
+can open the file BST-collect.ps1 in Notepad and read it first if you like;
+it's commented and readable in Notepad.
+
+What the file will contain (everything BRAINtellect2 on your tablet):
+  - which Windows and PowerShell versions your tablet runs, so I can fix a
+    problem even if the tool cannot finish
+  - the BRAINtellect program folder(s)
+  - your BRAINtellect database (all of it, in a form I can read)
+  - the relevant settings from your computer's registry
+All of that private data (your clients, sessions, results) will be inside the
+file. When you're done, you can delete those parts out of the file on your own
+computer before or after sending it -- whatever you prefer.
+
+HOW TO RUN IT (about 3-5 minutes):
+
+1. Save the file "BST-collect.ps1" to your Desktop.
+
+2. Right-click it and choose "Run with PowerShell".
+     - If Windows warns about running a script, that's normal for any script.
+       If "Run with PowerShell" does nothing, do this instead:
+       - Click the Start button, type:  powershell
+       - Right-click "Windows PowerShell" -> "Run as administrator"
+       - In the blue window, type this line and press Enter:
+           powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\Desktop\BST-collect.ps1"
+
+3. A window will show its progress. Please leave it open until it closes.
+   When it finishes it will say:
+       DONE. Created this file on your Desktop:
+           ...BST-full-export-<yourpc>.zip
+
+4. Email that one .zip file from your Desktop to:  nealheinecke@gmail.com
+     - If it's too big to attach, upload it to Google Drive, Dropbox, or
+       wetransfer.com and send me the link instead.
+
+If anything goes wrong or it prints an error, just copy the text it shows and
+send that to me -- it'll tell me what to fix. Thanks again!

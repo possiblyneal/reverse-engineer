@@ -47,7 +47,7 @@ Every unit has a `.unit.json` at its root, never at a domain's:
 
 ## Purpose
 
-Workspace for reverse-engineering sessions with REA (`rea-agents`). It ships no unit; it scopes REA's MCP server and skill to sessions opened here (`docs/adrs/0001-ship-no-deployable-and-host-rea-as-agent-tooling.md`).
+Workspace for reverse-engineering sessions with REA (`rea-agents`). It scopes REA's MCP server and skill to sessions opened here (`docs/adrs/0001-ship-no-deployable-and-host-rea-as-agent-tooling.md`). Its one unit, `apps/braintellect-collector/`, is a non-shipping Windows tablet collector (`docs/adrs/0002-add-braintellect-collector-unit.md`); nothing here is released as a deployable.
 
 ## Ownership
 
@@ -63,4 +63,6 @@ Workspace for reverse-engineering sessions with REA (`rea-agents`). It ships no 
 
 ## Child Index
 
-None. No folder is yet a durable boundary of its own; `scripts/` and `.github/` are template-managed.
+- `apps/braintellect-collector/CLAUDE.md` — the portable BRAINtellect2 collector, its owner delivery archive, and its VM test.
+
+`scripts/` and `.github/` are template-managed.
