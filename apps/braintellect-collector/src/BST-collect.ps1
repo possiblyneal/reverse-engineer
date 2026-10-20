@@ -19,9 +19,11 @@
 # where BRAINtellect2 is installed on this machine.
 #
 # Parameters:
-#   -ShowUI   Display a live progress window (default: on). Pass -ShowUI:$false to
-#             run headless / unattended (the window is skipped, but the per-section
-#             log is still written to the export).
+#   -ShowUI   Display a live progress window (default: on). The window runs here;
+#             the collection itself runs in a child PowerShell process that this
+#             window watches. Pass -ShowUI:$false to run headless / unattended (the
+#             window is skipped, but the per-section log is still written to the
+#             export).
 
 [CmdletBinding()]
 param(
@@ -42,10 +44,11 @@ $db = 'braintellectds'
 $drives = @(Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root)
 
 # Helpers: search, skipping our own temp folder (which is under $env:TEMP).
+$tempPrefix = $env:TEMP.TrimEnd('\') + '\'
 function Find-Dir($name){
   foreach($d in $drives){
     $hit = Get-ChildItem -Path $d -Recurse -Directory -Filter $name -ErrorAction SilentlyContinue |
-           Where-Object { $_.PSPath -notlike "$env:TEMP\*" } | Select-Object -First 1
+           Where-Object { -not $_.FullName.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
     if($hit){ return $hit.FullName }
   }
   return $null
@@ -61,20 +64,16 @@ function Find-Exe($name, $preferredRoots){
   return $null
 }
 
-# ---- work area + log (temp; removed when done; only the Desktop zip survives) ----
-$work = Join-Path $env:TEMP ('bstcollect_' + $PID)
-$null = New-Item -ItemType Directory -Force -Path $work
-# Every status line is written both to the screen and to this log, which is
-# included in the zip so any error or partial result is visible when we open it.
-$logPath = Join-Path $work 'STATUS.txt'
-$null = New-Item -ItemType File -Force -Path $logPath
+# ---- log (the work area is created later, only in the process that collects) ----
+$work = $null
+$logPath = $null
+# Every status line is written both to the screen and to the log in the work area,
+# which is included in the zip so any error or partial result is visible there.
 function Say($m){
   Write-Host $m
-  # Tolerant: keep writing to the screen even after the temp log is removed.
-  if(Test-Path $logPath){ Add-Content -Path $logPath -Value $m }
+  # Tolerant: keep writing to the screen when there is no log yet or it is removed.
+  if($logPath -and (Test-Path $logPath)){ Add-Content -Path $logPath -Value $m }
 }
-Say ("=== BST FULL EXPORT  " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "  ===")
-Say ("PID=$PID  COMPUTER=$env:COMPUTERNAME  TEMP=$work")
 
 $desktop = [Environment]::GetFolderPath('Desktop')
 $outZip  = Join-Path $desktop ('BST-full-export-' + $env:COMPUTERNAME + '.zip')
@@ -111,15 +110,16 @@ function Write-SectionSummary{
 $uiState = [ordered]@{ Section=0; Total=4; Status='Starting...'; Pct=0; Marquee=$true; Elapsed='0:00'; ETA='---' }
 $startTime = Get-Date
 function Format-Dur($ts){ '{0:d1}:{1:00}' -f [int]$ts.TotalMinutes, $ts.Seconds }
-# Called from the collection thread. Updates shared state, logs progress, and (if
-# the window is up) pushes the update to it. Never throws -- progress is best-effort.
+# Called by the collection. Logs progress and, when a progress window watches this
+# run, hands the update over in BST_PROGRESS_FILE ("pct|marquee|status"). Never
+# throws -- progress is best-effort.
 $reportProgress = {
   param($Section,$Total,$Status,$Pct,$Marquee)
   try{
-    $uiState.Section = $Section; $uiState.Total = $Total; $uiState.Status = $Status
-    $uiState.Pct = $Pct; $uiState.Marquee = $Marquee
     Say ("  ... " + $Status + " (" + $Pct.ToString() + "%)")
-    if($ShowUI -and $form -and $form.Created){ $form.Invoke([Action]{$updateUI}) }
+    if($env:BST_PROGRESS_FILE){
+      Set-Content -Path $env:BST_PROGRESS_FILE -Value ("{0}|{1}|{2}" -f $Pct,[int][bool]$Marquee,$Status)
+    }
   }catch{ }
 }
 
@@ -136,6 +136,7 @@ if($ShowUI){
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
     $form.MinimizeBox = $false
+    $form.ControlBox = $false   # only the end of the collection closes it
     $form.BackColor = [System.Windows.Forms.Color]::White
 
     $title  = New-Object System.Windows.Forms.Label
@@ -160,8 +161,7 @@ if($ShowUI){
 
     $form.Controls.AddRange(@($title,$statusLabel,$progressBar,$meta,$hint))
 
-    # Paints the controls from the shared state. Runs on the UI thread (from the
-    # timer, or from a reported update pushed via Invoke).
+    # Paints the controls from the shared state. Runs on the UI thread (from the timer).
     $updateUI = {
       $statusLabel.Text = $uiState.Status
       $progressBar.Value = [Math]::Min(100,[Math]::Max(0,[int]$uiState.Pct))
@@ -169,12 +169,20 @@ if($ShowUI){
       $meta.Text = ('Percent: {0}%   |   Elapsed: {1}   |   Est. time left: {2}' -f $uiState.Pct,$uiState.Elapsed,$uiState.ETA)
     }
 
-    # A timer keeps the window alive and moving while the collection runs on a
-    # separate thread: it advances the marquee, refreshes elapsed time, and
-    # recomputes the estimated time left.
+    # A timer, on the UI thread, keeps the window moving while the collection runs in
+    # the child process: it takes the child's latest progress, refreshes elapsed time,
+    # recomputes the estimated time left, and closes the window when the child ends.
     $timer = New-Object System.Windows.Forms.Timer
     $timer.Interval = 500
     $timer.add_Tick({
+      try{
+        if($script:progressFile -and (Test-Path $script:progressFile)){
+          $parts = (Get-Content -Path $script:progressFile -TotalCount 1 -ErrorAction Stop) -split '\|', 3
+          if($parts.Count -eq 3){
+            $uiState.Pct = [int]$parts[0]; $uiState.Marquee = ($parts[1] -eq '1'); $uiState.Status = $parts[2]
+          }
+        }
+      }catch{ }   # the child may be mid-write; the next tick reads it
       $uiState.Elapsed = Format-Dur ((Get-Date) - $startTime)
       if($uiState.Pct -gt 0 -and $uiState.Pct -lt 100){
         $elapsedSec = ((Get-Date) - $startTime).TotalSeconds
@@ -182,10 +190,9 @@ if($ShowUI){
         $uiState.ETA = Format-Dur ([timespan]::FromSeconds([Math]::Max(0, $totalSec - $elapsedSec)))
       } else { $uiState.ETA = '---' }
       $updateUI.Invoke()
+      if($script:child.HasExited){ $script:timer.Stop(); $script:form.Close() }
     })
     $form.Controls.Add($timer)
-    $form.Show()
-    $timer.Start()
   }catch{
     # If the window can't be shown, keep going without it (logging still works).
     $ShowUI = $false
@@ -194,8 +201,73 @@ if($ShowUI){
   }
 }
 
+# Final user-facing messages (screen + STATUS.txt when this process has one).
+function Write-Finish{
+  Say ""
+  Say "================================================================"
+  Say "DONE. Created this file on your Desktop:"
+  Say ("    " + $outZip)
+  if(Test-Path $outZip){ Say ("Archive size: " + [math]::Round(((Get-Item $outZip).Length / 1MB), 1) + " MB") }
+  Say ""
+  Say "It contains: system information, install folder(s), the database"
+  Say "(raw files + SQL), and registry keys. This is EVERYTHING BRAINtellect2"
+  Say "on this tablet."
+  Say "The tablet itself was never changed and nothing was installed."
+  Say ""
+  Say "The private data (client, person, session, assessment, results) is"
+  Say "inside it -- delete those parts OUT OF THIS FILE on your own machine"
+  Say "when you're done."
+  Say ""
+  Say "Please email that one file to Neal (nealheinecke@gmail.com)."
+  Say "If it is too big to email, upload it to Google Drive / WeTransfer"
+  Say "and send Neal the link."
+  Say "================================================================"
+}
+
+# ---- with a window: this process only shows it; a child PowerShell collects ----
+if($ShowUI -and $form){
+  $progressFile = Join-Path $env:TEMP ('bstprogress_' + $PID + '.txt')
+  $childOut     = Join-Path $env:TEMP ('bstchild_' + $PID + '.out')
+  $childErr     = Join-Path $env:TEMP ('bstchild_' + $PID + '.err')
+  $env:BST_NO_UI = '1'                       # the child runs headless, synchronously
+  $env:BST_PROGRESS_FILE = $progressFile
+  try{
+    $child = Start-Process -FilePath 'powershell' -WindowStyle Hidden -PassThru `
+      -RedirectStandardOutput $childOut -RedirectStandardError $childErr `
+      -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"'))
+    $null = $child.Handle                    # keeps ExitCode readable after it exits
+    $timer.Start()
+    [System.Windows.Forms.Application]::Run($form)
+    $timer.Stop()
+    $child.WaitForExit()
+    $childExit = $child.ExitCode
+    if($childExit -ne 0){
+      foreach($f in @($childOut,$childErr)){
+        if(Test-Path $f){ Get-Content $f -Tail 15 -ErrorAction SilentlyContinue | ForEach-Object { Say ("   " + $_) } }
+      }
+      Say ""
+      Say "The collection FAILED (exit $childExit). If a file was created on your Desktop, send it to Neal anyway."
+    }
+  }finally{
+    Remove-Item $progressFile,$childOut,$childErr -Force -ErrorAction SilentlyContinue
+  }
+  if($childExit -ne 0){ exit $childExit }
+  Write-Finish
+  exit 0
+}
+
+# ---- work area + log (temp; removed when done; only the Desktop zip survives) ----
+$work = Join-Path $env:TEMP ('bstcollect_' + $PID)
+$null = New-Item -ItemType Directory -Force -Path $work
+$logPath = Join-Path $work 'STATUS.txt'
+$null = New-Item -ItemType File -Force -Path $logPath
+Say ("=== BST FULL EXPORT  " + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + "  ===")
+Say ("PID=$PID  COMPUTER=$env:COMPUTERNAME  TEMP=$work")
+
 # =====================================================================
-# COLLECTION  -- runs on a background thread so the window stays responsive.
+# COLLECTION  -- runs synchronously in the process that collects. With a window,
+# the parent runs it in a child PowerShell process (headless), so a failure is that
+# process's exit status.
 # =====================================================================
 $collection = {
   try{
@@ -252,7 +324,7 @@ $collection = {
     $sys += "PowerShell:    " + $psVersion.ToString() + " (required: 3.0+)"
     $sys += ".NET Release:  " + $dn + " (required: 4.5+ for ZIP support)"
     $sys += "CIM cmdlet:    " + $(if($cim){ 'available' }else{ 'MISSING' })
-    $sys += "reg.exe:       " + $(if($reg){ $reg.Source }else{ 'MISSING' })
+    $sys += "reg.exe:       " + $(if($reg){ $reg.Path }else{ 'MISSING' })
     $sys += "ZIP API:       " + $zipApi
     $sys += "Arch:          " + $os.OSArchitecture
   }catch{ $sys += "Dependency capture failed: " + $_.Exception.Message }
@@ -272,12 +344,18 @@ $collection = {
     Set-SectionStatus '1. Install folder(s)' 'skip'
   }else{
     $instOut = Join-Path $work 'install'
+    $instStatus = 'ok'
     foreach($r in $instRoots){
       Say ("   found: " + $r)
-      Copy-Item $r (Join-Path $instOut (Split-Path $r -Leaf)) -Recurse -Force -ErrorAction SilentlyContinue
+      Copy-Item $r (Join-Path $instOut (Split-Path $r -Leaf)) -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable copyErrors
+      if($copyErrors){
+        $instStatus = 'partial'
+        Say ("   WARNING: " + @($copyErrors).Count + " item(s) in $r could not be copied:")
+        @($copyErrors) | Select-Object -First 10 | ForEach-Object { Say ("      " + $_.Exception.Message) }
+      }
     }
     Say ("   install captured under: $instOut")
-    Set-SectionStatus '1. Install folder(s)' 'ok'
+    Set-SectionStatus '1. Install folder(s)' $instStatus
   }
 
   # =====================================================================
@@ -294,7 +372,13 @@ $collection = {
 
   # copy the raw data files (belt-and-suspenders; the SQL dump is the readable copy)
   $dataOut = Join-Path $work 'database'
-  Copy-Item $dataDir $dataOut -Recurse -Force -ErrorAction SilentlyContinue
+  $dbStatus = 'ok'
+  Copy-Item $dataDir $dataOut -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable copyErrors
+  if($copyErrors){
+    $dbStatus = 'partial'
+    Say ("   WARNING: " + @($copyErrors).Count + " database file(s) could not be copied:")
+    @($copyErrors) | Select-Object -First 10 | ForEach-Object { Say ("      " + $_.Exception.Message) }
+  }
   Get-ChildItem $dataOut -Filter '*.pid' -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
   Get-ChildItem $dataOut -Filter '*.err' -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
@@ -302,7 +386,6 @@ $collection = {
   $mysqld    = Find-Exe 'mysqld.exe' $instRoots
   $mysqldump = Find-Exe 'mysqldump.exe' $instRoots
   $mysqlcli  = Find-Exe 'mysql.exe' $instRoots
-  $dbStatus = 'ok'
   if(-not $mysqld){
     Say "   (no mysqld.exe found on this tablet -- skipping SQL dump, raw files kept)"
     try{ Add-Content -Path (Join-Path $work 'SYSTEM-INFO.txt') -Encoding UTF8 "MySQL engine:   NOT FOUND" }catch{ }
@@ -315,12 +398,9 @@ $collection = {
     $pipe = 'bstcollectpipe' + $PID
     $basedir = Split-Path (Split-Path $mysqld -Parent) -Parent
 
-    # clear any leftover private mysqld from a prior crashed run (ours only)
-    Get-CimInstance Win32_Process -ErrorAction SilentlyContinue |
-      Where-Object { $_.CommandLine -like "*$pipe*" } |
-      ForEach-Object { Stop-Process -Id $_.ProcessId -Force -ErrorAction SilentlyContinue }
-
-    $mysqlArgs = @("--datadir=$dataOut","--basedir=$basedir",
+    # --no-defaults must come first: it keeps mysqld from reading any my.ini/my.cnf,
+    # whose settings could point it back at the live data or log files.
+    $mysqlArgs = @('--no-defaults',"--datadir=$dataOut","--basedir=$basedir",
           '--skip-networking','--enable-named-pipe',"--socket=$pipe",
           '--skip-grant-tables','--innodb-force-recovery=1')
     $errmsg = Find-Exe 'errmsg.sys' $instRoots
@@ -329,6 +409,8 @@ $collection = {
     Start-Sleep -Seconds 2
 
     $up = $false
+    # Native stderr becomes a terminating error under Stop; the client calls below
+    # are judged by their exit codes instead.
     $ErrorActionPreference = 'Continue'
     for($i=0;$i -lt 60;$i++){
       Start-Sleep -Seconds 2
@@ -337,7 +419,6 @@ $collection = {
         if("$probe" -match '1'){ $up = $true; break }
       }else{ $up = $true; break }
     }
-    $ErrorActionPreference = 'Stop'
     if(-not $up){
       Say "   WARNING: database copy did not start cleanly. Keeping raw files; SQL dump may be partial."
       Say "   Engine error log (send this to Neal):"
@@ -348,7 +429,19 @@ $collection = {
       # dump the ENTIRE schema (every table, every row) as UTF-8 (not ASCII).
       $sqlOut = Join-Path $dataOut 'BST-full-export.sql'
       Say "   dumping every table to SQL..."
-      & $mysqldump --user=root --protocol=pipe --socket=$pipe --skip-lock-tables --hex-blob --routines $db 2>$null | Out-File -FilePath $sqlOut -Encoding utf8
+      # mysqldump writes the file itself (--result-file): a PowerShell pipeline would
+      # re-encode its UTF-8 bytes.
+      if($mysqldump){
+        & $mysqldump --user=root --protocol=pipe --socket=$pipe --skip-lock-tables --hex-blob --routines --default-character-set=utf8 "--result-file=$sqlOut" $db 2>$null
+        $dumpExit = $LASTEXITCODE
+      }else{
+        Say "   (no mysqldump.exe found on this tablet)"
+        $dumpExit = -1
+      }
+      if($dumpExit -ne 0){
+        Say "   WARNING: mysqldump did not finish (exit $dumpExit); the SQL dump may be incomplete. Raw data files are still included in the export."
+        $dbStatus = 'partial'
+      }
       if(-not ((Test-Path $sqlOut) -and ((Get-Item $sqlOut).Length -gt 0))){
         Say "   WARNING: the SQL dump came back empty. Raw data files are still included in the export."
         $dbStatus = 'partial'
@@ -359,15 +452,23 @@ $collection = {
           $tables = @(& $mysqlcli --user=root --protocol=pipe --socket=$pipe -N -e "SELECT table_name FROM information_schema.tables WHERE table_schema='$db' ORDER BY table_name" 2>$null)
           $total = 0
           foreach($t in $tables){
-            $c = & $mysqlcli --user=root --protocol=pipe --socket=$pipe -N -e "USE $db; SELECT COUNT(*) FROM $t" 2>$null
-            $n = 0; [void][int]::TryParse(("$c").Trim(), [ref]$n); $total += $n
-            Say ("      {0,-24} {1}" -f $t, $n)
+            $quoted = '`' + $db + '`.`' + ("$t".Replace('`','``')) + '`'
+            $c = & $mysqlcli --user=root --protocol=pipe --socket=$pipe -N -e "SELECT COUNT(*) FROM $quoted" 2>$null
+            $n = 0
+            if($LASTEXITCODE -ne 0 -or -not [int]::TryParse(("$c").Trim(), [ref]$n)){
+              Say ("      {0,-24} ? (count failed)" -f $t)
+              $dbStatus = 'partial'
+            }else{
+              $total += $n
+              Say ("      {0,-24} {1}" -f $t, $n)
+            }
           }
           Say ("      {0,-24} {1} (grand total)" -f 'ALL', $total)
         }
       }
     }
   }
+  $ErrorActionPreference = 'Stop'
   Set-SectionStatus '2. Database' $dbStatus
 
   # =====================================================================
@@ -420,7 +521,7 @@ $collection = {
       # ibdata1/ib_logfile open exclusively, which would prevent archive creation.
       if($proc -and -not $proc.HasExited){
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
-        Start-Sleep -Seconds 2
+        if(-not $proc.WaitForExit(30000)){ Say "   WARNING: the private database engine did not stop within 30 seconds." }
       }
       # Always write the per-section results BEFORE zipping, so the export records
       # success OR failure for every section even if one failed.
@@ -436,45 +537,10 @@ $collection = {
       Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
-  # Close the window once the export is written. Guarded so it runs even if the
-  # finally above threw; skipped entirely when there is no window.
-  try{
-    if($ShowUI -and $form -and $form.Created){ $form.Invoke([Action]{$form.Close()}) }
-  }catch{ }
 }.GetNewClosure()
 
-if($ShowUI -and $form){
-  # Keep the window responsive while collecting on a background thread.
-  # Cast to ThreadStart explicitly: New-Object Thread($scriptblock) is ambiguous.
-  $thread = New-Object System.Threading.Thread([System.Threading.ThreadStart]$collection)
-  $thread.IsBackground = $true
-  $thread.Start()
-  [System.Windows.Forms.Application]::Run($form)
-}else{
-  # A headless PowerShell host has no UI message loop; run directly so failures
-  # remain on its error stream and propagate a useful exit status.
-  & $collection
-}
+# A headless PowerShell host has no UI message loop; run directly so failures
+# remain on its error stream and propagate a useful exit status.
+& $collection
 
-if($timer){ $timer.Stop() }
-
-# Final user-facing messages (screen + STATUS.txt, written before cleanup).
-Say ""
-Say "================================================================"
-Say "DONE. Created this file on your Desktop:"
-Say ("    " + $outZip)
-if(Test-Path $outZip){ Say ("Archive size: " + [math]::Round(((Get-Item $outZip).Length / 1MB), 1) + " MB") }
-Say ""
-Say "It contains: system information, install folder(s), the database"
-Say "(raw files + SQL), and registry keys. This is EVERYTHING BRAINtellect2"
-Say "on this tablet."
-Say "The tablet itself was never changed and nothing was installed."
-Say ""
-Say "The private data (client, person, session, assessment, results) is"
-Say "inside it -- delete those parts OUT OF THIS FILE on your own machine"
-Say "when you're done."
-Say ""
-Say "Please email that one file to Neal (nealheinecke@gmail.com)."
-Say "If it is too big to email, upload it to Google Drive / WeTransfer"
-Say "and send Neal the link."
-Say "================================================================"
+Write-Finish
