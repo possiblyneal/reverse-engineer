@@ -21,7 +21,7 @@ check "build-delivery prints the archive path" test "$built" = "$out/delivery.zi
 check "archive is valid" unzip -tq "$out/delivery.zip"
 
 members=$(unzip -Z1 "$out/delivery.zip" | sort)
-expected=$'BST-collect.ps1\nINSTRUCTIONS-for-tablet-owner.txt'
+expected=$'Collect-BRAINtellect2-Data.cmd\nINSTRUCTIONS-for-tablet-owner.txt'
 check "archive holds only the collector and the owner instructions" test "$members" = "$expected"
 
 exit "$fail"
