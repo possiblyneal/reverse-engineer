@@ -31,6 +31,11 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
   skips the window and runs the collection in the calling process, so a failure is an unhandled
   error that exits non-zero. Never run the collection on a .NET thread: it has no PowerShell
   runspace and its errors are lost.
+- **Nothing is at `$script:` scope.** The header relaunches via `powershell -Command "& <block>"`,
+  so the whole program runs inside one invoked script block; a `$script:`-qualified name resolves
+  to `$null`. The window's timer tick must reference `$child`, `$timer`, `$form`, and
+  `$progressFile` unqualified. Use `System.Drawing.Color` (not `System.Windows.Forms.Color`) for
+  colors, and a WinForms `Timer` is a Component, so never add it to `Form.Controls`.
 - **The whole file is CRLF.** `.gitattributes` forces `*.cmd eol=crlf` and the `mixed-line-ending`
   pre-commit hook rejects mixed endings, so the batch header and the PowerShell body must share
   one ending. Author and save it CRLF throughout.
