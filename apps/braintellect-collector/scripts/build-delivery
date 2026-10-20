@@ -1,0 +1,20 @@
+#!/usr/bin/env bash
+# Builds the owner delivery archive: the collector and the owner instructions,
+# nothing else. Prints the archive path.
+# Usage: build-delivery [output.zip]   (default: state/BST-collector.zip)
+set -euo pipefail
+
+unit="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+out="${1:-$unit/state/BST-collector.zip}"
+
+mkdir -p "$(dirname "$out")"
+rm -f "$out"
+python3 -I - "$out" "$unit/src/BST-collect.ps1" "$unit/assets/INSTRUCTIONS-for-tablet-owner.txt" <<'EOF'
+import os, sys, zipfile
+
+out, *members = sys.argv[1:]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
+    for path in members:
+        z.write(path, os.path.basename(path))
+EOF
+echo "$out"
