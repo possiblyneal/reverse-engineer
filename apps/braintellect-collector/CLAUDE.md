@@ -18,11 +18,13 @@ diagnostics, without changing the tablet. The unit runs nothing here and ships n
 
 ## Local Contracts
 
-- **One script, two modes.** Interactive by default (progress window, collection on a
-  background thread). `-ShowUI:$false` or `BST_NO_UI=1` skips the window and runs the collection
-  synchronously, so
-  a failure is an unhandled error in the caller and `powershell -File` exits non-zero. Never
-  put the headless path on a thread: the error is then lost and the exit stays 0.
+- **One script, two modes.** Interactive by default: the parent process shows the progress
+  window and runs the collection synchronously in a hidden child `powershell -File` (headless,
+  progress handed back through `BST_PROGRESS_FILE`), closes the window when the child ends and
+  exits with the child's status. `-ShowUI:$false` or `BST_NO_UI=1` skips the window and runs the
+  collection in the calling process, so a failure is an unhandled error in the caller and
+  `powershell -File` exits non-zero. Never run the collection on a .NET thread: it has no
+  PowerShell runspace and its errors are lost.
 - **Windows 8 floor: PowerShell 3, .NET 4.5.** The ZIP comes from
   `[System.IO.Compression.ZipFile]`, never `Compress-Archive` (PowerShell 5). Do not use
   syntax or cmdlets newer than PowerShell 3.
@@ -52,13 +54,15 @@ diagnostics, without changing the tablet. The unit runs nothing here and ships n
   `\\host.lan\data\bsttest\…`), types one command into the guest's focused admin PowerShell
   window through the QEMU monitor (no guest SSH), and inspects the returned ZIPs: zero exit,
   valid archive, every stage, SQL rows, registry export, `SYSTEM-INFO.txt` fields, and a
-  non-zero exit with `[FAIL] 2. Database` when the schema folder is hidden. About 6 minutes.
+  non-zero exit with `[FAIL] 2. Database` when the schema folder is hidden. Both run headless
+  and in the default window mode (the window must close by itself). About 10 minutes.
 - Fixture precondition: container `windows` on `server` running, a synthetic install at
   `C:\braintest` (embedded MySQL 5.5 `mysqld.exe`; tables `person`=3, `session`=4,
   `flowdesign`=2, `montagesystem`=3 rows), and an admin PowerShell window focused on the guest
   desktop. The fixture setup is not tracked here.
-- The progress window has no automated check: run `BST-collect.ps1` without `BST_NO_UI` on the
-  guest desktop and watch it.
+- The window's contents have no automated check: the VM test only proves the window mode
+  completes and closes. To see it, run `BST-collect.ps1` without `BST_NO_UI` on the guest
+  desktop and watch it.
 
 ## Child Index
 
