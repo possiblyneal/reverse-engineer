@@ -244,9 +244,9 @@ function Write-Finish{
 if($ShowUI -and $form){
   # Re-run THIS file through cmd for the hidden collector child -- exactly the path
   # a double-tap takes -- so the single-file launcher needs no separate script.
-  # $PSCommandPath is empty when the launcher starts us (powershell -Command), so
-  # fall back to BST_SELF, which the batch header set to this file's full path.
-  $self = if($PSCommandPath){ $PSCommandPath } else { $env:BST_SELF }
+  # The .cmd is always entered through its batch header (powershell -Command), which
+  # leaves $PSCommandPath empty and sets BST_SELF to this file's full path.
+  $self = $env:BST_SELF
   $progressFile = Join-Path $env:TEMP ('bstprogress_' + $PID + '.txt')
   $childOut     = Join-Path $env:TEMP ('bstchild_' + $PID + '.out')
   $childErr     = Join-Path $env:TEMP ('bstchild_' + $PID + '.err')

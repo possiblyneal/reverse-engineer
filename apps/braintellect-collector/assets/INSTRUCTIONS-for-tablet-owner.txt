@@ -23,7 +23,8 @@ computer before or after sending it -- whatever you prefer.
 
 HOW TO RUN IT (about 3-5 minutes):
 
-1. Save the file "Collect-BRAINtellect2-Data" to your Desktop.
+1. Save the file "Collect-BRAINtellect2-Data" to your Desktop. (Windows usually
+   hides the ".cmd" ending, so the icon may show as just that name.)
 
 2. Double-tap (or double-click) the icon, just like opening any other icon.
      - If Windows shows a blue "Windows protected your PC" box, tap "More info"
