@@ -9,7 +9,7 @@ out="${1:-$unit/state/BST-collector.zip}"
 
 mkdir -p "$(dirname "$out")"
 rm -f "$out"
-python3 -I - "$out" "$unit/src/BST-collect.ps1" "$unit/assets/INSTRUCTIONS-for-tablet-owner.txt" <<'EOF'
+python3 -I - "$out" "$unit/src/Collect-BRAINtellect2-Data.cmd" "$unit/assets/INSTRUCTIONS-for-tablet-owner.txt" <<'EOF'
 import os, sys, zipfile
 
 out, *members = sys.argv[1:]

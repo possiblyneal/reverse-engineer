@@ -49,7 +49,7 @@ type_in_guest() {
 }
 
 ssh "$SERVER" "mkdir -p $run_host"
-scp -q src/BST-collect.ps1 tests/integration/guest-run.ps1 "$SERVER:$run_host/"
+scp -q src/Collect-BRAINtellect2-Data.cmd tests/integration/guest-run.ps1 "$SERVER:$run_host/"
 type_in_guest "powershell -noprofile -executionpolicy bypass -file \\\\host.lan\\data\\bsttest\\$run\\guest-run.ps1"
 
 finished=0

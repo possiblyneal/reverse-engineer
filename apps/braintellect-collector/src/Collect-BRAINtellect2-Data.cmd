@@ -1,4 +1,21 @@
-# BST-collect.ps1
+<# :
+@echo off
+rem  Double-tap this icon to collect your BRAINtellect2 data for Neal.
+rem  Windows runs the few launcher lines here, then the PowerShell program below.
+title BRAINtellect2 data collector
+echo Starting the BRAINtellect2 data collector -- a progress window will open shortly...
+set "BST_SELF=%~f0"
+powershell -NoProfile -ExecutionPolicy Bypass -Command "& ([scriptblock]::Create([System.IO.File]::ReadAllText($env:BST_SELF)))"
+exit /b %errorlevel%
+: #>
+
+# ============================================================================
+#  LAUNCHER ABOVE, PROGRAM BELOW. The ten lines above let you start this by
+#  double-tapping the icon: Windows reads them as a tiny launcher that opens
+#  the real program, which is all the plain PowerShell from here down. You can
+#  open this whole file in Notepad to read exactly what it does.
+# ============================================================================
+# Collect-BRAINtellect2-Data.cmd
 # Grab EVERYTHING about BRAINtellect2 from this tablet in one go -- into a single
 # file on your Desktop that you can email. This is the "get it all" version:
 #   1. the program/install folder(s)
@@ -225,15 +242,20 @@ function Write-Finish{
 
 # ---- with a window: this process only shows it; a child PowerShell collects ----
 if($ShowUI -and $form){
+  # Re-run THIS file through cmd for the hidden collector child -- exactly the path
+  # a double-tap takes -- so the single-file launcher needs no separate script.
+  # The .cmd is always entered through its batch header (powershell -Command), which
+  # leaves $PSCommandPath empty and sets BST_SELF to this file's full path.
+  $self = $env:BST_SELF
   $progressFile = Join-Path $env:TEMP ('bstprogress_' + $PID + '.txt')
   $childOut     = Join-Path $env:TEMP ('bstchild_' + $PID + '.out')
   $childErr     = Join-Path $env:TEMP ('bstchild_' + $PID + '.err')
   $env:BST_NO_UI = '1'                       # the child runs headless, synchronously
   $env:BST_PROGRESS_FILE = $progressFile
   try{
-    $child = Start-Process -FilePath 'powershell' -WindowStyle Hidden -PassThru `
+    $child = Start-Process -FilePath $env:ComSpec -WindowStyle Hidden -PassThru `
       -RedirectStandardOutput $childOut -RedirectStandardError $childErr `
-      -ArgumentList @('-NoProfile','-ExecutionPolicy','Bypass','-File',('"' + $PSCommandPath + '"'))
+      -ArgumentList @('/c', ('"' + $self + '"'))
     $null = $child.Handle                    # keeps ExitCode readable after it exits
     $timer.Start()
     [System.Windows.Forms.Application]::Run($form)

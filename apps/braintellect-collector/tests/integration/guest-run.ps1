@@ -1,5 +1,5 @@
 # Guest half of test_collector-headless.sh. Runs inside the Windows VM from the
-# shared run folder next to BST-collect.ps1 (via $PSScriptRoot) and leaves its
+# shared run folder next to Collect-BRAINtellect2-Data.cmd (via $PSScriptRoot) and leaves its
 # evidence there: guest.log (exit codes), <case>.zip and <case>.out per case.
 #
 # The synthetic BRAINtellect install at C:\braintest is a precondition.
@@ -13,8 +13,16 @@ function Invoke-Collector($case, $withWindow = $false){
   Get-ChildItem $desktop -Filter 'BST-full-export-*.zip' -ErrorAction SilentlyContinue | Remove-Item -Force
   $before = @(Get-ChildItem $env:TEMP -Filter 'bst*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
   if($withWindow){ Remove-Item Env:BST_NO_UI -ErrorAction SilentlyContinue } else { $env:BST_NO_UI = '1' }
-  & powershell -NoProfile -ExecutionPolicy Bypass -File (Join-Path $share 'BST-collect.ps1') *>&1 |
-    Out-File -FilePath (Join-Path $share "$case.out") -Encoding utf8
+  # Mirror the real owner flow: the file lives on the Desktop (local disk) and is
+  # launched through cmd, exactly as a double-tap does -- cmd cannot use the UNC
+  # share as a working directory, and neither would a tablet. BST_NO_UI still
+  # toggles window vs headless.
+  $cmd = Join-Path $desktop 'Collect-BRAINtellect2-Data.cmd'
+  Copy-Item (Join-Path $share 'Collect-BRAINtellect2-Data.cmd') $cmd -Force
+  try {
+    & $env:ComSpec /c "`"$cmd`"" *>&1 |
+      Out-File -FilePath (Join-Path $share "$case.out") -Encoding utf8
+  } finally { Remove-Item $cmd -Force -ErrorAction SilentlyContinue }
   L "$case exit=$LASTEXITCODE"
   $zip = Get-ChildItem $desktop -Filter 'BST-full-export-*.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
   if($zip){ Copy-Item $zip.FullName (Join-Path $share "$case.zip") -Force }

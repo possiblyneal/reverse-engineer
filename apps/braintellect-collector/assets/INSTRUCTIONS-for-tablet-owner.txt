@@ -7,8 +7,9 @@ tablet -- not your data, not the app, not the settings. It reads your data from
 a private temporary copy and then cleans up after itself. It does not send
 anything anywhere on its own -- it just makes one file on your Desktop that YOU
 then email to me. You can keep using BRAINtellect2 normally while this runs. You
-can open the file BST-collect.ps1 in Notepad and read it first if you like;
-it's commented and readable in Notepad.
+can open the file Collect-BRAINtellect2-Data in Notepad and read it first if you
+like; the first few lines are just a launcher, and the rest is the plain,
+commented program.
 
 What the file will contain (everything BRAINtellect2 on your tablet):
   - which Windows and PowerShell versions your tablet runs, so I can fix a
@@ -22,15 +23,17 @@ computer before or after sending it -- whatever you prefer.
 
 HOW TO RUN IT (about 3-5 minutes):
 
-1. Save the file "BST-collect.ps1" to your Desktop.
+1. Save the file "Collect-BRAINtellect2-Data" to your Desktop. (Windows usually
+   hides the ".cmd" ending, so the icon may show as just that name.)
 
-2. Right-click it and choose "Run with PowerShell".
-     - If Windows warns about running a script, that's normal for any script.
-       If "Run with PowerShell" does nothing, do this instead:
-       - Click the Start button, type:  powershell
-       - Right-click "Windows PowerShell" -> "Run as administrator"
+2. Double-tap (or double-click) the icon, just like opening any other icon.
+     - If Windows shows a blue "Windows protected your PC" box, tap "More info"
+       and then "Run anyway" -- that's normal the first time.
+     - If double-tapping does nothing, do this instead:
+       - Tap the Start button, type:  powershell
+       - Press and hold "Windows PowerShell" -> "Run as administrator"
        - In the blue window, type this line and press Enter:
-           powershell -ExecutionPolicy Bypass -File "$env:USERPROFILE\Desktop\BST-collect.ps1"
+           & "$env:USERPROFILE\Desktop\Collect-BRAINtellect2-Data.cmd"
 
 3. A window will show its progress. Please leave it open until it closes.
    When it finishes it will say:
