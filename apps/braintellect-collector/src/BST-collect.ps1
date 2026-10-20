@@ -44,11 +44,10 @@ $db = 'braintellectds'
 $drives = @(Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root)
 
 # Helpers: search, skipping our own temp folder (which is under $env:TEMP).
-$tempPrefix = $env:TEMP.TrimEnd('\') + '\'
 function Find-Dir($name){
   foreach($d in $drives){
     $hit = Get-ChildItem -Path $d -Recurse -Directory -Filter $name -ErrorAction SilentlyContinue |
-           Where-Object { -not $_.FullName.StartsWith($tempPrefix, [StringComparison]::OrdinalIgnoreCase) } | Select-Object -First 1
+           Where-Object { $_.FullName -notmatch '\\bstcollect_\d+(\\|$)' } | Select-Object -First 1
     if($hit){ return $hit.FullName }
   }
   return $null
@@ -537,7 +536,7 @@ $collection = {
       Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
-}.GetNewClosure()
+}
 
 # A headless PowerShell host has no UI message loop; run directly so failures
 # remain on its error stream and propagate a useful exit status.
