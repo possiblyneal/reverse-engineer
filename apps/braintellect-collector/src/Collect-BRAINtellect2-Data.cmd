@@ -510,7 +510,7 @@ $collection = {
     if($copyErrors){
       Say ("   WARNING: " + @($copyErrors).Count + " relocated item(s) could not be copied:")
       @($copyErrors) | Select-Object -First 10 | ForEach-Object { Say ("      " + $_.Exception.Message) }
-      if($sectionStatus['1. Install folder(s)'] -eq 'ok'){ Set-SectionStatus '1. Install folder(s)' 'partial' }
+      if($sectionStatus['1. Install folder(s)'] -ne 'fail'){ Set-SectionStatus '1. Install folder(s)' 'partial' }
     }
   }
   }catch{
