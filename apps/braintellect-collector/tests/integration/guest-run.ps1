@@ -94,7 +94,7 @@ Copy-Item 'C:\braintest\BRAINtellect2\state\embedded-store' $relocData -Recurse 
 Copy-Item 'C:\braintest\BRAINtellect2\state\embedded-store' $decoyData -Recurse -Force
 Set-Content -Path (Join-Path $relocState 'relocated-state.txt') -Value 'relocated-state=1' -Encoding ASCII
 Set-Content -Path (Join-Path $decoyData 'decoy-marker.txt') -Value 'unrelated-mysql=1' -Encoding ASCII
-Set-Content -Path $config -Encoding ASCII -Value @("datadir=$relocData", "statedir=$relocState", "other=$decoyData")
+Set-Content -Path $config -Encoding ASCII -Value @("datadir=$relocData ; embedded store", "statedir=$relocState", "other=$decoyData")
 Rename-Item $marker 'ibdata1.hidden'
 try {
   Invoke-Collector 'reloc'

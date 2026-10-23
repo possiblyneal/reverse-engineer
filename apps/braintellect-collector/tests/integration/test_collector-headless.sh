@@ -81,8 +81,8 @@ check "SQL holds person rows" has "$sql" "INSERT INTO \`person\` VALUES (1,'Jane
 check "SQL holds session rows" has "$sql" 'INSERT INTO `session` VALUES (10,1,'"'complete'),(11,2,'incomplete'),(12,2,'complete'),(13,3,'complete');"
 check "SQL holds design rows" has "$sql" "INSERT INTO \`flowdesign\` VALUES (1,'Cycle A'"
 reg_to_utf8() { iconv -f UTF-16 -t UTF-8 "$1" >"$2"; } # reg.exe writes UTF-16
-registryFile=$(find "$out/ok/registry" -type f -name '*.reg' | head -n 1)
-check "registry export creates a file" test -n "$registryFile"
+registryFile="$out/ok/registry/HKCU_Software_BST.reg"
+check "registry export creates a file" test -f "$registryFile"
 check "registry export converts to text" reg_to_utf8 "$registryFile" "$out/ok/license.reg"
 check "registry export has the license key" has "$out/ok/license.reg" '"license.expiry"="2099-12-31"'
 info=$out/ok/SYSTEM-INFO.txt

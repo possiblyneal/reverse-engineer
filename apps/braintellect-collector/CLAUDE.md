@@ -13,7 +13,8 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
 | Path | What |
 |---|---|
 | `src/Collect-BRAINtellect2-Data.cmd` | the collector (a tap-to-run batch/PowerShell polyglot) |
-| `assets/INSTRUCTIONS-for-tablet-owner.txt` | the owner's instructions, delivered beside it |
+| `assets/INSTRUCTIONS-for-tablet-owner.txt` | normal owner's instructions, delivered beside it |
+| `assets/INSTRUCTIONS-for-tablet-owner-retry.txt` | retry owner's instructions, delivered beside the retry collector |
 | `scripts/build-delivery` | builds normal or data-only retry owner archives |
 | `tests/test_delivery-archive.sh` | checks both archive variants and retry launcher |
 | `tests/integration/` | the VM test and its guest half |
@@ -45,11 +46,12 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
 - **The tablet is never modified and nothing is sent.** The database is read from a private
   copy in `$env:TEMP` by the tablet's own bundled `mysqld`; the only artifact left is the
   Desktop ZIP, which the owner sends. The script makes no network call.
-- **Path discovery is BRAINtellect-scoped.** Never recursively scan all filesystem drives: search known install roots and Program Files for program files; capture ProgramData state separately; executable discovery searches install roots only.
+- **Path discovery is BRAINtellect-scoped.** Never recursively scan all filesystem drives: search known install roots and Program Files for program files; capture ProgramData state separately; executable discovery searches install roots only. `BST_SEARCH_ROOTS` is a test-only override for the VM fixture.
   Fallback discovery adds only the legacy roots `<fixed drive>\BST`, `\BRAINtellect2`, `\BRAINtellect` (no recursion) and folders named by small config files below the install and ProgramData roots, and only when a path segment starts with `BST`, `BRAINtellect` or `Brain State Technologies`. Relocated datadirs go to the database stage, other relocated folders to `application-state/relocated-<n>-<name>`. A MySQL elsewhere is never captured.
 - **Embedded MySQL discovery is schema-agnostic but BRAINtellect-scoped.** Identify its
   datadir by `ibdata1` plus its `mysql/` system schema only below `C:\ProgramData\BST`,
-  `C:\ProgramData\BRAINtellect2`, or a discovered BRAINtellect/BST install root; never
+  `C:\ProgramData\BRAINtellect2`, a discovered BRAINtellect/BST install root, or a
+  BRAINtellect-scoped path named by its local configuration; never
   require a schema named `braintellectds` or fall back to arbitrary drive-wide MySQL instances. Capture the complete datadir, dump
   `--all-databases`, and report non-system schemas/tables. Copy those ProgramData roots
   into `application-state/` before discovery so configuration and state survive even if the
@@ -78,7 +80,7 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
   retry launcher injection, and CRLF. Needs no VM; run it after changing delivery inputs.
 - `tests/integration/test_collector-headless.sh` (needs the VM; run by hand, since
   `scripts/integration` finds no project manifest to dispatch to). It stages the
-  script in a fresh `/home/neal/windows-data/bsttest/r<epoch>/` folder (guest
+  script in a fresh `/srv/local/windows/shared/bsttest/r<epoch>/` folder (guest
   `\\host.lan\data\bsttest\…`), temporarily parks competing ProgramData BST state, types one command into the guest's focused admin PowerShell
   window through the QEMU monitor (no guest SSH; guest-run.ps1 launches the collector via
   `cmd /c`, the real double-tap path), and inspects normal and retry ZIPs: zero exit,

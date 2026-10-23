@@ -148,8 +148,10 @@ function Find-ConfiguredPaths($configRoots, $coveredRoots){
       if(-not $text){ continue }
       $text = $text -replace '\\+','\' -replace '/','\'
       foreach($m in [regex]::Matches($text, '[A-Za-z]:\\[^\r\n"''<>|*?]*')){
-        $c = $m.Value.Trim().TrimEnd('\')
-        if((Test-OwnedPath $c) -and (Test-Path $c -PathType Container) -and -not (Test-UnderAny $c $coveredRoots)){ $found += $c }
+        foreach($raw in ($m.Value -split '[;,]')){
+          try{ $c = [System.IO.Path]::GetFullPath($raw.Trim().TrimEnd('\')) }catch{ continue }
+          if((Test-OwnedPath $c) -and (Test-Path $c -PathType Container) -and -not (Test-UnderAny $c $coveredRoots)){ $found += $c }
+        }
       }
     }
   }
@@ -381,7 +383,7 @@ $collection = {
   $sys = @()
   $sysFails = 0
   try{
-    $os = Get-CimInstance Win32_OperatingSystem
+    $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
     $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -EA SilentlyContinue
     $sys += "=== OPERATING SYSTEM ==="
     $sys += "OS (Caption): " + $os.Caption
@@ -394,10 +396,10 @@ $collection = {
     $sys += "Arch:        " + $os.OSArchitecture
   }catch{ $sysFails++; $sys += "OS capture failed: " + $_.Exception.Message }
   try{
-    $cs   = Get-CimInstance Win32_ComputerSystem
-    $cpu  = Get-CimInstance Win32_Processor
-    $bios = Get-CimInstance Win32_BIOS
-    $disk = Get-CimInstance Win32_DiskDrive
+    $cs   = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
+    $cpu  = Get-CimInstance Win32_Processor -ErrorAction Stop
+    $bios = Get-CimInstance Win32_BIOS -ErrorAction Stop
+    $disk = Get-CimInstance Win32_DiskDrive -ErrorAction Stop
     $sys += ""
     $sys += "=== HARDWARE ==="
     $sys += "Manufacturer: " + $cs.Manufacturer
@@ -427,7 +429,7 @@ $collection = {
     $sys += "ZIP API:       " + $zipApi
     $sys += "Arch:          " + $os.OSArchitecture
   }catch{ $sysFails++; $sys += "Dependency capture failed: " + $_.Exception.Message }
-  $sys | Set-Content -Path $sysLog -Encoding UTF8
+  $sys | Set-Content -Path $sysLog -Encoding UTF8 -ErrorAction Stop
   if($sysFails -eq 0){ Set-SectionStatus '0. System information' 'ok' }
   elseif($sysFails -ge 3){ Set-SectionStatus '0. System information' 'fail' }
   else{ Set-SectionStatus '0. System information' 'partial' }
@@ -487,7 +489,7 @@ $collection = {
       if($copyErrors){
         Say ("   WARNING: " + @($copyErrors).Count + " application-state item(s) could not be copied:")
         @($copyErrors) | Select-Object -First 10 | ForEach-Object { Say ("      " + $_.Exception.Message) }
-        if($sectionStatus['1. Install folder(s)'] -eq 'ok'){ Set-SectionStatus '1. Install folder(s)' 'partial' }
+        if($sectionStatus['1. Install folder(s)'] -ne 'fail'){ Set-SectionStatus '1. Install folder(s)' 'partial' }
       }
     }
   }else{

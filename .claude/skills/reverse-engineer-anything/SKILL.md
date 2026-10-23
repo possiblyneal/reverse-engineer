@@ -82,16 +82,6 @@ skill replacement before applying authorized changes. Preserve existing approval
 and target-execution boundaries. REA setup never installs or upgrades unrelated
 software, including Node.js, npm, Homebrew, Java, Ghidra, IDA, JADX, Binwalk or Unblob.
 
-## Native analysis: prefer the Ghidra CLI for large targets
-
-The REA MCP wrapper re-spins Ghidra per call and aborts at 330s, so a full
-import+analysis of a large PE exceeds that. When a native analysis is expected to
-run longer, drive the host Ghidra CLI directly in the background: create the
-project directory first, set `JAVA_HOME` to a JDK, import once to analyze, then
-re-import with `-postScript` to reuse cached analysis. See
-`docs/LESSONS.md` ("Prefer the Ghidra CLI over the REA MCP wrapper for native
-analysis") for the exact commands and gotchas.
-
 ## Route the target first
 
 Choose the first tool from the target the user supplied. Use `open_binary` for
