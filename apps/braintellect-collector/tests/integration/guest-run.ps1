@@ -8,11 +8,17 @@ $log = Join-Path $share 'guest.log'
 function L($m){ Add-Content -Path $log -Value $m -Encoding UTF8 }
 $ErrorActionPreference = 'Continue'
 $desktop = [Environment]::GetFolderPath('Desktop')
+$env:BST_SEARCH_ROOTS = 'C:\braintest'
+$fixtureRoot = 'C:\braintest\BRAINtellect2'
+$programDataRoot = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'BST'
 
-function Invoke-Collector($case, $withWindow = $false){
-  Get-ChildItem $desktop -Filter 'BST-full-export-*.zip' -ErrorAction SilentlyContinue | Remove-Item -Force
+function Invoke-Collector($case, $withWindow = $false, $retryOnly = $false){
+  Get-ChildItem $desktop -Filter 'BST-*-*.zip' -ErrorAction SilentlyContinue | Remove-Item -Force
   $before = @(Get-ChildItem $env:TEMP -Filter 'bst*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
   if($withWindow){ Remove-Item Env:BST_NO_UI -ErrorAction SilentlyContinue } else { $env:BST_NO_UI = '1' }
+  if($retryOnly){ $env:BST_RETRY_ONLY = '1' } else { Remove-Item Env:BST_RETRY_ONLY -ErrorAction SilentlyContinue }
+  $env:BST_SEARCH_ROOTS = 'C:\braintest'
+  L "$case retry=$env:BST_RETRY_ONLY search=$env:BST_SEARCH_ROOTS"
   # Mirror the real owner flow: the file lives on the Desktop (local disk) and is
   # launched through cmd, exactly as a double-tap does -- cmd cannot use the UNC
   # share as a working directory, and neither would a tablet. BST_NO_UI still
@@ -22,31 +28,87 @@ function Invoke-Collector($case, $withWindow = $false){
   try {
     & $env:ComSpec /c "`"$cmd`"" *>&1 |
       Out-File -FilePath (Join-Path $share "$case.out") -Encoding utf8
+    $exitCode = $LASTEXITCODE
   } finally { Remove-Item $cmd -Force -ErrorAction SilentlyContinue }
-  L "$case exit=$LASTEXITCODE"
-  $zip = Get-ChildItem $desktop -Filter 'BST-full-export-*.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
+  L "$case exit=$exitCode"
+  $zip = Get-ChildItem $desktop -Filter 'BST-*-*.zip' -ErrorAction SilentlyContinue | Select-Object -First 1
   if($zip){ Copy-Item $zip.FullName (Join-Path $share "$case.zip") -Force }
   $after = @(Get-ChildItem $env:TEMP -Filter 'bst*' -ErrorAction SilentlyContinue | ForEach-Object { $_.FullName })
   L "$case temp leftovers=$(@($after | Where-Object { $before -notcontains $_ }).Count)"
 }
 
-# Registry keys the collector must export, as the real install writes them.
+# Registry keys and ProgramData state the collector must export, as the real install writes them.
 reg add 'HKCU\Software\BST\BRAINtellect2' /v 'license.expiry' /t REG_SZ /d '2099-12-31' /f | Out-Null
-reg add 'HKLM\Software\Brain State Technologies\BRAINtellect2' /v 'InstallPath' /t REG_SZ /d 'C:\braintest\BRAINtellect2' /f | Out-Null
+reg add 'HKLM\Software\Brain State Technologies\BRAINtellect2' /v 'InstallPath' /t REG_SZ /d $fixtureRoot /f | Out-Null
+$syntheticState = Join-Path ([Environment]::GetFolderPath('CommonApplicationData')) 'BST\BRAINtellect2'
 
+# The restored VM may contain a real ProgramData installation. Hide it for this
+# synthetic-fixture test so collector precedence and assertions are deterministic.
+$parkedProgramData = $null
+if(Test-Path $programDataRoot){
+  $parkedProgramData = "$programDataRoot.collector-test-hidden"
+  if(Test-Path $parkedProgramData){ Remove-Item $parkedProgramData -Recurse -Force }
+  Rename-Item $programDataRoot (Split-Path $parkedProgramData -Leaf)
+}
+New-Item -ItemType Directory -Force -Path $syntheticState | Out-Null
+Set-Content -Path (Join-Path $syntheticState 'connection.ini') -Value 'fixture-state=1' -Encoding ASCII
+try {
+Remove-Item (Join-Path $share 'guest.log') -Force -ErrorAction SilentlyContinue
 Invoke-Collector 'ok'
+
+# Retry mode must collect the database and state without duplicating the install.
+Invoke-Collector 'retry' $false $true
 
 # The default (window) mode: the parent shows the window and a child collects.
 # It must end by itself (the window closes), exit zero and leave a valid ZIP.
 Invoke-Collector 'ui' $true
 
-# A missing database must fail the calling process, not just the log. The
-# fixture schema folder is hidden for the run and always put back.
-$schema = 'C:\braintest\BRAINtellect2\data\braintellectds'
-Rename-Item $schema 'braintellectds.hidden'
+# A missing MySQL datadir must fail the calling process, not just the log. Hide
+# its InnoDB marker for each run, then restore it before the next case.
+$marker = 'C:\braintest\BRAINtellect2\state\embedded-store\ibdata1'
+Rename-Item $marker 'ibdata1.hidden'
 try {
+  $env:BST_SEARCH_ROOTS = 'C:\braintest\BRAINtellect2'
   Invoke-Collector 'fail'
+} finally { Rename-Item "$marker.hidden" 'ibdata1' }
+Rename-Item $marker 'ibdata1.hidden'
+try {
+  $env:BST_SEARCH_ROOTS = 'C:\braintest\BRAINtellect2'
   Invoke-Collector 'uifail' $true
-} finally { Rename-Item "$schema.hidden" 'braintellectds' }
+} finally { Rename-Item "$marker.hidden" 'ibdata1' }
+
+# A failing database stage must not stop the later stages in retry mode either.
+Rename-Item $marker 'ibdata1.hidden'
+try { Invoke-Collector 'retryfail' $false $true } finally { Rename-Item "$marker.hidden" 'ibdata1' }
+
+# A datadir and state folder relocated outside the install, found only through the
+# BRAINtellect configuration. An unrelated MySQL elsewhere must never be captured,
+# even when the configuration mentions it.
+$relocRoot = 'C:\braintest-relocated'
+$relocData = Join-Path $relocRoot 'BRAINtellect-data'
+$relocState = Join-Path $relocRoot 'BRAINtellect-state'
+$decoyData = Join-Path $relocRoot 'MySQL\data'
+$config = Join-Path $syntheticState 'connection.ini'
+New-Item -ItemType Directory -Force -Path $relocState, (Split-Path $decoyData -Parent) | Out-Null
+Copy-Item 'C:\braintest\BRAINtellect2\state\embedded-store' $relocData -Recurse -Force
+Copy-Item 'C:\braintest\BRAINtellect2\state\embedded-store' $decoyData -Recurse -Force
+Set-Content -Path (Join-Path $relocState 'relocated-state.txt') -Value 'relocated-state=1' -Encoding ASCII
+Set-Content -Path (Join-Path $decoyData 'decoy-marker.txt') -Value 'unrelated-mysql=1' -Encoding ASCII
+Set-Content -Path $config -Encoding ASCII -Value @("datadir=$relocData ; embedded store", "statedir=$relocState", "other=$decoyData")
+Rename-Item $marker 'ibdata1.hidden'
+try {
+  Invoke-Collector 'reloc'
+  Invoke-Collector 'relocretry' $false $true
+} finally {
+  Rename-Item "$marker.hidden" 'ibdata1'
+  Set-Content -Path $config -Value 'fixture-state=1' -Encoding ASCII
+  Remove-Item $relocRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
+} finally {
+  Remove-Item $programDataRoot -Recurse -Force -ErrorAction SilentlyContinue
+  if($parkedProgramData -and (Test-Path $parkedProgramData)){
+    Rename-Item $parkedProgramData (Split-Path $programDataRoot -Leaf)
+  }
+}
 
 L 'DONE'

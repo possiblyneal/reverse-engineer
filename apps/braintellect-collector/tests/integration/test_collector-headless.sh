@@ -13,7 +13,8 @@ cd "$(dirname "$0")/../.."
 repo_root=$(git rev-parse --show-toplevel)
 
 SERVER=neal@10.10.10.10
-SHARE_HOST=/home/neal/windows-data/bsttest # guest: \\host.lan\data\bsttest
+WINDOWS_CONTAINER=${WINDOWS_CONTAINER:-systemd-windows}
+SHARE_HOST=/srv/local/windows/shared/bsttest # guest: \\host.lan\data\bsttest
 run="r$(date +%s)"                         # fresh folder: the guest's SMB cache serves stale overwrites
 run_host="$SHARE_HOST/$run"
 out=$(mktemp -d "$repo_root/tmp/collector.XXXXXX")
@@ -45,7 +46,7 @@ type_in_guest() {
     done
     keys+=("sendkey ret")
     printf '%s\n' "${keys[@]}" |
-        ssh "$SERVER" "podman exec -i windows sh -c 'nc -U -w3 /run/shm/monitor.sock >/dev/null'"
+        ssh "$SERVER" "podman exec -i $WINDOWS_CONTAINER sh -c 'nc -U -w3 /run/shm/monitor.sock >/dev/null'"
 }
 
 ssh "$SERVER" "mkdir -p $run_host"
@@ -53,7 +54,7 @@ scp -q src/Collect-BRAINtellect2-Data.cmd tests/integration/guest-run.ps1 "$SERV
 type_in_guest "powershell -noprofile -executionpolicy bypass -file \\\\host.lan\\data\\bsttest\\$run\\guest-run.ps1"
 
 finished=0
-for _ in $(seq 1 180); do
+for _ in $(seq 1 360); do
     if ssh "$SERVER" "grep -q DONE $run_host/guest.log" 2>/dev/null; then finished=1; break; fi
     sleep 5
 done
@@ -80,7 +81,9 @@ check "SQL holds person rows" has "$sql" "INSERT INTO \`person\` VALUES (1,'Jane
 check "SQL holds session rows" has "$sql" 'INSERT INTO `session` VALUES (10,1,'"'complete'),(11,2,'incomplete'),(12,2,'complete'),(13,3,'complete');"
 check "SQL holds design rows" has "$sql" "INSERT INTO \`flowdesign\` VALUES (1,'Cycle A'"
 reg_to_utf8() { iconv -f UTF-16 -t UTF-8 "$1" >"$2"; } # reg.exe writes UTF-16
-check "registry export converts to text" reg_to_utf8 "$out/ok/registry/HKEY_CURRENT_USER_Software_BST_BRAINtellect2.reg" "$out/ok/license.reg"
+registryFile="$out/ok/registry/HKCU_Software_BST.reg"
+check "registry export creates a file" test -f "$registryFile"
+check "registry export converts to text" reg_to_utf8 "$registryFile" "$out/ok/license.reg"
 check "registry export has the license key" has "$out/ok/license.reg" '"license.expiry"="2099-12-31"'
 info=$out/ok/SYSTEM-INFO.txt
 check "SYSTEM-INFO: OS" has "$info" 'OS (Caption):'
@@ -91,6 +94,16 @@ check "SYSTEM-INFO: CIM" has_re "$info" 'CIM cmdlet: +available'
 check "SYSTEM-INFO: reg.exe" has_re "$info" 'reg.exe: +[A-Za-z]:[\\]'
 check "SYSTEM-INFO: ZIP API" has_re "$info" 'ZIP API: +available'
 check "SYSTEM-INFO: MySQL engine version" has_re "$info" 'MySQL engine: +.*mysqld.exe \(version [0-9]+\.[0-9]+'
+
+# --- retry case: database/state capture succeeds without duplicate program files ---
+check "retry run exits zero" has "$out/guest.log" 'retry exit=0'
+check "retry run removes its private copy" has "$out/guest.log" 'retry temp leftovers=0'
+check "retry ZIP is a valid archive" unzip -tq "$out/retry.zip"
+mkdir "$out/retry"
+unzip -qq -o "$out/retry.zip" -d "$out/retry" 2>/dev/null || true
+check "retry keeps database" has "$out/retry/database/BST-data-retry.sql" "INSERT INTO \`person\` VALUES (1,'Jane'"
+check "retry keeps application state" test -d "$out/retry/application-state"
+check "retry excludes install copy" test ! -e "$out/retry/install"
 
 # --- ui case: the default window mode ends by itself and delivers the same ZIP ---
 check "window run exits zero" has "$out/guest.log" 'ui exit=0'
@@ -109,7 +122,35 @@ check "failed run removes its private copy" has "$out/guest.log" 'fail temp left
 mkdir "$out/fail"
 unzip -qq -o "$out/fail.zip" -d "$out/fail" 2>/dev/null || true
 check "failed stage is recorded" has "$out/fail/STATUS.txt" '[FAIL] 2. Database'
+check "failed run still returns a valid ZIP" unzip -tq "$out/fail.zip"
+check "failed run still writes SYSTEM-INFO" has_re "$out/fail/SYSTEM-INFO.txt" 'OS \(Caption\):'
+check "failed database does not stop the registry stage" has "$out/fail/STATUS.txt" '[OK] 3. Registry'
+check "failed database does not stop the install stage" has "$out/fail/STATUS.txt" '[OK] 1. Install folder(s)'
 check "window run fails the caller too" has_re "$out/guest.log" 'uifail exit=[1-9]'
 check "failed window run removes its private copy" has "$out/guest.log" 'uifail temp leftovers=0'
+
+# --- retry fail case: the retry flow also continues after the database stage fails ---
+check "retry with missing database exits non-zero" has_re "$out/guest.log" 'retryfail exit=[1-9]'
+check "retry with missing database removes its private copy" has "$out/guest.log" 'retryfail temp leftovers=0'
+check "retry failure ZIP is a valid archive" unzip -tq "$out/retryfail.zip"
+mkdir "$out/retryfail"
+unzip -qq -o "$out/retryfail.zip" -d "$out/retryfail" 2>/dev/null || true
+check "retry failure records the database stage" has "$out/retryfail/STATUS.txt" '[FAIL] 2. Database'
+check "retry failure still captures the registry" has "$out/retryfail/STATUS.txt" '[OK] 3. Registry'
+check "retry failure still writes SYSTEM-INFO" test -s "$out/retryfail/SYSTEM-INFO.txt"
+
+# --- relocated case: configuration points at a datadir and state outside the install ---
+for flow in reloc relocretry; do
+    check "$flow exits zero" has "$out/guest.log" "$flow exit=0"
+    check "$flow ZIP is a valid archive" unzip -tq "$out/$flow.zip"
+    mkdir "$out/$flow"
+    unzip -qq -o "$out/$flow.zip" -d "$out/$flow" 2>/dev/null || true
+    check "$flow database stage ok" has "$out/$flow/STATUS.txt" '[OK] 2. Database'
+    check "$flow captures relocated datadir rows" grep -rqF "INSERT INTO \`person\` VALUES (1,'Jane'" "$out/$flow/database"
+    check "$flow captures relocated state" grep -rqF 'relocated-state=1' "$out/$flow/application-state"
+    check "$flow leaves unrelated MySQL out" test -z "$(grep -rlF 'unrelated-mysql=1' "$out/$flow" || true)"
+done
+check "relocated normal run keeps the install copy" test -d "$out/reloc/install"
+check "relocated retry run excludes the install copy" test ! -e "$out/relocretry/install"
 
 exit "$fail"

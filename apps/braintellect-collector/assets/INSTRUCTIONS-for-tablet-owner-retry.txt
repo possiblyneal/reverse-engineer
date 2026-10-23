@@ -1,0 +1,23 @@
+HOW TO RUN THIS RETRY (about 3-5 minutes):
+
+1. Save "Collect-BRAINtellect2-Data-Retry" to your Desktop. Windows usually
+   hides the ".cmd" ending, so the icon may show as just that name.
+
+2. Double-tap (or double-click) the icon, just like opening any other icon.
+     - If Windows shows a blue "Windows protected your PC" box, tap "More info"
+       and then "Run anyway".
+     - If double-tapping does nothing, tap Start, type: powershell, then press
+       and hold "Windows PowerShell" and choose "Run as administrator". In the
+       blue window, type and press Enter:
+           & "$env:USERPROFILE\Desktop\Collect-BRAINtellect2-Data-Retry.cmd"
+
+3. Leave the progress window open until it closes. This retry collects the
+   missing data and settings; it does not copy the program files again.
+
+4. When it finishes, email the file from your Desktop named like:
+       BST-data-retry-<yourpc>.zip
+   to Neal. If it is too big to attach, upload it to Google Drive, Dropbox, or
+   wetransfer.com and send the link instead.
+
+If anything goes wrong, send the ZIP anyway if it was created. It includes a
+STATUS.txt file that records what succeeded and what did not.

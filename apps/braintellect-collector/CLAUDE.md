@@ -13,9 +13,10 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
 | Path | What |
 |---|---|
 | `src/Collect-BRAINtellect2-Data.cmd` | the collector (a tap-to-run batch/PowerShell polyglot) |
-| `assets/INSTRUCTIONS-for-tablet-owner.txt` | the owner's instructions, delivered beside it |
-| `scripts/build-delivery` | builds the owner archive: those two files only |
-| `tests/test_delivery-archive.sh` | checks the archive membership |
+| `assets/INSTRUCTIONS-for-tablet-owner.txt` | normal owner's instructions, delivered beside it |
+| `assets/INSTRUCTIONS-for-tablet-owner-retry.txt` | retry owner's instructions, delivered beside the retry collector |
+| `scripts/build-delivery` | builds normal or data-only retry owner archives |
+| `tests/test_delivery-archive.sh` | checks both archive variants and retry launcher |
 | `tests/integration/` | the VM test and its guest half |
 
 ## Local Contracts
@@ -45,13 +46,28 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
 - **The tablet is never modified and nothing is sent.** The database is read from a private
   copy in `$env:TEMP` by the tablet's own bundled `mysqld`; the only artifact left is the
   Desktop ZIP, which the owner sends. The script makes no network call.
+- **Path discovery is BRAINtellect-scoped.** Never recursively scan all filesystem drives: search known install roots and Program Files for program files; capture ProgramData state separately; executable discovery searches install roots only. `BST_SEARCH_ROOTS` is a test-only override for the VM fixture.
+  Fallback discovery adds only the legacy roots `<fixed drive>\BST`, `\BRAINtellect2`, `\BRAINtellect` (no recursion) and folders named by small config files below the install and ProgramData roots, and only when a path segment starts with `BST`, `BRAINtellect` or `Brain State Technologies`. Relocated datadirs go to the database stage, other relocated folders to `application-state/relocated-<n>-<name>`. A MySQL elsewhere is never captured.
+- **Embedded MySQL discovery is schema-agnostic but BRAINtellect-scoped.** Identify its
+  datadir by `ibdata1` plus its `mysql/` system schema only below `C:\ProgramData\BST`,
+  `C:\ProgramData\BRAINtellect2`, a discovered BRAINtellect/BST install root, or a
+  BRAINtellect-scoped path named by its local configuration; never
+  require a schema named `braintellectds` or fall back to arbitrary drive-wide MySQL instances. Capture the complete datadir, dump
+  `--all-databases`, and report non-system schemas/tables. Copy those ProgramData roots
+  into `application-state/` before discovery so configuration and state survive even if the
+  database is nonstandard or cannot start.
+- **Registry discovery is bounded.** Export known BST and Brain State Technologies roots directly; never recursively enumerate all Windows registry software keys.
+- **Every stage is independent.** A failure in one stage is logged, marked `[FAIL]`, and never prevents the later stages, `SYSTEM-INFO.txt`, `STATUS.txt` or the ZIP. The run exits non-zero only after the ZIP exists, when any stage is `[FAIL]`; this holds in normal, retry and window modes.
 - **The ZIP is the diagnostic.** It carries `STATUS.txt` (each stage `[OK]`, `[PARTIAL]`,
   `[SKIP]` or `[FAIL]`, written even on failure) and `SYSTEM-INFO.txt` (OS, hardware,
   PowerShell, .NET release, CIM, `reg.exe`, ZIP API, MySQL engine path and version). A new
-  dependency the script relies on gets a line in `SYSTEM-INFO.txt`.
+  dependency the script relies on gets a line in `SYSTEM-INFO.txt`. The data-only retry
+  launcher sets `BST_RETRY_ONLY=1`: it skips copying program files already exported, names
+  its Desktop ZIP `BST-data-retry-<computer>.zip`, and must continue to later captures after
+  an individual probe fails.
 - `INSTRUCTIONS-for-tablet-owner.txt` is read by a non-technical owner: plain words, no repo
   vocabulary. It must match what the script prints and creates.
-- The delivery archive holds the collector and instructions only: no tests, no exports.
+- Each delivery archive holds only its collector variant and matching instructions: no tests or exports. `scripts/build-delivery --retry` creates the data-only retry archive and injects `BST_RETRY_ONLY=1` into its launcher.
 
 ## Work Guidance
 
@@ -60,19 +76,19 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
 
 ## Verification
 
-- `tests/test_delivery-archive.sh`: builds the archive and asserts it holds exactly the
-  collector and the instructions. Needs no VM; run it after changing `scripts/build-delivery`.
+- `tests/test_delivery-archive.sh`: builds normal and retry archives; asserts exact membership,
+  retry launcher injection, and CRLF. Needs no VM; run it after changing delivery inputs.
 - `tests/integration/test_collector-headless.sh` (needs the VM; run by hand, since
   `scripts/integration` finds no project manifest to dispatch to). It stages the
-  script in a fresh `/home/neal/windows-data/bsttest/r<epoch>/` folder (guest
-  `\\host.lan\data\bsttest\…`), types one command into the guest's focused admin PowerShell
+  script in a fresh `/srv/local/windows/shared/bsttest/r<epoch>/` folder (guest
+  `\\host.lan\data\bsttest\…`), temporarily parks competing ProgramData BST state, types one command into the guest's focused admin PowerShell
   window through the QEMU monitor (no guest SSH; guest-run.ps1 launches the collector via
-  `cmd /c`, the real double-tap path), and inspects the returned ZIPs: zero exit,
-  valid archive, every stage, SQL rows, registry export, `SYSTEM-INFO.txt` fields, and a
-  non-zero exit with `[FAIL] 2. Database` when the schema folder is hidden. Both run headless
+  `cmd /c`, the real double-tap path), and inspects normal and retry ZIPs: zero exit,
+  valid archive, every stage, SQL rows, registry export, `SYSTEM-INFO.txt` fields, retry state/database capture without `install/`, and a
+  non-zero exit with `[FAIL] 2. Database` when the MySQL `ibdata1` marker is hidden, while the ZIP still holds `SYSTEM-INFO.txt`, install and `[OK] 3. Registry` (normal and retry); and a datadir plus state folder relocated to `C:\braintest-relocated` and named only by `connection.ini` is captured in both flows while an unrelated MySQL there is not. Normal runs execute both headless
   and in the default window mode (the window must close by itself). About 10 minutes.
-- Fixture precondition: container `windows` on `server` running, a synthetic install at
-  `C:\braintest` (embedded MySQL 5.5 `mysqld.exe`; tables `person`=3, `session`=4,
+- Fixture precondition: container `systemd-windows` on `server` running (override with
+  `WINDOWS_CONTAINER`), a synthetic install at `C:\braintest` (embedded MySQL 5.5 `mysqld.exe`; tables `person`=3, `session`=4,
   `flowdesign`=2, `montagesystem`=3 rows), and an admin PowerShell window focused on the guest
   desktop. The fixture setup is not tracked here.
 - The window's contents have no automated check: the VM test only proves the window mode
