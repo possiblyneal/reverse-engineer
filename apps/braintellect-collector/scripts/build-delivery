@@ -1,20 +1,34 @@
 #!/usr/bin/env bash
-# Builds the owner delivery archive: the collector and the owner instructions,
-# nothing else. Prints the archive path.
-# Usage: build-delivery [output.zip]   (default: state/BST-collector.zip)
+# Builds an owner delivery archive. With --retry, omit already-exported program files.
+# Usage: build-delivery [--retry] [output.zip]
 set -euo pipefail
 
 unit="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+retry=0
+if [[ ${1:-} == --retry ]]; then
+    retry=1
+    shift
+fi
 out="${1:-$unit/state/BST-collector.zip}"
 
 mkdir -p "$(dirname "$out")"
 rm -f "$out"
-python3 -I - "$out" "$unit/src/Collect-BRAINtellect2-Data.cmd" "$unit/assets/INSTRUCTIONS-for-tablet-owner.txt" <<'EOF'
-import os, sys, zipfile
+python3 -I - "$out" "$unit/src/Collect-BRAINtellect2-Data.cmd" "$unit/assets/INSTRUCTIONS-for-tablet-owner.txt" "$unit/assets/INSTRUCTIONS-for-tablet-owner-retry.txt" "$retry" <<'EOF'
+import sys
+import zipfile
 
-out, *members = sys.argv[1:]
-with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-    for path in members:
-        z.write(path, os.path.basename(path))
+out, collector, instructions, retry_instructions, retry = sys.argv[1:]
+with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as archive:
+    if retry == "1":
+        script = open(collector, "rb").read()
+        marker = b'set "BST_SELF=%~f0"\r\n'
+        if marker not in script:
+            raise SystemExit("collector launcher marker is missing")
+        script = script.replace(marker, marker + b'set "BST_RETRY_ONLY=1"\r\n', 1)
+        archive.writestr("Collect-BRAINtellect2-Data-Retry.cmd", script)
+        archive.write(retry_instructions, "INSTRUCTIONS-for-tablet-owner-retry.txt")
+    else:
+        archive.write(collector, "Collect-BRAINtellect2-Data.cmd")
+        archive.write(instructions, "INSTRUCTIONS-for-tablet-owner.txt")
 EOF
 echo "$out"

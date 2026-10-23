@@ -51,19 +51,27 @@ param(
 # is robust across process boundaries where a -ShowUI:$false switch can get mangled.
 # Set BST_NO_UI=1 to skip the progress window.
 if($env:BST_NO_UI -eq '1'){ $ShowUI = $false }
+$RetryOnly = ($env:BST_RETRY_ONLY -eq '1')
 
-$ErrorActionPreference = 'Stop'
+# A failed probe must never prevent later captures or creation of the diagnostic ZIP.
+$ErrorActionPreference = 'Continue'
 
-$db = 'braintellectds'
 
 # Force an array so `foreach` iterates drives, not characters (a single-drive
 # machine returns a scalar string from ExpandProperty Root).
 $drives = @(Get-PSDrive -PSProvider FileSystem | Select-Object -ExpandProperty Root)
 
-# Helpers: search, skipping our own temp folder (which is under $env:TEMP).
+# Helpers: search only BRAINtellect install roots, never every file on every drive.
 function Find-Dir($name){
-  foreach($d in $drives){
-    $hit = Get-ChildItem -Path $d -Recurse -Directory -Filter $name -ErrorAction SilentlyContinue |
+  $roots = @()
+  if($env:BST_SEARCH_ROOTS){ $roots += $env:BST_SEARCH_ROOTS -split ';' }
+  $roots += [Environment]::GetFolderPath('ProgramFiles')
+  $roots += [Environment]::GetFolderPath('ProgramFilesX86')
+  $seen = @{}
+  foreach($r in $roots){
+    if(-not $r -or -not (Test-Path $r) -or $seen[$r]){ continue }
+    $seen[$r] = $true
+    $hit = Get-ChildItem -Path $r -Recurse -Directory -Filter $name -ErrorAction SilentlyContinue |
            Where-Object { $_.FullName -notmatch '\\bstcollect_\d+(\\|$)' } | Select-Object -First 1
     if($hit){ return $hit.FullName }
   }
@@ -71,11 +79,34 @@ function Find-Dir($name){
 }
 function Find-Exe($name, $preferredRoots){
   $roots = @()
-  if($preferredRoots){ $roots += $preferredRoots }   # prefer the app's bundled engine
-  $roots += $drives                         # then fall back to any drive
-  foreach($r in $roots){
+  if($preferredRoots){ $roots += $preferredRoots }
+  foreach($r in ($roots | Where-Object { $_ -and (Test-Path $_) } | Sort-Object -Unique)){
     $hit = Get-ChildItem -Path $r -Recurse -Filter $name -ErrorAction SilentlyContinue | Select-Object -First 1
     if($hit){ return $hit.FullName }
+  }
+  return $null
+}
+function Find-MySqlDataDir($preferredRoots){
+  # BRAINtellect uses embedded MySQL. Its schema name can vary, so identify the
+  # datadir by MySQL's own required InnoDB marker inside known BRAINtellect paths.
+  $roots = @()
+  if($preferredRoots){ $roots += $preferredRoots }
+  $programData = [Environment]::GetFolderPath('CommonApplicationData')
+  if($programData){
+    $roots += (Join-Path $programData 'BST')
+    $roots += (Join-Path $programData 'BRAINtellect2')
+  }
+  $seen = @{}
+  foreach($r in $roots){
+    if(-not $r -or $seen[$r]){ continue }
+    $seen[$r] = $true
+    if(-not $r -or -not (Test-Path $r)){ continue }
+    $hit = Get-ChildItem -Path $r -Recurse -File -Filter 'ibdata1' -ErrorAction SilentlyContinue |
+           Where-Object {
+             $_.Directory.FullName -notmatch '\\bstcollect_\d+(\\|$)' -and
+             (Test-Path (Join-Path $_.Directory.FullName 'mysql'))
+           } | Select-Object -First 1
+    if($hit){ return $hit.Directory.FullName }
   }
   return $null
 }
@@ -92,7 +123,8 @@ function Say($m){
 }
 
 $desktop = [Environment]::GetFolderPath('Desktop')
-$outZip  = Join-Path $desktop ('BST-full-export-' + $env:COMPUTERNAME + '.zip')
+$outName = if($RetryOnly){ 'BST-data-retry-' }else{ 'BST-full-export-' }
+$outZip  = Join-Path $desktop ($outName + $env:COMPUTERNAME + '.zip')
 
 $proc = $null   # our private mysqld, tracked so cleanup can target only us
 
@@ -365,6 +397,9 @@ $collection = {
   if(-not $instRoots){
     Say "   (no BRAINtellect2/BST folder found -- skipping install capture)"
     Set-SectionStatus '1. Install folder(s)' 'skip'
+  }elseif($RetryOnly){
+    Say "   (retry mode: keeping the existing program export; locating tools only)"
+    Set-SectionStatus '1. Install folder(s)' 'skip'
   }else{
     $instOut = Join-Path $work 'install'
     $instStatus = 'ok'
@@ -381,35 +416,62 @@ $collection = {
     Set-SectionStatus '1. Install folder(s)' $instStatus
   }
 
+  # BRAINtellect keeps machine-wide configuration and state outside Program Files.
+  # Preserve it before database discovery: it records the actual configured path
+  # even when the embedded MySQL data layout is nonstandard.
+  $programData = [Environment]::GetFolderPath('CommonApplicationData')
+  $stateRoots = @(
+    (Join-Path $programData 'BST'),
+    (Join-Path $programData 'BRAINtellect2')
+  ) | Where-Object { Test-Path $_ } | Sort-Object -Unique
+  if($stateRoots){
+    $stateOut = Join-Path $work 'application-state'
+    $null = New-Item -ItemType Directory -Force -Path $stateOut
+    foreach($r in $stateRoots){
+      Say ("   application state found: " + $r)
+      Copy-Item $r (Join-Path $stateOut (Split-Path $r -Leaf)) -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable copyErrors
+      if($copyErrors){
+        Say ("   WARNING: " + @($copyErrors).Count + " application-state item(s) could not be copied:")
+        @($copyErrors) | Select-Object -First 10 | ForEach-Object { Say ("      " + $_.Exception.Message) }
+        if($sectionStatus['1. Install folder(s)'] -eq 'ok'){ Set-SectionStatus '1. Install folder(s)' 'partial' }
+      }
+    }
+  }else{
+    Say "   (no BRAINtellect application state found in ProgramData)"
+  }
+
   # =====================================================================
   # 2. DATABASE  -- find datadir, dump every table, keep raw files too
   # =====================================================================
   Say "Step 2/4: locating the BRAINtellect database..."
   & $reportProgress 2 4 'Dumping database...' 60 $false
-  $braintellectds = Find-Dir 'braintellectds'
-  if(-not $braintellectds){ throw "Could not find the BRAINtellect database (no 'braintellectds' folder). Is the software installed on this tablet?" }
-  # The MySQL datadir is the PARENT of the per-schema folder (e.g.
-  # ...\<datadir>\braintellectds\).
-  $dataDir = Split-Path $braintellectds -Parent
-  Say ("   database data folder: " + $dataDir)
-
-  # copy the raw data files (belt-and-suspenders; the SQL dump is the readable copy)
+  $dataDir = Find-MySqlDataDir $instRoots
   $dataOut = Join-Path $work 'database'
   $dbStatus = 'ok'
-  Copy-Item $dataDir $dataOut -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable copyErrors
-  if($copyErrors){
-    $dbStatus = 'partial'
-    Say ("   WARNING: " + @($copyErrors).Count + " database file(s) could not be copied:")
-    @($copyErrors) | Select-Object -First 10 | ForEach-Object { Say ("      " + $_.Exception.Message) }
+  if(-not $dataDir){
+    Say "   WARNING: Could not find an embedded-MySQL data directory (no ibdata1 + mysql folder)."
+    $dbStatus = 'fail'
+  }else{
+    Say ("   database data folder: " + $dataDir)
+    # Copy raw files first. The table/schema names are discovered from the private
+    # engine below; BRAINtellect does not require a schema named braintellectds.
+    Copy-Item $dataDir $dataOut -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable copyErrors
+    if($copyErrors){
+      $dbStatus = 'partial'
+      Say ("   WARNING: " + @($copyErrors).Count + " database file(s) could not be copied:")
+      @($copyErrors) | Select-Object -First 10 | ForEach-Object { Say ("      " + $_.Exception.Message) }
+    }
+    Get-ChildItem $dataOut -Filter '*.pid' -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
+    Get-ChildItem $dataOut -Filter '*.err' -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
   }
-  Get-ChildItem $dataOut -Filter '*.pid' -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
-  Get-ChildItem $dataOut -Filter '*.err' -Recurse -ErrorAction SilentlyContinue | Remove-Item -Force -ErrorAction SilentlyContinue
 
   # find the bundled engine so we can read the copy privately
   $mysqld    = Find-Exe 'mysqld.exe' $instRoots
   $mysqldump = Find-Exe 'mysqldump.exe' $instRoots
   $mysqlcli  = Find-Exe 'mysql.exe' $instRoots
-  if(-not $mysqld){
+  if(-not $dataDir){
+    Say "   (skipping SQL dump because no embedded-MySQL data directory was found)"
+  }elseif(-not $mysqld){
     Say "   (no mysqld.exe found on this tablet -- skipping SQL dump, raw files kept)"
     try{ Add-Content -Path (Join-Path $work 'SYSTEM-INFO.txt') -Encoding UTF8 "MySQL engine:   NOT FOUND" }catch{ }
     $dbStatus = 'partial'
@@ -450,12 +512,13 @@ $collection = {
       $dbStatus = 'partial'
     }else{
       # dump the ENTIRE schema (every table, every row) as UTF-8 (not ASCII).
-      $sqlOut = Join-Path $dataOut 'BST-full-export.sql'
+      $sqlName = if($RetryOnly){ 'BST-data-retry.sql' }else{ 'BST-full-export.sql' }
+      $sqlOut = Join-Path $dataOut $sqlName
       Say "   dumping every table to SQL..."
       # mysqldump writes the file itself (--result-file): a PowerShell pipeline would
       # re-encode its UTF-8 bytes.
       if($mysqldump){
-        & $mysqldump --user=root --protocol=pipe --socket=$pipe --skip-lock-tables --hex-blob --routines --default-character-set=utf8 "--result-file=$sqlOut" $db 2>$null
+        & $mysqldump --user=root --protocol=pipe --socket=$pipe --skip-lock-tables --hex-blob --routines --default-character-set=utf8 "--result-file=$sqlOut" --all-databases 2>$null
         $dumpExit = $LASTEXITCODE
       }else{
         Say "   (no mysqldump.exe found on this tablet)"
@@ -469,21 +532,24 @@ $collection = {
         Say "   WARNING: the SQL dump came back empty. Raw data files are still included in the export."
         $dbStatus = 'partial'
       }else{
-        # report row counts per table so private data is obvious at a glance.
-        # @() forces an array even when the schema has a single table.
+        # Report every non-system schema/table. Schema names vary by installation,
+        # so do not assume braintellectds.
         if($mysqlcli){
-          $tables = @(& $mysqlcli --user=root --protocol=pipe --socket=$pipe -N -e "SELECT table_name FROM information_schema.tables WHERE table_schema='$db' ORDER BY table_name" 2>$null)
+          $tables = @(& $mysqlcli --user=root --protocol=pipe --socket=$pipe -N -e "SELECT CONCAT(table_schema, CHAR(9), table_name) FROM information_schema.tables WHERE table_schema NOT IN ('information_schema','mysql','performance_schema') ORDER BY table_schema, table_name" 2>$null)
           $total = 0
-          foreach($t in $tables){
-            $quoted = '`' + $db + '`.`' + ("$t".Replace('`','``')) + '`'
+          foreach($row in $tables){
+            $parts = "$row" -split "`t", 2
+            if($parts.Count -ne 2){ continue }
+            $schema = $parts[0]; $table = $parts[1]
+            $quoted = '`' + ($schema.Replace('`','``')) + '`.`' + ($table.Replace('`','``')) + '`'
             $c = & $mysqlcli --user=root --protocol=pipe --socket=$pipe -N -e "SELECT COUNT(*) FROM $quoted" 2>$null
             $n = 0
             if($LASTEXITCODE -ne 0 -or -not [int]::TryParse(("$c").Trim(), [ref]$n)){
-              Say ("      {0,-24} ? (count failed)" -f $t)
+              Say ("      {0,-24} ? (count failed)" -f ($schema + '.' + $table))
               $dbStatus = 'partial'
             }else{
               $total += $n
-              Say ("      {0,-24} {1}" -f $t, $n)
+              Say ("      {0,-24} {1}" -f ($schema + '.' + $table), $n)
             }
           }
           Say ("      {0,-24} {1} (grand total)" -f 'ALL', $total)
@@ -493,6 +559,7 @@ $collection = {
   }
   $ErrorActionPreference = 'Stop'
   Set-SectionStatus '2. Database' $dbStatus
+  if($dbStatus -eq 'fail'){ throw 'Could not find an embedded-MySQL data directory.' }
 
   # =====================================================================
   # 3. REGISTRY  -- any key mentioning BRAINtellect / BST
@@ -503,24 +570,27 @@ $collection = {
   & $reportProgress 3 4 'Scanning registry (this can take a few minutes)...' 70 $true
   $regOut = Join-Path $work 'registry'
   $null = New-Item -ItemType Directory -Force -Path $regOut
-  $regHives = @('HKCU:\Software','HKLM:\Software','HKCU:\Software\Wow6432Node','HKLM:\Software\Wow6432Node')
+  # Query known vendor roots directly. A recursive walk over all of HKCU/HKLM\Software
+  # can take indefinitely on an installed Windows system and prevent the diagnostic ZIP.
+  $regKeys = @(
+    'HKCU\Software\BST',
+    'HKLM\Software\BST',
+    'HKCU\Software\Brain State Technologies',
+    'HKLM\Software\Brain State Technologies',
+    'HKLM\Software\Wow6432Node\BST',
+    'HKLM\Software\Wow6432Node\Brain State Technologies'
+  )
   $exported = 0
   $regFailed = 0
   # reg.exe writes to stderr on any failure; under ErrorActionPreference=Stop that
   # would abort the whole export, so run this section as Continue (as the DB probe does).
   $prevEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-  foreach($hive in $regHives){
-    if(-not (Test-Path $hive)){ continue }
-    Get-ChildItem -Path $hive -Recurse -ErrorAction SilentlyContinue |
-      Where-Object { $_.Name -match '(?i)(\\BST($|\\)|BRAINtellect)' } |
-      ForEach-Object {
-        # reg.exe needs the plain key path (HKEY_...\...), not the provider-qualified
-        # PSPath. Use the full Name as the filename too, so keys that share a leaf name
-        # never overwrite each other.
-        $safe = ($_.Name -replace '[\\:*?"<>|]', '_')
-        reg export $_.Name (Join-Path $regOut ("$safe.reg")) /y 2>$null
-        if($LASTEXITCODE -eq 0){ $exported++ }else{ $regFailed++ }
-      }
+  foreach($key in $regKeys){
+    reg query $key 2>$null | Out-Null
+    if($LASTEXITCODE -ne 0){ continue }
+    $safe = ($key -replace '[\\:*?"<>|]', '_')
+    reg export $key (Join-Path $regOut ("$safe.reg")) /y 2>$null
+    if($LASTEXITCODE -eq 0){ $exported++ }else{ $regFailed++ }
   }
   $ErrorActionPreference = $prevEAP
   if($exported -eq 0 -and $regFailed -eq 0){
@@ -569,8 +639,13 @@ $collection = {
   }
 }
 
-# A headless PowerShell host has no UI message loop; run directly so failures
-# remain on its error stream and propagate a useful exit status.
-& $collection
+# A headless PowerShell host has no UI message loop; run directly. PowerShell's
+# -Command host otherwise reports terminating errors but can still return zero.
+try{
+  & $collection
+}catch{
+  Write-Error $_
+  exit 1
+}
 
 Write-Finish

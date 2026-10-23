@@ -13,7 +13,8 @@ cd "$(dirname "$0")/../.."
 repo_root=$(git rev-parse --show-toplevel)
 
 SERVER=neal@10.10.10.10
-SHARE_HOST=/home/neal/windows-data/bsttest # guest: \\host.lan\data\bsttest
+WINDOWS_CONTAINER=${WINDOWS_CONTAINER:-systemd-windows}
+SHARE_HOST=/srv/local/windows/shared/bsttest # guest: \\host.lan\data\bsttest
 run="r$(date +%s)"                         # fresh folder: the guest's SMB cache serves stale overwrites
 run_host="$SHARE_HOST/$run"
 out=$(mktemp -d "$repo_root/tmp/collector.XXXXXX")
@@ -45,7 +46,7 @@ type_in_guest() {
     done
     keys+=("sendkey ret")
     printf '%s\n' "${keys[@]}" |
-        ssh "$SERVER" "podman exec -i windows sh -c 'nc -U -w3 /run/shm/monitor.sock >/dev/null'"
+        ssh "$SERVER" "podman exec -i $WINDOWS_CONTAINER sh -c 'nc -U -w3 /run/shm/monitor.sock >/dev/null'"
 }
 
 ssh "$SERVER" "mkdir -p $run_host"
@@ -53,7 +54,7 @@ scp -q src/Collect-BRAINtellect2-Data.cmd tests/integration/guest-run.ps1 "$SERV
 type_in_guest "powershell -noprofile -executionpolicy bypass -file \\\\host.lan\\data\\bsttest\\$run\\guest-run.ps1"
 
 finished=0
-for _ in $(seq 1 180); do
+for _ in $(seq 1 360); do
     if ssh "$SERVER" "grep -q DONE $run_host/guest.log" 2>/dev/null; then finished=1; break; fi
     sleep 5
 done
@@ -80,7 +81,9 @@ check "SQL holds person rows" has "$sql" "INSERT INTO \`person\` VALUES (1,'Jane
 check "SQL holds session rows" has "$sql" 'INSERT INTO `session` VALUES (10,1,'"'complete'),(11,2,'incomplete'),(12,2,'complete'),(13,3,'complete');"
 check "SQL holds design rows" has "$sql" "INSERT INTO \`flowdesign\` VALUES (1,'Cycle A'"
 reg_to_utf8() { iconv -f UTF-16 -t UTF-8 "$1" >"$2"; } # reg.exe writes UTF-16
-check "registry export converts to text" reg_to_utf8 "$out/ok/registry/HKEY_CURRENT_USER_Software_BST_BRAINtellect2.reg" "$out/ok/license.reg"
+registryFile=$(find "$out/ok/registry" -type f -name '*.reg' | head -n 1)
+check "registry export creates a file" test -n "$registryFile"
+check "registry export converts to text" reg_to_utf8 "$registryFile" "$out/ok/license.reg"
 check "registry export has the license key" has "$out/ok/license.reg" '"license.expiry"="2099-12-31"'
 info=$out/ok/SYSTEM-INFO.txt
 check "SYSTEM-INFO: OS" has "$info" 'OS (Caption):'
@@ -91,6 +94,16 @@ check "SYSTEM-INFO: CIM" has_re "$info" 'CIM cmdlet: +available'
 check "SYSTEM-INFO: reg.exe" has_re "$info" 'reg.exe: +[A-Za-z]:[\\]'
 check "SYSTEM-INFO: ZIP API" has_re "$info" 'ZIP API: +available'
 check "SYSTEM-INFO: MySQL engine version" has_re "$info" 'MySQL engine: +.*mysqld.exe \(version [0-9]+\.[0-9]+'
+
+# --- retry case: database/state capture succeeds without duplicate program files ---
+check "retry run exits zero" has "$out/guest.log" 'retry exit=0'
+check "retry run removes its private copy" has "$out/guest.log" 'retry temp leftovers=0'
+check "retry ZIP is a valid archive" unzip -tq "$out/retry.zip"
+mkdir "$out/retry"
+unzip -qq -o "$out/retry.zip" -d "$out/retry" 2>/dev/null || true
+check "retry keeps database" has "$out/retry/database/BST-data-retry.sql" "INSERT INTO \`person\` VALUES (1,'Jane'"
+check "retry keeps application state" test -d "$out/retry/application-state"
+check "retry excludes install copy" test ! -e "$out/retry/install"
 
 # --- ui case: the default window mode ends by itself and delivers the same ZIP ---
 check "window run exits zero" has "$out/guest.log" 'ui exit=0'
