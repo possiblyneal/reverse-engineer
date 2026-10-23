@@ -111,6 +111,51 @@ function Find-MySqlDataDir($preferredRoots){
   return $null
 }
 
+# Fallback discovery is bounded to BRAINtellect-owned names: a path segment that starts
+# with BST, BRAINtellect or Brain State Technologies. Anything else (another MySQL, an
+# arbitrary folder a config file happens to mention) is never captured.
+function Test-OwnedPath($path){
+  foreach($seg in ($path -split '[\\/]')){ if($seg -match '^(BST|BRAINtellect|Brain State Technologies)'){ return $true } }
+  return $false
+}
+function Test-UnderAny($path, $roots){
+  foreach($r in $roots){
+    if($r -and ($path -eq $r -or $path.StartsWith($r.TrimEnd('\') + '\', [StringComparison]::OrdinalIgnoreCase))){ return $true }
+  }
+  return $false
+}
+# Known legacy install roots: three fixed names at the top of each fixed drive, no recursion.
+function Find-LegacyRoots{
+  $found = @()
+  foreach($d in [System.IO.DriveInfo]::GetDrives()){
+    if($d.DriveType -ne 'Fixed'){ continue }
+    foreach($n in 'BST','BRAINtellect2','BRAINtellect'){
+      $p = Join-Path $d.RootDirectory.FullName $n
+      if(Test-Path $p){ $found += $p }
+    }
+  }
+  return $found
+}
+# Folders that BRAINtellect's own configuration files point at (a relocated datadir or
+# state folder). Reads only small config-type files below the given roots.
+function Find-ConfiguredPaths($configRoots, $coveredRoots){
+  $found = @()
+  foreach($r in ($configRoots | Where-Object { $_ -and (Test-Path $_) })){
+    $files = @(Get-ChildItem -Path $r -Recurse -File -Include '*.ini','*.cfg','*.conf','*.config','*.xml','*.json','*.properties' -ErrorAction SilentlyContinue |
+      Where-Object { $_.Length -le 262144 -and $_.FullName -notmatch '\\bstcollect_\d+(\\|$)' } | Select-Object -First 200)
+    foreach($f in $files){
+      $text = (Get-Content -Path $f.FullName -Raw -ErrorAction SilentlyContinue)
+      if(-not $text){ continue }
+      $text = $text -replace '\\+','\' -replace '/','\'
+      foreach($m in [regex]::Matches($text, '[A-Za-z]:\\[^\r\n"''<>|*?]*')){
+        $c = $m.Value.Trim().TrimEnd('\')
+        if((Test-OwnedPath $c) -and (Test-Path $c -PathType Container) -and -not (Test-UnderAny $c $coveredRoots)){ $found += $c }
+      }
+    }
+  }
+  return @($found | Sort-Object -Unique)
+}
+
 # ---- log (the work area is created later, only in the process that collects) ----
 $work = $null
 $logPath = $null
@@ -331,6 +376,7 @@ $collection = {
   # export. Every call is guarded -- a failure here must never abort the run.
   Say "Step 0/4: recording system information..."
   & $reportProgress 0 4 'Collecting system information...' 20 $false
+  try{
   $sysLog = Join-Path $work 'SYSTEM-INFO.txt'
   $sys = @()
   $sysFails = 0
@@ -385,15 +431,23 @@ $collection = {
   if($sysFails -eq 0){ Set-SectionStatus '0. System information' 'ok' }
   elseif($sysFails -ge 3){ Set-SectionStatus '0. System information' 'fail' }
   else{ Set-SectionStatus '0. System information' 'partial' }
+  }catch{
+    Say ("   ERROR in system information: " + $_.Exception.Message)
+    Set-SectionStatus '0. System information' 'fail'
+  }
 
   # =====================================================================
   # 1. INSTALL FOLDER(S)  -- BRAINtellect2 / BST folders anywhere
   # =====================================================================
   Say "Step 1/4: locating the BRAINtellect program folder(s)..."
   & $reportProgress 1 4 'Locating install folder(s)...' 40 $false
+  $instRoots = @()
+  $relocated = @()
+  try{
   $nameHits = @(Find-Dir 'BRAINtellect2')
   $nameHits += @(Find-Dir 'BST')
-  $instRoots = $nameHits | Where-Object { $_ } | Sort-Object -Unique
+  $nameHits += @(Find-LegacyRoots)
+  $instRoots = @($nameHits | Where-Object { $_ } | Sort-Object -Unique)
   if(-not $instRoots){
     Say "   (no BRAINtellect2/BST folder found -- skipping install capture)"
     Set-SectionStatus '1. Install folder(s)' 'skip'
@@ -440,14 +494,37 @@ $collection = {
     Say "   (no BRAINtellect application state found in ProgramData)"
   }
 
+  # Relocated install/data/state: folders the BRAINtellect configuration names that lie
+  # outside the roots already captured. Datadirs are read by the database stage; the
+  # rest is copied beside the ProgramData state.
+  $relocated = @(Find-ConfiguredPaths (@($stateRoots) + @($instRoots)) (@($stateRoots) + @($instRoots)))
+  $relocIndex = 0
+  foreach($r in ($relocated | Where-Object { -not (Test-Path (Join-Path $_ 'ibdata1')) })){
+    $relocIndex++
+    $stateOut = Join-Path $work 'application-state'
+    $null = New-Item -ItemType Directory -Force -Path $stateOut
+    Say ("   relocated state found: " + $r)
+    Copy-Item $r (Join-Path $stateOut ("relocated-$relocIndex-" + (Split-Path $r -Leaf))) -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable copyErrors
+    if($copyErrors){
+      Say ("   WARNING: " + @($copyErrors).Count + " relocated item(s) could not be copied:")
+      @($copyErrors) | Select-Object -First 10 | ForEach-Object { Say ("      " + $_.Exception.Message) }
+      if($sectionStatus['1. Install folder(s)'] -eq 'ok'){ Set-SectionStatus '1. Install folder(s)' 'partial' }
+    }
+  }
+  }catch{
+    Say ("   ERROR in install capture: " + $_.Exception.Message)
+    Set-SectionStatus '1. Install folder(s)' 'fail'
+  }
+
   # =====================================================================
   # 2. DATABASE  -- find datadir, dump every table, keep raw files too
   # =====================================================================
   Say "Step 2/4: locating the BRAINtellect database..."
   & $reportProgress 2 4 'Dumping database...' 60 $false
-  $dataDir = Find-MySqlDataDir $instRoots
-  $dataOut = Join-Path $work 'database'
   $dbStatus = 'ok'
+  try{
+  $dataDir = Find-MySqlDataDir (@($relocated) + @($instRoots))
+  $dataOut = Join-Path $work 'database'
   if(-not $dataDir){
     Say "   WARNING: Could not find an embedded-MySQL data directory (no ibdata1 + mysql folder)."
     $dbStatus = 'fail'
@@ -466,9 +543,9 @@ $collection = {
   }
 
   # find the bundled engine so we can read the copy privately
-  $mysqld    = Find-Exe 'mysqld.exe' $instRoots
-  $mysqldump = Find-Exe 'mysqldump.exe' $instRoots
-  $mysqlcli  = Find-Exe 'mysql.exe' $instRoots
+  $mysqld    = Find-Exe 'mysqld.exe' (@($instRoots) + @($relocated))
+  $mysqldump = Find-Exe 'mysqldump.exe' (@($instRoots) + @($relocated))
+  $mysqlcli  = Find-Exe 'mysql.exe' (@($instRoots) + @($relocated))
   if(-not $dataDir){
     Say "   (skipping SQL dump because no embedded-MySQL data directory was found)"
   }elseif(-not $mysqld){
@@ -488,7 +565,7 @@ $collection = {
     $mysqlArgs = @('--no-defaults',"--datadir=$dataOut","--basedir=$basedir",
           '--skip-networking','--enable-named-pipe',"--socket=$pipe",
           '--skip-grant-tables','--innodb-force-recovery=1')
-    $errmsg = Find-Exe 'errmsg.sys' $instRoots
+    $errmsg = Find-Exe 'errmsg.sys' (@($instRoots) + @($relocated))
     if($errmsg){ $mysqlArgs += ("--lc-messages-dir=" + (Split-Path $errmsg -Parent)) }
     $proc = Start-Process -FilePath $mysqld -ArgumentList $mysqlArgs -WindowStyle Hidden -PassThru
     Start-Sleep -Seconds 2
@@ -557,9 +634,12 @@ $collection = {
       }
     }
   }
-  $ErrorActionPreference = 'Stop'
+  }catch{
+    $ErrorActionPreference = 'Continue'
+    Say ("   ERROR in database capture: " + $_.Exception.Message)
+    $dbStatus = 'fail'
+  }
   Set-SectionStatus '2. Database' $dbStatus
-  if($dbStatus -eq 'fail'){ throw 'Could not find an embedded-MySQL data directory.' }
 
   # =====================================================================
   # 3. REGISTRY  -- any key mentioning BRAINtellect / BST
@@ -568,6 +648,7 @@ $collection = {
   # The registry sweep is the slow, unpredictable part, so keep the window in
   # marquee mode (constantly moving) until it is done.
   & $reportProgress 3 4 'Scanning registry (this can take a few minutes)...' 70 $true
+  try{
   $regOut = Join-Path $work 'registry'
   $null = New-Item -ItemType Directory -Force -Path $regOut
   # Query known vendor roots directly. A recursive walk over all of HKCU/HKLM\Software
@@ -607,6 +688,11 @@ $collection = {
     Set-SectionStatus '3. Registry' 'ok'
   }
   & $reportProgress 3 4 'Registry done' 95 $false
+  }catch{
+    $ErrorActionPreference = 'Continue'
+    Say ("   ERROR in registry export: " + $_.Exception.Message)
+    Set-SectionStatus '3. Registry' 'fail'
+  }
   }
   catch{
     # Name the stage that was running, so the export and the caller both see the failure.
@@ -637,6 +723,9 @@ $collection = {
       Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
     }
   }
+  # Every stage has run and the ZIP exists; only now does a failed stage fail the run.
+  $failedStages = @($sectionStatus.Keys | Where-Object { $sectionStatus[$_] -eq 'fail' })
+  if($failedStages){ throw ('Stage(s) failed: ' + ($failedStages -join ', ') + '. The ZIP on your Desktop still holds what could be collected.') }
 }
 
 # A headless PowerShell host has no UI message loop; run directly. PowerShell's
