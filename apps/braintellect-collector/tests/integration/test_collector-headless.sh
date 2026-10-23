@@ -122,7 +122,35 @@ check "failed run removes its private copy" has "$out/guest.log" 'fail temp left
 mkdir "$out/fail"
 unzip -qq -o "$out/fail.zip" -d "$out/fail" 2>/dev/null || true
 check "failed stage is recorded" has "$out/fail/STATUS.txt" '[FAIL] 2. Database'
+check "failed run still returns a valid ZIP" unzip -tq "$out/fail.zip"
+check "failed run still writes SYSTEM-INFO" has_re "$out/fail/SYSTEM-INFO.txt" 'OS \(Caption\):'
+check "failed database does not stop the registry stage" has "$out/fail/STATUS.txt" '[OK] 3. Registry'
+check "failed database does not stop the install stage" has "$out/fail/STATUS.txt" '[OK] 1. Install folder(s)'
 check "window run fails the caller too" has_re "$out/guest.log" 'uifail exit=[1-9]'
 check "failed window run removes its private copy" has "$out/guest.log" 'uifail temp leftovers=0'
+
+# --- retry fail case: the retry flow also continues after the database stage fails ---
+check "retry with missing database exits non-zero" has_re "$out/guest.log" 'retryfail exit=[1-9]'
+check "retry with missing database removes its private copy" has "$out/guest.log" 'retryfail temp leftovers=0'
+check "retry failure ZIP is a valid archive" unzip -tq "$out/retryfail.zip"
+mkdir "$out/retryfail"
+unzip -qq -o "$out/retryfail.zip" -d "$out/retryfail" 2>/dev/null || true
+check "retry failure records the database stage" has "$out/retryfail/STATUS.txt" '[FAIL] 2. Database'
+check "retry failure still captures the registry" has "$out/retryfail/STATUS.txt" '[OK] 3. Registry'
+check "retry failure still writes SYSTEM-INFO" test -s "$out/retryfail/SYSTEM-INFO.txt"
+
+# --- relocated case: configuration points at a datadir and state outside the install ---
+for flow in reloc relocretry; do
+    check "$flow exits zero" has "$out/guest.log" "$flow exit=0"
+    check "$flow ZIP is a valid archive" unzip -tq "$out/$flow.zip"
+    mkdir "$out/$flow"
+    unzip -qq -o "$out/$flow.zip" -d "$out/$flow" 2>/dev/null || true
+    check "$flow database stage ok" has "$out/$flow/STATUS.txt" '[OK] 2. Database'
+    check "$flow captures relocated datadir rows" grep -rqF "INSERT INTO \`person\` VALUES (1,'Jane'" "$out/$flow/database"
+    check "$flow captures relocated state" grep -rqF 'relocated-state=1' "$out/$flow/application-state"
+    check "$flow leaves unrelated MySQL out" test -z "$(grep -rlF 'unrelated-mysql=1' "$out/$flow" || true)"
+done
+check "relocated normal run keeps the install copy" test -d "$out/reloc/install"
+check "relocated retry run excludes the install copy" test ! -e "$out/relocretry/install"
 
 exit "$fail"

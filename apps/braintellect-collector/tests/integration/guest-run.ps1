@@ -76,6 +76,34 @@ try {
   $env:BST_SEARCH_ROOTS = 'C:\braintest\BRAINtellect2'
   Invoke-Collector 'uifail' $true
 } finally { Rename-Item "$marker.hidden" 'ibdata1' }
+
+# A failing database stage must not stop the later stages in retry mode either.
+Rename-Item $marker 'ibdata1.hidden'
+try { Invoke-Collector 'retryfail' $false $true } finally { Rename-Item "$marker.hidden" 'ibdata1' }
+
+# A datadir and state folder relocated outside the install, found only through the
+# BRAINtellect configuration. An unrelated MySQL elsewhere must never be captured,
+# even when the configuration mentions it.
+$relocRoot = 'C:\braintest-relocated'
+$relocData = Join-Path $relocRoot 'BRAINtellect-data'
+$relocState = Join-Path $relocRoot 'BRAINtellect-state'
+$decoyData = Join-Path $relocRoot 'MySQL\data'
+$config = Join-Path $syntheticState 'connection.ini'
+New-Item -ItemType Directory -Force -Path $relocState, (Split-Path $decoyData -Parent) | Out-Null
+Copy-Item 'C:\braintest\BRAINtellect2\state\embedded-store' $relocData -Recurse -Force
+Copy-Item 'C:\braintest\BRAINtellect2\state\embedded-store' $decoyData -Recurse -Force
+Set-Content -Path (Join-Path $relocState 'relocated-state.txt') -Value 'relocated-state=1' -Encoding ASCII
+Set-Content -Path (Join-Path $decoyData 'decoy-marker.txt') -Value 'unrelated-mysql=1' -Encoding ASCII
+Set-Content -Path $config -Encoding ASCII -Value @("datadir=$relocData", "statedir=$relocState", "other=$decoyData")
+Rename-Item $marker 'ibdata1.hidden'
+try {
+  Invoke-Collector 'reloc'
+  Invoke-Collector 'relocretry' $false $true
+} finally {
+  Rename-Item "$marker.hidden" 'ibdata1'
+  Set-Content -Path $config -Value 'fixture-state=1' -Encoding ASCII
+  Remove-Item $relocRoot -Recurse -Force -ErrorAction SilentlyContinue
+}
 } finally {
   Remove-Item $programDataRoot -Recurse -Force -ErrorAction SilentlyContinue
   if($parkedProgramData -and (Test-Path $parkedProgramData)){
