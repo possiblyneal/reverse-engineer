@@ -64,5 +64,6 @@ Workspace for reverse-engineering sessions with REA (`rea-agents`). It scopes RE
 ## Child Index
 
 - `apps/braintellect-collector/CLAUDE.md` — the portable BRAINtellect2 collector, its owner delivery archive, and its VM test.
+- `docs/reverse-engineering/CLAUDE.md` — durable, non-sensitive reverse-engineering findings.
 
 `scripts/` and `.github/` are template-managed.
