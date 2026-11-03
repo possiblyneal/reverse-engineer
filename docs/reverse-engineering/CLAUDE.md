@@ -16,6 +16,7 @@ Durable, non-sensitive technical findings from authorized analysis of local reve
 - Separate observed configuration from inferred behavior; cite the source artifact and method for every material claim.
 - Treat raw exports, SQL dumps, decoded session records, keys, and decrypted design payloads as sensitive analysis materials. Keep them out of Git and under the repository `tmp/` directory.
 
+- Run Ghidra through its CLI (`analyzeHeadless`), never through the REA/MCP Ghidra provider: each MCP call re-imports and re-analyzes the 30 MB `braintellect.exe` under a ~330 s deadline and times out. Import and analyze once with `analyzeHeadless` into a persistent project, then query with headless post-scripts.
 ## Work Guidance
 
 - Record only reproducible technical findings that remain useful beyond the active session.
