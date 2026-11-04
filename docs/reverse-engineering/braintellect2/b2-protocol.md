@@ -22,7 +22,7 @@ construction was confirmed to have no static-initializer source.
 ## Transport
 
 - Classic Bluetooth SPP → RFCOMM, **9600 baud, 8 data bits, no parity, 1 stop
-  bit, no flow control** (observed, `braintellect2-device-connection.md`: live
+  bit, no flow control** (observed, `device-connection.md`: live
   log `baud rate: 9600, data bits: 8, parity: 0, stop bits: 1, flow control: 0`).
 - The amplifier class is `BSTAmplifier` with two backends,
   `HID_USB_Device` and `BT_Device`; the B-2 is a `BT_Device` (symbols at fo
@@ -113,9 +113,29 @@ Packet layout (observed; `edi` = packet pointer from `[ebp+0xbc]`):
 The 0x64 sync, the big-endian counter, and 24-bit big-endian signed samples are
 consistent with the live log `setChannel(4 channels): success` and
 `DataBuffer DTOR: packetCounterErrors: 0, sampleValidationErrors: 0`
-(`braintellect2-device-connection.md`). The overall packet length and whether a
+(`device-connection.md`). The overall packet length and whether a
 checksum/`sampleValidation` field exists were not located statically; the
 `sampleValidationErrors` counter implies one (Unresolved).
+
+## Runtime confirmation (live session 2026-11-03)
+
+A full SMART-2 session run with the B-2 connected in the offline VM confirmed the
+stream geometry from the guest app log (`tmp/baseline-2026-11-03/braintellect.log`):
+
+- `sampleRate: 500` and `setDeviceFrequency: 500` (log ll. 758, 762): the device
+  streams at **500 Hz**, resolving the per-channel sample cadence. It does **not**
+  resolve the device family (12 vs 99); family is still Unresolved.
+- `setNumberChannels: 8` (l. 761) is the **hardware maximum**, not the active
+  count; the active montage is 4 channels (`FP1FP2T3T4`), matching
+  `[ebx+0x1e8] == 4` and `setChannel(4 channels): success`.
+- The `DataCapture`/`addDataPacket` buffers are **240000 bytes per 30 s**
+  (`receiveMessage` reports 15000 signals). 15000 frames / 30 s = 500 Hz, and
+  240000 / 15000 = **16 bytes/frame** = 4 channels × the 4-byte group above. So
+  the captured buffer is the **raw wire frames** concatenated, not a re-encoded
+  form: the `processData_v5` framing is the on-disk DataCapture framing.
+
+No raw sample stream is persisted past the session; the DataCapture buffers are
+processed down to the stored result blobs (`session-storage.md`).
 
 ## ADC → volts conversion
 

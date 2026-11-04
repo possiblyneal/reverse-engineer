@@ -148,6 +148,13 @@ null host backend still presents a render endpoint to Windows) made Windows enum
 `"Wave"` driver, session setup completes, and the crash is gone. A headless VM with no
 sound hardware reproduces the crash.
 
+Any valid `audiodev` backend satisfies the endpoint requirement. The offline VM is
+configured with `-audiodev wav,id=snd0,path=/storage/bst-feedback.wav`, which both
+prevents the crash and records the session's feedback audio for baseline capture
+(verified: a SMART-2 Piano session produced a 44.1 kHz stereo `pcm_s16le` WAV of audible
+feedback tones). QEMU finalizes the WAV header only on a clean guest shutdown, and each
+boot overwrites the file.
+
 ## Limitations
 
 - The recovered design establishes parameters and graph wiring, not a clinical interpretation or efficacy claim.
