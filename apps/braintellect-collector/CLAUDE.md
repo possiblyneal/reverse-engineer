@@ -40,8 +40,10 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
   its private `mysqld` as descendants, so stopping the run needs `taskkill /T`, not
   `Stop-Process -Id $child.Id` (which kills only the wrapper and orphans the rest). A wall-clock
   timeout is deliberately not used — the registry sweep can legitimately run for minutes, and the
-  database stage reports sub-steps (locate / copy / start engine / dump) so no single long
-  operation holds one progress signature past the watchdog window. Watchdog state
+  database stage reports sub-steps (locate / copy / start engine / dump) so each long sub-operation
+  gets its own watchdog budget. An unusually large datadir copy or `mysqldump` can still hold one
+  signature past the window; that is acceptable because the watchdog only asks before the (now
+  tree-wide) kill, and `mysqldump` exposes no cheap incremental progress to subdivide. Watchdog state
   (`LastSig`/`LastChange`/`Prompting`) lives in the `$uiState` hashtable, not plain variables, so
   the tick's own scope can mutate it.
 - **Nothing is at `$script:` scope.** The header relaunches via `powershell -Command "& <block>"`,
