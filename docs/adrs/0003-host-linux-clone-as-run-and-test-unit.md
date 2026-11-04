@@ -63,6 +63,6 @@ checks (format, clippy, test, build) that must stay green, and the structure gat
 requires a root `Cargo.toml` workspace manifest. The clone's correctness depends on a
 captured baseline that does not yet exist (ticket T2); acquisition-layer parity cannot
 be asserted until that capture resolves the protocol spec's open items (`setStart`
-framing and the 110/112/131 reply layouts). Root `CLAUDE.md`'s "one unit" wording is
-updated in this change to name both units. The workspace's charter now explicitly
+framing, the 110/112/131 reply layouts, and the device family). Root `CLAUDE.md`'s
+"one unit" wording is updated in this change to name both units. The workspace's charter now explicitly
 includes running a reconstruction, not only analyzing the original.

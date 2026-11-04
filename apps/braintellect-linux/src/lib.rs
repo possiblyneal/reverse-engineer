@@ -10,8 +10,8 @@
 //! The protocol source of truth is
 //! `docs/reverse-engineering/braintellect2/b2-protocol.md`. Items that spec
 //! marks unresolved (the `setStart` command framing, the 110/112/131 reply
-//! layouts, the device family the B-2 reports, and the inbound packet's sample
-//! offset and trailer) are **not** implemented from guesses; they wait on the
-//! baseline capture (ticket T2).
+//! layouts, the device family the B-2 reports, and the inbound packet's
+//! trailer/length and `sampleValidation` check) are **not** implemented from
+//! guesses; they wait on the baseline capture (ticket T2).
 
 pub mod acquisition;

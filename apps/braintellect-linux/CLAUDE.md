@@ -22,9 +22,9 @@ those findings, it cites them.
 - **No guessing past the evidence.** The protocol source of truth is
   `docs/reverse-engineering/braintellect2/b2-protocol.md`. Items it marks
   unresolved — the `setStart` command framing, the 110/112/131 reply layouts,
-  and the inbound packet's trailer/length and `sampleValidation` check — are not
-  implemented until the T2 baseline capture resolves them. Implemented so far:
-  the verified `decode` arithmetic only.
+  the device family the B-2 reports, and the inbound packet's trailer/length and
+  `sampleValidation` check — are not implemented until the T2 baseline capture
+  resolves them. Implemented so far: the verified `decode` arithmetic only.
 - **Do not copy the original's bugs.** Reproduce intended behavior, not defects.
   Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
   audio endpoint exists, and the validation-induced null cascades where the
