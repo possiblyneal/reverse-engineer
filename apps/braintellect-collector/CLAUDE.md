@@ -32,6 +32,13 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
   skips the window and runs the collection in the calling process, so a failure is an unhandled
   error that exits non-zero. Never run the collection on a .NET thread: it has no PowerShell
   runspace and its errors are lost.
+- **The window is recoverable without a close box.** It keeps `ControlBox = $false` (no close
+  box, so it can't be dismissed mid-run) but adds a **Minimize** button to set a slow-but-valid
+  run aside, and a **no-progress watchdog**: when both the percent and the status text are
+  unchanged for 5 minutes (`$watchdogLimit`) the timer asks "keep waiting / stop" and, on stop,
+  force-kills the child and closes. A wall-clock timeout is deliberately not used — the registry
+  sweep can legitimately run for minutes. Watchdog state (`LastSig`/`LastChange`/`Prompting`)
+  lives in the `$uiState` hashtable, not plain variables, so the tick's own scope can mutate it.
 - **Nothing is at `$script:` scope.** The header relaunches via `powershell -Command "& <block>"`,
   so the whole program runs inside one invoked script block; a `$script:`-qualified name resolves
   to `$null`. The window's timer tick must reference `$child`, `$timer`, `$form`, and
@@ -52,8 +59,12 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
   datadir by `ibdata1` plus its `mysql/` system schema only below `C:\ProgramData\BST`,
   `C:\ProgramData\BRAINtellect2`, a discovered BRAINtellect/BST install root, or a
   BRAINtellect-scoped path named by its local configuration; never
-  require a schema named `braintellectds` or fall back to arbitrary drive-wide MySQL instances. Capture the complete datadir, dump
-  `--all-databases`, and report non-system schemas/tables. Copy those ProgramData roots
+  require a schema named `braintellectds` or fall back to arbitrary drive-wide MySQL instances. Run a
+  private read-only `mysqld` against a copy of the datadir, dump `--all-databases --routines
+  --hex-blob`, and report non-system schemas/tables. On a complete dump the raw InnoDB datadir
+  is pruned from the export — the SQL dump is the readable copy; a missing engine or an
+  incomplete dump keeps the raw files as the fallback, and `BST_KEEP_RAW_DATADIR=1` keeps them
+  regardless. Copy those ProgramData roots
   into `application-state/` before discovery so configuration and state survive even if the
   database is nonstandard or cannot start.
 - **Registry discovery is bounded.** Export known BST and Brain State Technologies roots directly; never recursively enumerate all Windows registry software keys.

@@ -52,6 +52,11 @@ param(
 # Set BST_NO_UI=1 to skip the progress window.
 if($env:BST_NO_UI -eq '1'){ $ShowUI = $false }
 $RetryOnly = ($env:BST_RETRY_ONLY -eq '1')
+# The SQL dump is the readable database copy in the export. The raw InnoDB datadir
+# duplicates it and dominates the archive size, so it is pruned from the export once a
+# complete dump exists. Set BST_KEEP_RAW_DATADIR=1 to keep the physical files as well; a
+# missing engine or an incomplete dump always keeps them as the fallback.
+$KeepRawDatadir = ($env:BST_KEEP_RAW_DATADIR -eq '1')
 
 # A failed probe must never prevent later captures or creation of the diagnostic ZIP.
 $ErrorActionPreference = 'Continue'
@@ -202,7 +207,10 @@ function Write-SectionSummary{
 }
 
 # ---- progress reporting (drives the window AND the log) ----
-$uiState = [ordered]@{ Section=0; Total=4; Status='Starting...'; Pct=0; Marquee=$true; Elapsed='0:00'; ETA='---' }
+# Watchdog fields (LastSig/LastChange/Prompting) live here, not as plain variables: the
+# timer tick runs in its own scope, where a plain `$x = ...` would write a tick-local copy;
+# mutating this hashtable's keys crosses the scope boundary the same way Pct/Status do.
+$uiState = [ordered]@{ Section=0; Total=4; Status='Starting...'; Pct=0; Marquee=$true; Elapsed='0:00'; ETA='---'; LastSig=$null; LastChange=$null; Prompting=$false }
 $startTime = Get-Date
 function Format-Dur($ts){ '{0:d1}:{1:00}' -f [int]$ts.TotalMinutes, $ts.Seconds }
 # Called by the collection. Logs progress and, when a progress window watches this
@@ -226,7 +234,7 @@ if($ShowUI){
     Add-Type -AssemblyName System.Windows.Forms
     $form = New-Object System.Windows.Forms.Form
     $form.Text = 'BRAINtellect2 -- Collecting data'
-    $form.Size = New-Object System.Drawing.Size(540,200)
+    $form.Size = New-Object System.Drawing.Size(560,250)
     $form.StartPosition = 'CenterScreen'
     $form.FormBorderStyle = 'FixedDialog'
     $form.MaximizeBox = $false
@@ -251,10 +259,18 @@ if($ShowUI){
     $meta.Text = ('Percent: {0}%   |   Elapsed: {1}   |   Est. time left: {2}' -f $uiState.Pct,$uiState.Elapsed,$uiState.ETA)
 
     $hint = New-Object System.Windows.Forms.Label
-    $hint.Location = '20,165'; $hint.Size = '500,25'
-    $hint.Text = 'This is working -- please leave this window open until it finishes.'
+    $hint.Location = '20,165'; $hint.Size = '390,40'
+    $hint.Text = 'This is working -- please leave this window open until it finishes. If you need it out of the way, use Minimize; the run keeps going.'
 
-    $form.Controls.AddRange(@($title,$statusLabel,$progressBar,$meta,$hint))
+    # Minimize is the owner's only escape hatch for a slow-but-valid run: the close box
+    # stays off (ControlBox=$false) so the window can't be dismissed mid-run, but the
+    # owner can set it aside. A minimized form shows a taskbar button that restores it.
+    $minBtn = New-Object System.Windows.Forms.Button
+    $minBtn.Location = '430,165'; $minBtn.Size = '110,30'
+    $minBtn.Text = 'Minimize'
+    $minBtn.add_Click({ $form.WindowState = [System.Windows.Forms.FormWindowState]::Minimized })
+
+    $form.Controls.AddRange(@($title,$statusLabel,$progressBar,$meta,$hint,$minBtn))
 
     # Paints the controls from the shared state. Runs on the UI thread (from the timer).
     $updateUI = {
@@ -267,6 +283,10 @@ if($ShowUI){
     # A timer, on the UI thread, keeps the window moving while the collection runs in
     # the child process: it takes the child's latest progress, refreshes elapsed time,
     # recomputes the estimated time left, and closes the window when the child ends.
+    # No-progress watchdog: if neither the percent nor the status text changes for this
+    # long, the collection may be wedged. Ask the owner rather than killing a slow-but-
+    # valid run (the registry sweep alone can legitimately run for minutes).
+    $watchdogLimit = [timespan]::FromMinutes(5)
     $timer = New-Object System.Windows.Forms.Timer
     $timer.Interval = 500
     $timer.add_Tick({
@@ -278,6 +298,11 @@ if($ShowUI){
           }
         }
       }catch{ }   # the child may be mid-write; the next tick reads it
+      # Watchdog bookkeeping: note when the percent/status last actually moved.
+      $sig = ('{0}|{1}' -f $uiState.Pct, $uiState.Status)
+      if($uiState.LastChange -eq $null -or $sig -ne $uiState.LastSig){
+        $uiState.LastSig = $sig; $uiState.LastChange = Get-Date
+      }
       $uiState.Elapsed = Format-Dur ((Get-Date) - $startTime)
       if($uiState.Pct -gt 0 -and $uiState.Pct -lt 100){
         $elapsedSec = ((Get-Date) - $startTime).TotalSeconds
@@ -285,6 +310,27 @@ if($ShowUI){
         $uiState.ETA = Format-Dur ([timespan]::FromSeconds([Math]::Max(0, $totalSec - $elapsedSec)))
       } else { $uiState.ETA = '---' }
       $updateUI.Invoke()
+      # Stuck check: no progress for the whole watchdog window. Surface a choice rather
+      # than closing silently; the MessageBox pumps on this UI thread, so the timer can't
+      # re-enter it. "No" stops the run; "Yes" resets the clock so it asks again only
+      # after another full idle period.
+      if(-not $child.HasExited -and -not $uiState.Prompting -and $uiState.LastChange -ne $null `
+         -and ((Get-Date) - $uiState.LastChange) -ge $watchdogLimit){
+        $uiState.Prompting = $true
+        $ans = [System.Windows.Forms.MessageBox]::Show(
+          ('This is taking longer than expected -- no progress for {0} minutes.' -f [int]$watchdogLimit.TotalMinutes) + [Environment]::NewLine +
+          'The registry scan can genuinely be slow, so it may still be working.' + [Environment]::NewLine + [Environment]::NewLine +
+          'Keep waiting?  (Choosing No stops the collection.)',
+          'BRAINtellect2 -- still working?',
+          [System.Windows.Forms.MessageBoxButtons]::YesNo,
+          [System.Windows.Forms.MessageBoxIcon]::Question)
+        if($ans -eq [System.Windows.Forms.DialogResult]::No){
+          try{ if(-not $child.HasExited){ Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue } }catch{ }
+          $timer.Stop(); $form.Close()
+        }else{
+          $uiState.LastChange = Get-Date; $uiState.Prompting = $false
+        }
+      }
       if($child.HasExited){ $timer.Stop(); $form.Close() }
     })
   }catch{
@@ -382,7 +428,9 @@ $collection = {
   $sysLog = Join-Path $work 'SYSTEM-INFO.txt'
   $sys = @()
   $sysFails = 0
+  $sysTotal = 0   # capture blocks attempted; stage fails only when every block failed
   try{
+    $sysTotal++
     $os = Get-CimInstance Win32_OperatingSystem -ErrorAction Stop
     $cv = Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\Windows NT\CurrentVersion' -EA SilentlyContinue
     $sys += "=== OPERATING SYSTEM ==="
@@ -396,6 +444,7 @@ $collection = {
     $sys += "Arch:        " + $os.OSArchitecture
   }catch{ $sysFails++; $sys += "OS capture failed: " + $_.Exception.Message }
   try{
+    $sysTotal++
     $cs   = Get-CimInstance Win32_ComputerSystem -ErrorAction Stop
     $cpu  = Get-CimInstance Win32_Processor -ErrorAction Stop
     $bios = Get-CimInstance Win32_BIOS -ErrorAction Stop
@@ -411,6 +460,7 @@ $collection = {
     $sys += "Disks:        " + (($disk | ForEach-Object { $_.Model + " " + [math]::Round($_.Size/1GB,0) + "GB" }) -join ', ')
   }catch{ $sysFails++; $sys += "Hardware capture failed: " + $_.Exception.Message }
   try{
+    $sysTotal++
     # Dependencies the tool actually needs. Captured raw (not friendly-mapped) so an
     # old machine's build number is unambiguous. $PSVersionTable exists since PS 2.0.
     $dn = (Get-ItemProperty 'HKLM:\SOFTWARE\Microsoft\NET Framework Setup\NDP\V4\Full' -EA SilentlyContinue).Release
@@ -431,7 +481,7 @@ $collection = {
   }catch{ $sysFails++; $sys += "Dependency capture failed: " + $_.Exception.Message }
   $sys | Set-Content -Path $sysLog -Encoding UTF8 -ErrorAction Stop
   if($sysFails -eq 0){ Set-SectionStatus '0. System information' 'ok' }
-  elseif($sysFails -ge 3){ Set-SectionStatus '0. System information' 'fail' }
+  elseif($sysTotal -gt 0 -and $sysFails -eq $sysTotal){ Set-SectionStatus '0. System information' 'fail' }
   else{ Set-SectionStatus '0. System information' 'partial' }
   }catch{
     Say ("   ERROR in system information: " + $_.Exception.Message)
@@ -524,6 +574,7 @@ $collection = {
   Say "Step 2/4: locating the BRAINtellect database..."
   & $reportProgress 2 4 'Dumping database...' 60 $false
   $dbStatus = 'ok'
+  $dumpComplete = $false   # a complete SQL dump lets the export drop the raw datadir
   try{
   $dataDir = Find-MySqlDataDir (@($relocated) + @($instRoots))
   $dataOut = Join-Path $work 'database'
@@ -611,6 +662,9 @@ $collection = {
         Say "   WARNING: the SQL dump came back empty. Raw data files are still included in the export."
         $dbStatus = 'partial'
       }else{
+        # A non-empty dump that mysqldump finished cleanly is the readable copy of the
+        # whole database, so the raw datadir can be pruned from the export below.
+        if($dumpExit -eq 0){ $dumpComplete = $true }
         # Report every non-system schema/table. Schema names vary by installation,
         # so do not assume braintellectds.
         if($mysqlcli){
@@ -710,6 +764,16 @@ $collection = {
       if($proc -and -not $proc.HasExited){
         Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
         if(-not $proc.WaitForExit(30000)){ Say "   WARNING: the private database engine did not stop within 30 seconds." }
+      }
+      # Keep the export small: once a complete SQL dump exists, drop the raw InnoDB
+      # datadir (ibdata1, the logs and the schema folders) that duplicates it, keeping
+      # only the readable *.sql. A missing engine or an incomplete dump leaves the raw
+      # files as the fallback; BST_KEEP_RAW_DATADIR=1 keeps them even on a clean dump.
+      if($dumpComplete -and -not $KeepRawDatadir -and $dataOut -and (Test-Path $dataOut)){
+        Say "   pruning the raw datadir from the export (SQL dump kept; set BST_KEEP_RAW_DATADIR=1 to keep raw)..."
+        Get-ChildItem -LiteralPath $dataOut -Force -ErrorAction SilentlyContinue |
+          Where-Object { $_.Extension -ne '.sql' } |
+          Remove-Item -Recurse -Force -ErrorAction SilentlyContinue
       }
       # Always write the per-section results BEFORE zipping, so the export records
       # success OR failure for every section even if one failed.
