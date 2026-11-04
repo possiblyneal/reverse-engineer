@@ -16,7 +16,11 @@ the `apps/braintellect-linux` clone reproduces.
 ## Local Contracts
 
 Inherits every contract in the parent `../CLAUDE.md` (sensitive-data handling,
-observed-vs-inferred, Ghidra via CLI). No target-specific overrides.
+observed-vs-inferred, Ghidra via CLI).
+
+- Do not ask the operator to power-cycle the B-2 to fix a connect or pairing failure. A
+  power-cycle has not been shown to fix one: the real fixes were the outgoing COM port and a
+  stale bond (`device-connection.md`). Diagnose remotely first.
 
 ## Child Index
 

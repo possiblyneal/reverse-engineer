@@ -10,37 +10,35 @@ class/string symbols. Observed configuration and inferred behavior are kept sepa
 ## Runbook: connect the B-2 in the offline Windows guest
 
 Verified working procedure (2026-11-04). B-2 Bluetooth MAC `886B0F8FB710`; the
-analysis below explains each step.
+analysis below explains each step. Only `braintellect-offline` passes the Bluetooth
+adapter through (#38); pairing the B-2 in another guest stales this guest's bond.
 
-1. **Power-cycle the B-2 first.** It auto-sleeps when idle; a sleeping controller
-   accepts the pairing/COM handshake but never completes RFCOMM (connect stalls,
-   log shows a semaphore timeout). Switch it off, then on, so it is awake and
-   advertising before connecting.
-2. **Launch the app.** On the guest console (noVNC `http://10.10.10.10:8006/`,
+1. **Launch the app.** On the guest console (noVNC `http://10.10.10.10:8006/`,
    session 1), run `Z:\BRAINtellect2\bin\start-braintellect.bat`. It sets the
    HKCU license keys, maps `Z:`, runs `set-b2-port.ps1` (resolves the B-2's
    *current* outgoing COM by MAC and writes `B-2-BTCOMPort` into the ini — this
    absorbs COM renumbering across power-cycles), and starts the host-patched
    `braintellect.exe`.
-3. **Confirm the bond is authenticated.** The B-2 must be paired *and*
+2. **Confirm the bond is authenticated.** The B-2 must be paired *and*
    authenticated, not merely remembered. Check from the guest:
    `Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices'`
    lists bonded MACs; a `886B0F8FB710` entry whose link key is present is a real
    bond. If connect hangs ~25% (see table), the bond is stale — remove and
-   re-pair (step 4).
-4. **Re-pair only if needed.** Windows Settings → Bluetooth & devices → Remove
+   re-pair (step 3).
+3. **Re-pair only if needed.** Windows Settings → Bluetooth & devices → Remove
    `B-2`, then Add device → Bluetooth → `B-2` → "Your device is ready to go!".
    SSP just-works/yes-no, no PIN. (Pairing is a Windows bond; the app does not
    pair.)
-5. **Connect in the app.** Click the "Connect to device" plug icon at the top of
+4. **Connect in the app.** Click the "Connect to device" plug icon at the top of
    the left toolbar. Success: status bar reads `Device: B-2` and the Optimize tab
    enables. Coordinates shift with the noVNC window size — screenshot before
    clicking.
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Connect hangs ~25%; log `open(): >COMn<` never returns | Stale bond: remembered but not authenticated | Remove the bond and re-pair via Settings (step 4), then reconnect |
-| Semaphore timeout; RFCOMM never completes | B-2 asleep / not advertising | Power-cycle the B-2 (step 1), then Connect |
+| Connect hangs ~25%; log `open(): >COMn<` never returns | Stale bond: remembered but not authenticated | Remove the bond and re-pair via Settings (step 3), then reconnect |
+| Semaphore timeout; RFCOMM never completes | Transient first-open failure of the passthrough link (2026-11-02 log: connects succeeded after 1 and 4 failed opens) | Retry Connect; check the box's light is on |
+| Pairing says "We didn't get any response from the device"; HCI capture shows `Disconnection_Complete` reason `0x17` (Repeated Attempts) right after `Authentication_Requested` | Stale bond | Remove the bond in the guest, then pair once. Do not retry back-to-back: each retry extends the back-off |
 | Opens a COM that exists but no data arrives | `B-2-BTCOMPort` points at a stale/renumbered or incoming port | Re-run `start-braintellect.bat` so `set-b2-port.ps1` re-resolves by MAC |
 | Connects, streams ~6 s, drops with `Device not registered to this host computer` | App host-binding gate | Requires the NOP patch (already applied to the guest `braintellect.exe`; original is `braintellect.exe.orig`) — see below |
 
