@@ -10,14 +10,16 @@ near-real-time, so the tone *mirrors/resonates* with current brain activity
 (not threshold-and-reward neurofeedback).
 
 Collected 2026-10-16. `.md` files are full article text (saved because the
-publisher sites are Cloudflare/reCAPTCHA-gated against direct PDF download);
-`.pdf` files are the original open-access PDFs.
+publisher sites are Cloudflare/reCAPTCHA-gated against direct PDF download).
+The only committed `.pdf` is the supplement tone table
+(`supplement_2013_tone-example/TableS1_sample-tone-sequence_pentatonic.pdf`), an
+open-access original under the 500 KB guard.
 
-Three originals exceed the repo's 500 KB commit guard and are therefore **not
-committed** — reach them by the DOI/PMC links below (local copies, if fetched,
-live out of Git under `tmp/literature-oversized/`): the 2018 Shaltout PDF, the
-2015 PTSD study protocol PDF, and the 1-min tone `AudioSample` in the
-supplement.
+Three larger originals exceed the repo's 500 KB commit guard and are therefore
+**not committed** — reach them by the DOI/PMC/registry links below (local
+copies, if fetched, live out of Git under `tmp/literature-oversized/`): the 2018
+Shaltout PDF, the 2015 PTSD study protocol PDF, and the 1-min tone `AudioSample`
+in the supplement.
 
 ## Core mechanism / methodology
 - **2013_Gerdes-Tegeler_HIRREM-allostatic-methodology_BrainBehav.md** — *the*

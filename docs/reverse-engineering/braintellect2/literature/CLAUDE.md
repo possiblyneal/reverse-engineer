@@ -9,11 +9,12 @@ reproduces; not a substitute for the recovered design/montage data.
 ## Ownership
 
 - `README.md` — the Brain State / Tegeler program corpus (full index with
-  citations). The `.md` files are full article text; `.pdf` files are
-  open-access originals; `supplement_2013_tone-example/` holds the
-  dominant-frequency→tone example (CSV, note-frequency mapping, tone sequence).
-  The 1-min audio sample and two of the PDFs exceed the 500 KB commit guard and
-  are linked from `README.md`, not committed (see Local Contracts).
+  citations). The `.md` files are full article text; the one committed `.pdf`
+  (the supplement tone table) is an open-access original;
+  `supplement_2013_tone-example/` holds the dominant-frequency→tone example
+  (CSV, note-frequency mapping, tone sequence, and that table PDF). The 1-min
+  audio sample and the two larger PDFs exceed the 500 KB commit guard and are
+  linked from `README.md`, not committed (see Local Contracts).
 - `related-reading.md` — independent EEG→audio mapping, closed-loop auditory
   stimulation, autonomic mechanism, and neurofeedback trial-design references
   found by web search; leads to verify, not downloaded.

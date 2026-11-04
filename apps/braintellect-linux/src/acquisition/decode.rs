@@ -132,6 +132,11 @@ pub fn decode_sample_i24_be(bytes: [u8; 3]) -> i32 {
 
 /// Decode a lead-off (LOD) reading: `0x3fff - x`, a 14-bit value, taken when a
 /// channel's type field equals `1` (`processData_v5`, VA `0x556c2c`).
+///
+/// Provisional pending the T2 capture: the disassembly at `0x556c2c` shows the
+/// `0x3fff - x` subtraction, but the input width of `x` (the `& 0x3fff` mask
+/// here) is assumed 14-bit, not yet confirmed. Unused until lead-off is wired
+/// into the frame walk, at which point the mask is verified against `0x556c2c`.
 #[must_use]
 pub fn lead_off_reading(raw14: u16) -> i32 {
     0x3fff - i32::from(raw14 & 0x3fff)

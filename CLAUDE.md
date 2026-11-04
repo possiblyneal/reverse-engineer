@@ -47,7 +47,7 @@ Every unit has a `.unit.json` at its root, never at a domain's:
 
 ## Purpose
 
-Workspace for reverse-engineering sessions with REA (`rea-agents`). It scopes REA's MCP server and skill to sessions opened here (`docs/adrs/0001-ship-no-deployable-and-host-rea-as-agent-tooling.md`). It has two units, and nothing here is released as a deployable: `apps/braintellect-collector/`, a non-shipping Windows tablet collector (`docs/adrs/0002-add-braintellect-collector-unit.md`), and `apps/braintellect-linux/`, the Rust reimplementation of BRAINtellect2 built, run, and tested in-repo as the parity oracle for the reverse-engineering effort (`docs/adrs/0003-host-linux-clone-as-run-and-test-unit.md`).
+Workspace for reverse-engineering sessions with REA (`rea-agents`). It scopes the REA skill and its CLI-only tooling to sessions opened here (`docs/adrs/0001-ship-no-deployable-and-host-rea-as-agent-tooling.md`; REA runs CLI-only, see Local Contracts). It has two units, and nothing here is released as a deployable: `apps/braintellect-collector/`, a non-shipping Windows tablet collector (`docs/adrs/0002-add-braintellect-collector-unit.md`), and `apps/braintellect-linux/`, the Rust reimplementation of BRAINtellect2 built, run, and tested in-repo as the parity oracle for the reverse-engineering effort (`docs/adrs/0003-host-linux-clone-as-run-and-test-unit.md`).
 
 ## Ownership
 
