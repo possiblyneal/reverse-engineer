@@ -19,7 +19,8 @@ exit /b %errorlevel%
 # Grab EVERYTHING about BRAINtellect2 from this tablet in one go -- into a single
 # file on your Desktop that you can email. This is the "get it all" version:
 #   1. the program/install folder(s)
-#   2. the database (raw data files + a readable SQL dump of every table)
+#   2. the database (a readable SQL dump of every table; raw data files are kept
+#      only when the dump can't complete, or when BST_KEEP_RAW_DATADIR=1)
 #   3. the registry keys that mention BRAINtellect / BST
 #
 # Safe to read: the database is read from a PRIVATE COPY on the local disk. The
@@ -325,7 +326,9 @@ if($ShowUI){
           [System.Windows.Forms.MessageBoxButtons]::YesNo,
           [System.Windows.Forms.MessageBoxIcon]::Question)
         if($ans -eq [System.Windows.Forms.DialogResult]::No){
-          try{ if(-not $child.HasExited){ Stop-Process -Id $child.Id -Force -ErrorAction SilentlyContinue } }catch{ }
+          # $child is the cmd.exe wrapper; the collector and its private mysqld run as a
+          # grandchild, and Windows does not cascade a kill, so stop the whole tree.
+          try{ if(-not $child.HasExited){ & taskkill /T /F /PID $child.Id 2>&1 | Out-Null } }catch{ }
           $timer.Stop(); $form.Close()
         }else{
           $uiState.LastChange = Get-Date; $uiState.Prompting = $false
@@ -350,7 +353,7 @@ function Write-Finish{
   if(Test-Path $outZip){ Say ("Archive size: " + [math]::Round(((Get-Item $outZip).Length / 1MB), 1) + " MB") }
   Say ""
   Say "It contains: system information, install folder(s), the database"
-  Say "(raw files + SQL), and registry keys. This is EVERYTHING BRAINtellect2"
+  Say "(a readable SQL dump of every table), and registry keys. This is EVERYTHING BRAINtellect2"
   Say "on this tablet."
   Say "The tablet itself was never changed and nothing was installed."
   Say ""
@@ -569,10 +572,10 @@ $collection = {
   }
 
   # =====================================================================
-  # 2. DATABASE  -- find datadir, dump every table, keep raw files too
+  # 2. DATABASE  -- find datadir, dump every table; raw datadir pruned on a complete dump
   # =====================================================================
   Say "Step 2/4: locating the BRAINtellect database..."
-  & $reportProgress 2 4 'Dumping database...' 60 $false
+  & $reportProgress 2 4 'Locating the database...' 58 $false
   $dbStatus = 'ok'
   $dumpComplete = $false   # a complete SQL dump lets the export drop the raw datadir
   try{
@@ -585,6 +588,7 @@ $collection = {
     Say ("   database data folder: " + $dataDir)
     # Copy raw files first. The table/schema names are discovered from the private
     # engine below; BRAINtellect does not require a schema named braintellectds.
+    & $reportProgress 2 4 'Copying database files...' 60 $false
     Copy-Item $dataDir $dataOut -Recurse -Force -ErrorAction SilentlyContinue -ErrorVariable copyErrors
     if($copyErrors){
       $dbStatus = 'partial'
@@ -607,6 +611,7 @@ $collection = {
     $dbStatus = 'partial'
   }else{
     Say ("   engine found: " + $mysqld)
+    & $reportProgress 2 4 'Starting the database engine...' 62 $false
     try{ Add-Content -Path (Join-Path $work 'SYSTEM-INFO.txt') -Encoding UTF8 ("MySQL engine:   " + $mysqld + " (version " + (Get-Item $mysqld).VersionInfo.ProductVersion + ")") }catch{ }
     # start a private read-only copy on a named pipe; live DB untouched. The pipe
     # name carries our PID so it can never collide with the live server or another run.
@@ -644,6 +649,7 @@ $collection = {
       # dump the ENTIRE schema (every table, every row) as UTF-8 (not ASCII).
       $sqlName = if($RetryOnly){ 'BST-data-retry.sql' }else{ 'BST-full-export.sql' }
       $sqlOut = Join-Path $dataOut $sqlName
+      & $reportProgress 2 4 'Exporting every table to SQL...' 64 $false
       Say "   dumping every table to SQL..."
       # mysqldump writes the file itself (--result-file): a PowerShell pipeline would
       # re-encode its UTF-8 bytes.
@@ -770,7 +776,7 @@ $collection = {
       # only the readable *.sql. A missing engine or an incomplete dump leaves the raw
       # files as the fallback; BST_KEEP_RAW_DATADIR=1 keeps them even on a clean dump.
       if($dumpComplete -and -not $KeepRawDatadir -and $dataOut -and (Test-Path $dataOut)){
-        Say "   pruning the raw datadir from the export (SQL dump kept; set BST_KEEP_RAW_DATADIR=1 to keep raw)..."
+        Say "   trimming the raw database files from the export (the readable SQL dump is kept)..."
         Get-ChildItem -LiteralPath $dataOut -Force -ErrorAction SilentlyContinue |
           Where-Object { $_.Extension -ne '.sql' } |
           Remove-Item -Recurse -Force -ErrorAction SilentlyContinue

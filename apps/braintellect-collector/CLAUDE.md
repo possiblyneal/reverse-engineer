@@ -36,9 +36,14 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
   box, so it can't be dismissed mid-run) but adds a **Minimize** button to set a slow-but-valid
   run aside, and a **no-progress watchdog**: when both the percent and the status text are
   unchanged for 5 minutes (`$watchdogLimit`) the timer asks "keep waiting / stop" and, on stop,
-  force-kills the child and closes. A wall-clock timeout is deliberately not used — the registry
-  sweep can legitimately run for minutes. Watchdog state (`LastSig`/`LastChange`/`Prompting`)
-  lives in the `$uiState` hashtable, not plain variables, so the tick's own scope can mutate it.
+  force-kills the child **process tree** and closes — the `cmd` wrapper spawns the collector and
+  its private `mysqld` as descendants, so stopping the run needs `taskkill /T`, not
+  `Stop-Process -Id $child.Id` (which kills only the wrapper and orphans the rest). A wall-clock
+  timeout is deliberately not used — the registry sweep can legitimately run for minutes, and the
+  database stage reports sub-steps (locate / copy / start engine / dump) so no single long
+  operation holds one progress signature past the watchdog window. Watchdog state
+  (`LastSig`/`LastChange`/`Prompting`) lives in the `$uiState` hashtable, not plain variables, so
+  the tick's own scope can mutate it.
 - **Nothing is at `$script:` scope.** The header relaunches via `powershell -Command "& <block>"`,
   so the whole program runs inside one invoked script block; a `$script:`-qualified name resolves
   to `$null`. The window's timer tick must reference `$child`, `$timer`, `$form`, and
