@@ -7,6 +7,46 @@ Sources: live application log (`C:\ProgramData\BST\BRAINtellect2\log\braintellec
 Windows port enumeration (`SERIALCOMM`, `Get-PnpDevice -Class Ports`), and binary
 class/string symbols. Observed configuration and inferred behavior are kept separate below.
 
+## Runbook: connect the B-2 in the offline Windows guest
+
+Verified working procedure (2026-11-04). B-2 Bluetooth MAC `886B0F8FB710`; the
+analysis below explains each step.
+
+1. **Power-cycle the B-2 first.** It auto-sleeps when idle; a sleeping controller
+   accepts the pairing/COM handshake but never completes RFCOMM (connect stalls,
+   log shows a semaphore timeout). Switch it off, then on, so it is awake and
+   advertising before connecting.
+2. **Launch the app.** On the guest console (noVNC `http://10.10.10.10:8006/`,
+   session 1), run `Z:\BRAINtellect2\bin\start-braintellect.bat`. It sets the
+   HKCU license keys, maps `Z:`, runs `set-b2-port.ps1` (resolves the B-2's
+   *current* outgoing COM by MAC and writes `B-2-BTCOMPort` into the ini — this
+   absorbs COM renumbering across power-cycles), and starts the host-patched
+   `braintellect.exe`.
+3. **Confirm the bond is authenticated.** The B-2 must be paired *and*
+   authenticated, not merely remembered. Check from the guest:
+   `Get-ChildItem 'HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices'`
+   lists bonded MACs; a `886B0F8FB710` entry whose link key is present is a real
+   bond. If connect hangs ~25% (see table), the bond is stale — remove and
+   re-pair (step 4).
+4. **Re-pair only if needed.** Windows Settings → Bluetooth & devices → Remove
+   `B-2`, then Add device → Bluetooth → `B-2` → "Your device is ready to go!".
+   SSP just-works/yes-no, no PIN. (Pairing is a Windows bond; the app does not
+   pair.)
+5. **Connect in the app.** Click the "Connect to device" plug icon at the top of
+   the left toolbar. Success: status bar reads `Device: B-2` and the Optimize tab
+   enables. Coordinates shift with the noVNC window size — screenshot before
+   clicking.
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Connect hangs ~25%; log `open(): >COMn<` never returns | Stale bond: remembered but not authenticated | Remove the bond and re-pair via Settings (step 4), then reconnect |
+| Semaphore timeout; RFCOMM never completes | B-2 asleep / not advertising | Power-cycle the B-2 (step 1), then Connect |
+| Opens a COM that exists but no data arrives | `B-2-BTCOMPort` points at a stale/renumbered or incoming port | Re-run `start-braintellect.bat` so `set-b2-port.ps1` re-resolves by MAC |
+| Connects, streams ~6 s, drops with `Device not registered to this host computer` | App host-binding gate | Requires the NOP patch (already applied to the guest `braintellect.exe`; original is `braintellect.exe.orig`) — see below |
+
+Keep the app's COM port held open: once connected, the sustained open keeps the
+controller awake, so no separate keepalive is needed (final section).
+
 ## Observed: normal connect path reads a stored preference
 
 On a device connect, the app takes the port name from a stored preference, not
