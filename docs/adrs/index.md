@@ -6,3 +6,4 @@
 | --- | --- | --- |
 | [0001](0001-ship-no-deployable-and-host-rea-as-agent-tooling.md) | Ship No Deployable and Host REA as Project-Scoped Agent Tooling | accepted |
 | [0002](0002-add-braintellect-collector-unit.md) | Add the BRAINtellect2 Collector as a Non-Shipping Unit | accepted |
+| [0003](0003-host-linux-clone-as-run-and-test-unit.md) | Host the BRAINtellect2 Linux Clone as a Run-and-Test Unit | accepted |

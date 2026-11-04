@@ -1,0 +1,10 @@
+[package]
+name = "braintellect-linux"
+version = "0.0.0"
+edition = "2021"
+publish = false
+description = "Rust reimplementation of the BRAINtellect2 neurofeedback app for Debian Linux, validated by parity against the real app."
+
+[lib]
+name = "braintellect_linux"
+path = "src/lib.rs"
