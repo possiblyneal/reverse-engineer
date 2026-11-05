@@ -7,10 +7,11 @@ basis for a Linux client. Addresses are for the captured original
 `af7ff5430ee10c2d548450819f54a3f939af474953a42b959fd99739519c2560`,
 image base `0x400000`).
 
-Source: static disassembly only (capstone over the PE). No controller, serial
-port, or runtime capture was involved. Observed facts cite a VA/file offset;
-inferred behavior is marked. Items needing a live capture to confirm are called
-out explicitly under Unresolved.
+Source: static disassembly (capstone over the PE), plus one live run (2026-11-04,
+issue #26) traced with Frida hooks on `BT_Device::write` and the `readAsync`
+reply reader (see "Live capture (2026-11-04)"). Observed facts cite a VA/file
+offset or the live method; inferred behavior is marked. Items still needing a
+capture are called out explicitly under Unresolved.
 
 Verification: every instruction-level claim below was independently re-confirmed
 against this binary (the five command literals and their file offsets, the
@@ -55,7 +56,7 @@ not a controller command — and is not sent to the device.
 
 The parametric commands build their payloads at runtime rather than from a
 stored literal, so their numeric codes and argument order are **not** present as
-static bytes: `BT_Device::setStart(bool)` (symbol `0x14934b8`),
+static bytes (the live wire codes are in "Live capture (2026-11-04)" below): `BT_Device::setStart(bool)` (symbol `0x14934b8`),
 `setPower(string,bool,int)` (`0x1493190`),
 `setSignalInjection(string)` (`0x1493280`),
 `setLODFrequency(float)` (`0x1493368`), `setDeviceFrequency`, `setMode`, and
@@ -64,7 +65,7 @@ static bytes: `BT_Device::setStart(bool)` (symbol `0x14934b8`),
 from runtime-initialized BSS QString globals (e.g. `0x1f789b4`, `0x1f77ae0`,
 `0x1f7784c`), then writes via the device vtable `+0x28`. Its log template
 `setStart(delay: ` (fo `0x1491828`) shows the field set: delay, number of
-channels, device frequency. Recovering its exact command code needs a live capture (Unresolved): the first
+channels, device frequency. Static tracing could not recover the code: the first
 fragment globals (`0x1f789b4`, `0x1f77ae0`, `0x1f7784c`) are referenced **only**
 inside `setStart` (both xrefs at VA `0x5544xx`), so no global constructor writes
 them — they are filled from runtime device state, not from a traceable static
@@ -79,10 +80,10 @@ On connect the app issues 101 → 110 → 112 and parses fixed-layout replies
   `0x38` (56 bytes). Magic header `AC BC CC 03` at reply offsets `[+0x54..+0x57]`;
   then `[+0x5c]==0x65`, `[+0x5d]==3`. Serial-number bytes are read from reply
   offsets `0x5e,0x5f,0x61,0x62,0x64,0x65,0x67,0x68,0x6a,0x6b` (every third byte
-  skipped) into `[ebx+0x14…]`.
+  skipped) into `[ebx+0x14…]`. The live reply carries six such pairs (a 12-byte
+  id), one more than this static offset list shows.
 - Requests 110 and 112 (`getRequest for SYSTEM_INFO_1 / _2`, log fo `0x1493038`,
-  `0x1492fe0`) follow. Their reply field layouts were not fully decoded
-  (Unresolved).
+  `0x1492fe0`) follow. Reply layouts: see "Live capture (2026-11-04)".
 - `setRequest(int, const uchar*, bool, int)` logs `setRequest(): Writing: 0x`
   followed by the hex of the bytes written, and `setRequest returned: ` with the
   reply length — useful anchors for a live capture.
@@ -124,8 +125,8 @@ A full SMART-2 session run with the B-2 connected in the offline VM confirmed th
 stream geometry from the guest app log (`tmp/baseline-2026-11-03/braintellect.log`):
 
 - `sampleRate: 500` and `setDeviceFrequency: 500` (log ll. 758, 762): the device
-  streams at **500 Hz**, resolving the per-channel sample cadence. It does **not**
-  resolve the device family (12 vs 99); family is still Unresolved.
+  streams at **500 Hz**, resolving the per-channel sample cadence. The device
+  family is resolved by the 2026-11-04 run (12).
 - `setNumberChannels: 8` (l. 761) is the **hardware maximum**, not the active
   count; the active montage is 4 channels (`FP1FP2T3T4`), matching
   `[ebx+0x1e8] == 4` and `setChannel(4 channels): success`.
@@ -156,7 +157,7 @@ Per-channel calibration entry fields (observed from the setters/recompute):
 
 | Offset | Field | Set by |
 |---|---|---|
-| `+0x10` | sensorGain (G_s, ≥ 1000.0) | `setSensorGain(float,int)` VA `0x5579f0`, store VA `0x557a68` |
+| `+0x10` | sensorGain (G_s; observed 10 live, so the static `1000.0` constant is not a floor on it) | `setSensorGain(float,int)` VA `0x5579f0`, store VA `0x557a68` |
 | `+0x18` | channelGain (G_c, PGA, in **[1.0, 24.0]**) | `setChannelGain(float,int)` VA `0x557da0`, store VA `0x557e18` |
 | `+0x20` | divisor (counts per volt) | recompute VA `0x5558fd` |
 | `+0x28` | voltsPP (p-p input range) | recompute VA `0x55590e` |
@@ -190,21 +191,81 @@ Constants read from `.rdata`: `2.4` (`0x18953b0`), `4.0` (`0x1895398`),
 `2.0` (`0x18953a8`), `15.0` (`0x18953a0`), `23.0` (`0x1895390`),
 `1.0` (`0x187c9b0`); channelGain max `24.0` (`0x18954dc`), sensorGain min
 `1000.0` (`0x1895360`). The 24-bit big-endian signed samples in
-`processData_v5` imply the B-2 is a 24-bit family (12 or 99); which family, and
-the actual `sensorGain`/`channelGain` the device reports, come from the 110/112
-and 131 replies and were not pinned statically (Unresolved).
+`processData_v5` imply a 24-bit family (12 or 99); the live run pins family 12
+(next section).
 
-## Unresolved (needs live capture or deeper static-init tracing)
+## Live capture (2026-11-04)
 
-- `setStart` command code and exact field/argument order (runtime-built QString).
-- `setPower`, `setSignalInjection`, `setLODFrequency`, `setDeviceFrequency`,
-  `setMode` command codes and argument encodings (runtime-built).
-- Reply field layouts for commands 110, 112, and 131.
-- Packet trailer/length and the `sampleValidation` check feeding
-  `DataBuffer.sampleValidationErrors`.
-- Which device family the B-2 reports, and its per-channel `sensorGain`.
+Method: one complete SMART-2 exercise (240 s, 4 channels, 500 Hz) in the offline
+guest with no wearer; `frida-inject` (spawn mode) hooks logged every
+`BT_Device::write` (VA `0x54ffa0`; length at `[esp+4]`, buffer at `[esp+8]`) and
+every `BT_Device::readAsync` return (VA `0x550430`) with millisecond timestamps,
+alongside the app log. The streamed sample frames did **not** pass through the
+hooked read functions, so only the handshake replies were captured on the RX
+side (Unresolved).
+
+### Commands sent (observed, `write` hook)
+
+Frame `!*#<code>,<a1>,…\r\n`; the six-argument form is 19-20 bytes on the wire.
+
+| Operation | Bytes after `!*#` | Notes |
+|---|---|---|
+| setStop | `48,0,0,0,0,0,0` | sent first, before the handshake, and again before start |
+| setMode(Normal EEG) | `40,1,0,0,0,0,0` | after the first 101-138 query pass |
+| setSignalInjection(OFF) | `46,0,0,0,0,0,0` | with setMode; resent during the exercise |
+| setStart(delay 0, 4 channels) | `48,1,0,4,0,0,0` | a1 = start flag; a3 = channel count and a2 = delay (inferred from delay 0 / 4 channels) |
+| setPower(OFF) | `48,0,1,0,0,0,0,0` | seven arguments, 21 bytes; sent at app exit |
+
+Code 48 is shared: a1 = 1 starts streaming, a2 = 1 powers off. `setDeviceFrequency`
+(500) and `setLODFrequency` were called in the app log but produced **no** wire
+traffic in this run; the start frame carries no frequency. Every set command
+returned no reply; each of 101, 110, 112, 131-138 returned exactly one 56-byte
+reply. The query sequence 101, 110, 112, 131-138 ran twice (before and after
+setMode/setSignalInjection).
+
+### Reply layout, commands 101/110/112/131-138 (observed)
+
+56 bytes: `AC BC CC 03`, then `03 03 03 03`; byte `[8]` echoes the request code
+(`0x65`, `0x6e`, `0x70`, `0x83`…`0x8a` = 101, 110, 112, 131…138); `[9]` = `03`;
+from `[10]` the payload is two-byte pairs each followed by a `03` separator, then
+`03` fill to the end.
+
+- 101: six pairs (12-byte device id), matching the app's `id` log field.
+- 110: six pairs. Pairs 3-4 give the firmware version bytes 17, 1, 1 (pair 3 =
+  17, 1; pair 4 starts 1); pairs 5-6 give the model digits `0002`, `0004` (app
+  log `model: 0002.0004`, `FW version: 17.1.1`). Pairs 1-2 are unidentified.
+- 112: one non-zero pair, unidentified.
+- 131-134 (active channels): pair 1 = (channel number 1-4, state byte); pair 2 =
+  (12, 0), where 12 equals the `channelGain` of 12 in the app's `dumpDebug`
+  (inferred mapping). The state byte was 2 in the first pass and 1 in the second,
+  after setMode(Normal EEG) (inferred: current mode).
+- 135-138 (inactive): pair 1 = (channel number 5-8, 0), pair 2 = (0, 0).
+- The app then logs `family: 12` and `numberChannels (from device): 4`, matching
+  the four active channel replies.
+
+### Calibration confirmed (observed, app log `dumpDebug`)
+
+Per channel: `channelGain: 12`, `sensorGain: 10` (from the app setting
+`flowEngine.device.sensorGain`, not from the device), `voltageRef: 2.4`,
+`voltsPP: 0.04`, `conversion factor: 419430350`. These match the formulas above
+for family 12: `2*2.4/(12*10) = 0.04` and `(2^23-1)*12*10/2.4 = 419430350`.
+
+### Stream counters (observed, app log)
+
+`DataBuffer` reports `samplesPerPacket: 2`, `samplesToStore: 20`,
+`devicePacketSize: 56`, and ends the run with `packetCounterErrors: 0,
+sampleValidationErrors: 0`.
+
+## Unresolved
+
+- Raw streamed sample frames were not captured (the stream bypasses the hooked
+  read functions); a capture at the Win32 COM-handle layer is needed for the
+  packet trailer, exact framing against the 56-byte `devicePacketSize`, and the
+  `sampleValidation` check feeding `DataBuffer.sampleValidationErrors`.
+- 110 pairs 1-2 and the 112 payload meaning.
+- Whether the device reports family itself or the app derives it from the
+  model/firmware fields.
 
 These are the fields a protocol-conformant Linux client cannot yet reproduce
-exactly; everything above them (transport, the five fixed commands, the 101
-handshake, the sample-stream framing, and the full volts formula with its
-constants) is recovered from static evidence.
+exactly; the transport, the commands above, the handshake, and the volts formula
+with its constants are recovered.
