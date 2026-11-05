@@ -120,3 +120,26 @@ Because type 9 (the feedback series) is cleartext and types 0/1/5 now decrypt,
 every stored blob is readable. Type 1 (`<flowDesign>`) is the SMART-2 feedback
 graph definition and is a parity input for the clone's feedback layer alongside
 the type-9 output series.
+
+## Observed: a session with no sensors fitted runs and saves normally
+
+On 2026-11-04 a SMART-2 session was run with the B-2 connected and nothing in the
+sensor bar (exercise 126), then compared with a worn session the same day (exercise
+125). Source: the guest datadir copied out after the app exited, then
+read with a throwaway `mysql:5.7` container, blobs decoded as above.
+
+- Before Play, the Optimize tab's sensor status read green "Ready". The app's
+  lead-off check did not flag the missing sensors.
+- The session ran the full 240 s and saved the same four `exercisedata` rows.
+  `properties` reports `deviceErrorCount=0` and `deviceRestartCount=0`.
+- No stored row records lead-off or sensor-contact state. The only stored trace of
+  missing sensors is in the signal itself: every band, LMH, line-noise, and FFT series in
+  type 9 is an order of magnitude lower than in the worn session and nearly flat.
+- The type-5 Evaluator log differs. In the worn session it logged a `ControlChange`
+  at 01:00 (control value 111 → 82, then held). With no sensors it logged only
+  `ControlLog` entries with the value held at 111. The evaluator codes are mapped in
+  `audio-feedback.md`.
+- Launched with `C:\bsttest\bin` as its working directory, the app ran this session
+  without writing to `braintellect.log`. Inferred, not verified: it resolves
+  `C:\bsttest\configuration\log4j.properties` against the working directory, so launch
+  it from `C:\bsttest`.

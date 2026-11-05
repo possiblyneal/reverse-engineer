@@ -42,6 +42,11 @@ read-only):
   and `HKLM\Software` returned 0 matches (prior session), despite QSettings
   registry code in the binary.
 
+Observed 2026-11-04: the offline VM's
+`C:\ProgramData\BST\BRAINtellect2\preferences\braintellect.ini` line 2 reads
+`B-2-BTCOMPort=COM4`, so the key is now persisted in that INI. When it was first written is
+unknown. The searches above predate it.
+
 Binary symbols for the store: `com.bst.optimizer.model.preferences.Preferences`
 (`src\model\preferences\Preferences.cpp`), and device config bound to XML types
 `model::configFile::configurationDeviceType` /
@@ -169,3 +174,47 @@ awake — a read-only `open()` of the port from the guest held the RFCOMM link u
 for ~2m41s with zero bytes written and no sleep. So once the app opens and holds
 the COM port, no separate keepalive/ping is needed; the sustained open prevents
 the idle-sleep drop that looks like a connection failure.
+
+## Inferred: one Bluetooth adapter must have one guest owner
+
+Each Windows guest keeps its own Bluetooth bond (link key) to the B-2, but every guest
+that passes through the same USB adapter (Broadcom BCM20702A0, `0a5c:21e8`) shows the
+controller the same host Bluetooth address. Re-pairing in one guest gives the B-2 a new
+link key, so another guest's stored bond goes stale and its connect fails until that
+guest removes and re-pairs the device. Observed 2026-11-04: after a pairing in the
+homelab `windows` VM, the B-2 would not connect in `braintellect-offline`, and
+power-cycling the controller did not help. Confirming this from the guest's bond registry
+(`HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices`) and log is
+tracked in #38.
+
+Observed 2026-11-04 (host usbmon capture of the passed-through adapter during an "Add a
+device" attempt in `braintellect-offline`): the guest pages the B-2 (`88:6B:0F:8F:B7:10`),
+the ACL link and L2CAP signaling come up, and the guest sends `Authentication_Requested`.
+Within 75–130 ms the link drops with `Disconnection_Complete` reason `0x17` (Repeated
+Attempts). No `Link_Key_Request` or `IO_Capability_Request` event reaches the guest. This
+happened on two attempts in a row. Reason `0x17` means a device is refusing authentication
+because too little time has passed since a failed one. That fits a stale bond, but the
+capture does not show which side sent it.
+
+Observed 2026-11-04, later the same day: with the guest's bond removed, a third attempt
+failed the same way (`Authentication_Requested`, then reason `0x17` 68 ms later, again with no
+`Link_Key_Request`). The adapter's own key store was empty (`Read_Stored_Link_Key`:
+`max_keys 1`, `num_keys 0`, read from the host). The adapter was then detached from QEMU,
+bound to the host's `btusb` (which resets it), and reattached. The next pairing attempt
+completed Secure Simple Pairing on the first try: `Link_Key_Request`, IO capability
+exchange, user confirmation, `Simple_Pairing_Complete` status 0, `Authentication_Complete`
+status 0. The B-2 was not power-cycled in between. Inferred: the `0x17` back-off was held in
+the passed-through adapter, so the remote fix is to reset it by re-enumerating:
+
+1. Host: `device_del` the `usb-host` device in the QEMU monitor.
+2. Host: `sudo modprobe btusb`, wait for `hci0`, then `sudo modprobe -r btusb`.
+3. Host: `device_add usb-host,vendorid=0x0a5c,productid=0x21e8,id=bt0`.
+4. Guest: pair the B-2 once.
+
+A `PageTimeout` (`0x04`) on `Create_Connection` is a different failure: the B-2 is not
+answering pages at all, so it is asleep or off. Observed ~15 min after pairing with no open
+port.
+
+Since 2026-11-04 only `braintellect-offline` passes the adapter through. The homelab
+`windows` quadlet no longer carries the `usb-host` device. Pair the B-2 only in
+`braintellect-offline`.

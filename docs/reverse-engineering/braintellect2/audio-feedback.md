@@ -148,12 +148,27 @@ null host backend still presents a render endpoint to Windows) made Windows enum
 `"Wave"` driver, session setup completes, and the crash is gone. A headless VM with no
 sound hardware reproduces the crash.
 
-Any valid `audiodev` backend satisfies the endpoint requirement. The offline VM is
-configured with `-audiodev wav,id=snd0,path=/storage/bst-feedback.wav`, which both
+Any valid `audiodev` backend satisfies the endpoint requirement. Through 2026-11-03 the
+offline VM used `-audiodev wav,id=snd0,path=/storage/bst-feedback.wav`, which both
 prevents the crash and records the session's feedback audio for baseline capture
 (verified: a SMART-2 Piano session produced a 44.1 kHz stereo `pcm_s16le` WAV of audible
-feedback tones). QEMU finalizes the WAV header only on a clean guest shutdown, and each
-boot overwrites the file.
+feedback tones). That backend finalizes the WAV header only on a clean guest shutdown.
+
+Since 2026-11-04 the VM uses `-audiodev alsa,id=snd0,out.dev=bstout,out.frequency=44100`
+so the operator hears the feedback live. `bstout` is an ALSA `plug` over a `file`-plugin
+tee (`/etc/asound.conf` in the container, mounted from the host) that plays to the host's
+analog output (`plughw:0,0`, front headphone jack) and writes the same stream to
+`/storage/bst-feedback.wav` (verified on the host: the tee wrote a valid 44.1 kHz stereo
+`pcm_s16le` WAV with a correct header even when the player was killed). The container needs
+`/dev/snd`, and the host's onboard audio is blacklisted by default
+(`/etc/modprobe.d/blacklist-audio.conf`), so `snd_hda_intel` must be loaded by hand before
+the VM starts. Each boot still overwrites the WAV.
+
+Observed 2026-11-04 with a live B-2 and headband: a full 4-minute SMART-2 Piano session
+played feedback tones on the front headphone jack in real time, and the operator heard the
+pitch change during the run. The tee wrote 262 s of 44.1 kHz stereo audio, with sound in 261
+of those seconds. Its RIFF data length is still 0 because the guest has not shut down yet, but
+the samples are complete.
 
 ## Limitations
 
