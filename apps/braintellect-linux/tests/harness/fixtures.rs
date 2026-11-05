@@ -5,6 +5,10 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+use braintellect_linux::feedback::{
+    BandPassDesign, BandPassSpec, Interference2, PeakDesign, PeakSpec, Smart2Design, SourceDesign,
+};
+
 fn read(name: &str) -> String {
     let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("tests/fixtures")
@@ -304,5 +308,134 @@ pub fn smart2_fire_blocks() -> Vec<usize> {
         .map(|l| l.split('\t').collect::<Vec<_>>())
         .filter(|c| c[1] == "Trigger")
         .map(|c| c[2].parse().expect("block"))
+        .collect()
+}
+
+/// The SMART-2 design the run-4 stages were logged under, read from the design
+/// XML by `make-fixtures.py`.
+pub fn smart2_design() -> Smart2Design {
+    let mut design = Smart2Design {
+        rate_hz: 0,
+        source: SourceDesign {
+            interference2: Interference2::Off,
+            low_pass_hz: 0.0,
+            high_pass_hz: 0.0,
+        },
+        band_passes: vec![],
+        peaks: vec![],
+        aggregator_epoch_s: 0,
+    };
+    for line in read("smart2_design.tsv").lines() {
+        let c: Vec<&str> = line.split('\t').collect();
+        let num = |i: usize| -> f64 { c[i].parse().expect("design number") };
+        match c[0] {
+            "rate" => design.rate_hz = c[1].parse().expect("rate"),
+            "source" => match c[1] {
+                "interferenceFilter2" => {
+                    design.source.interference2 = match c[2] {
+                        "25 Hz" => Interference2::Hz25,
+                        "Off" => Interference2::Off,
+                        other => panic!("interference filter {other}"),
+                    }
+                }
+                "lowPassCutoff" => design.source.low_pass_hz = num(2),
+                "highPassCutoff" => design.source.high_pass_hz = num(2),
+                other => panic!("source property {other}"),
+            },
+            "bandpass" => {
+                assert_eq!(c[5], "Hamming");
+                design.band_passes.push(BandPassSpec {
+                    channel: c[1].parse::<usize>().expect("channel") - 1,
+                    label: c[2].to_owned(),
+                    design: BandPassDesign {
+                        low_hz: num(3),
+                        high_hz: num(4),
+                        order: c[6].parse().expect("order"),
+                    },
+                });
+            }
+            "peak" => {
+                assert_eq!(c[5], "Hann");
+                design.peaks.push(PeakSpec {
+                    channel: c[1].parse::<usize>().expect("channel") - 1,
+                    design: PeakDesign {
+                        fft_order: c[2].parse().expect("fft order"),
+                        low_hz: num(3),
+                        high_hz: num(4),
+                    },
+                });
+            }
+            "aggregator" => {
+                assert_eq!(c[1], "continuous");
+                design.aggregator_epoch_s = c[2].parse().expect("epoch");
+            }
+            other => panic!("design row {other}"),
+        }
+    }
+    design
+}
+
+/// Decoded microvolts per sample, with the sample's index relative to the first
+/// logged sample (negative: Source-filter history before it).
+pub fn smart2_eeg() -> Vec<(i64, [f64; 4])> {
+    read("smart2_eeg.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            assert_eq!(c.len(), 5, "index and 4 channels");
+            (
+                c[0].parse().expect("index"),
+                std::array::from_fn(|i| c[1 + i].parse().expect("microvolts")),
+            )
+        })
+        .collect()
+}
+
+/// One logged 4-sample block of the stage values.
+pub struct StageBlock {
+    pub control: u32,
+    /// Band-pass amplitudes in volts, `[stage A..H][sample]`.
+    pub bands: [[f32; 4]; 8],
+    /// Aggregator outputs in volts, same layout.
+    pub aggregates: [[f32; 4]; 8],
+    /// PeakFrequency bin per channel and sample.
+    pub peak_bins: [[usize; 4]; 4],
+}
+
+/// Stage letters A..H as `(label, zero-based channel)`.
+pub const STAGES: [(&str, usize); 8] = [
+    ("Band 10", 0),
+    ("Band 10", 1),
+    ("Band 80", 0),
+    ("Band 80", 1),
+    ("Band 10", 2),
+    ("Band 10", 3),
+    ("Band 80", 2),
+    ("Band 80", 3),
+];
+
+pub fn smart2_stages() -> Vec<StageBlock> {
+    read("smart2_stages.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            assert_eq!(c.len(), 69, "code, 32 bands, 32 aggregates, 4 bin strings");
+            let grid = |at: usize| -> [[f32; 4]; 8] {
+                std::array::from_fn(|s| {
+                    std::array::from_fn(|n| c[at + 4 * s + n].parse().expect("volts"))
+                })
+            };
+            StageBlock {
+                control: c[0].parse().expect("code"),
+                bands: grid(1),
+                aggregates: grid(33),
+                peak_bins: std::array::from_fn(|ch| {
+                    let bins = c[65 + ch].as_bytes();
+                    std::array::from_fn(|n| {
+                        (bins[n] as char).to_digit(16).expect("hex bin") as usize
+                    })
+                }),
+            }
+        })
         .collect()
 }

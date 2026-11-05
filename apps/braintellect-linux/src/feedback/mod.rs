@@ -3,22 +3,37 @@
 //! selection (`ExprNoteSelection`).
 //!
 //! Evidence and open items: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
-//! Not implemented (unresolved): the band-pass `OutAmplitude`, the Aggregator
-//! and per-channel `PeakFrequency` computation, so both paths start from the
-//! values those stages logged; and the `SoundElement` note playback.
+//! [`Smart2Graph`] runs the whole graph from decoded EEG: the `Source` software
+//! filters, band-pass `OutAmplitude`, Aggregator and `PeakFrequency`, then the
+//! two paths, which also take those stages' logged values directly.
+//! Not implemented: the Evaluator (its control code is an input), `OutAmplitude`
+//! of the sound element and the `SoundElement` note playback.
 
+mod band_pass;
 mod counter;
+mod fir;
+mod graph;
+mod iir;
 mod note;
+mod peak_frequency;
 mod smoother;
+mod source;
 mod threshold;
 mod trigger_all;
 
+pub use band_pass::BandPassDesign;
 pub use counter::Counter;
+pub use graph::{
+    BandPassSpec, BlockDecision, DesignError, PeakSpec, SampleOutput, Smart2Design, Smart2Graph,
+    BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,
+};
 pub use note::{NoteSelection, PeakFrequencies};
+pub use peak_frequency::{Peak, PeakDesign};
+pub use source::{Interference2, SourceDesign};
 pub use threshold::Threshold;
 pub use trigger_all::{trigger_all, BandAmplitudes, UnsupportedControl};
 
-use smoother::Smoother;
+pub use smoother::Smoother;
 
 /// Sample rate of the stream the graph runs at.
 const RATE_HZ: usize = 500;
