@@ -2,13 +2,17 @@
 //! chain, `BandPassFilter`, `PeakFrequency`, `AggregatorFilter`) and of the
 //! graph from decoded EEG to the trigger and note decisions, against run 4.
 //!
-//! Band-pass and PeakFrequency outputs are not asserted at any harness
-//! tolerance: the recovered design reproduces them only statistically (see
-//! `stage_agreement_report`), and the harness defines no tolerance for that.
+//! The Source chain, the band-pass FIR and PeakFrequency are asserted bit for bit
+//! against the run-5 live capture. Band `OutAmplitude` (a 16-tap mean, 1 to 3
+//! `f32` ulps off) and the run-4 band amplitudes are not asserted at any harness
+//! tolerance (see `band_pass_amplitude_agreement_report`, `stage_agreement_report`).
 
 mod harness;
 
-use braintellect_linux::feedback::{BlockDecision, Smart2Graph, Smoother, BLOCK_LEN};
+use braintellect_linux::feedback::{
+    BandPass, BandPassDesign, BlockDecision, Interference2, PeakDesign, PeakFrequency, Smart2Graph,
+    Smoother, SourceDesign, SourceFilters, BLOCK_LEN,
+};
 use harness::assertions;
 use harness::fixtures::{self, Decision};
 
@@ -35,6 +39,114 @@ fn replay() -> Vec<BlockDecision> {
                 .expect("observed Evaluator codes")
         })
         .collect()
+}
+
+/// Live samples before the capture's filter state has converged: the capture was
+/// hooked mid-stream, the clone starts cold, and the band-stop and high-pass memories
+/// fade within this many samples.
+const SOURCE_CONVERGENCE_SAMPLES: usize = 3000;
+
+#[test]
+fn source_chain_reproduces_the_live_stage_outputs_bit_for_bit() {
+    let design = SourceDesign {
+        interference2: Interference2::Hz25,
+        low_pass_hz: 150.0,
+        high_pass_hz: 1.5,
+    };
+    let mut chain = SourceFilters::new(&design, 500);
+    let rows = fixtures::smart2_source_stages();
+    assert!(rows.len() > SOURCE_CONVERGENCE_SAMPLES + 1000);
+    for (n, row) in rows.iter().enumerate() {
+        let got = chain.push_stages(f64::from(row[0]));
+        if n < SOURCE_CONVERGENCE_SAMPLES {
+            continue;
+        }
+        for (stage, (&g, &want)) in got.iter().zip(&row[1..]).enumerate() {
+            assert_eq!(
+                (g as f32).to_bits(),
+                want.to_bits(),
+                "sample {n} stage {stage}"
+            );
+        }
+    }
+}
+
+/// `(low Hz, high Hz, column of the FIR output, column of the amplitude)` of the two
+/// captured bands.
+const CAPTURED_BANDS: [(f64, f64, usize, usize); 2] = [(1.0, 3.0, 1, 2), (23.0, 36.0, 3, 4)];
+
+fn captured_band(low_hz: f64, high_hz: f64) -> BandPass {
+    let design = BandPassDesign {
+        low_hz,
+        high_hz,
+        order: 128,
+    };
+    BandPass::new(&design, 500, 4)
+}
+
+#[test]
+fn band_pass_fir_reproduces_the_live_outputs_bit_for_bit() {
+    let rows = fixtures::smart2_bandpass_stages();
+    assert!(rows.len() >= 6000);
+    for (low_hz, high_hz, fir, _) in CAPTURED_BANDS {
+        let mut band = captured_band(low_hz, high_hz);
+        for (n, row) in rows.iter().enumerate() {
+            let [out, _] = band.push_stages(f64::from(row[0]));
+            assert_eq!(
+                (out as f32).to_bits(),
+                row[fir].to_bits(),
+                "band {high_hz} sample {n}"
+            );
+        }
+    }
+}
+
+/// Not asserted: the 16-tap mean of `OutAmplitude` is not bit exact (see
+/// `audio-feedback.md`), so print the f32 ulp distance of the clone to the live value.
+#[test]
+fn band_pass_amplitude_agreement_report() {
+    let rows = fixtures::smart2_bandpass_stages();
+    for (low_hz, high_hz, _, amp) in CAPTURED_BANDS {
+        let mut band = captured_band(low_hz, high_hz);
+        let mut ulps = vec![0u32; 6];
+        for (n, row) in rows.iter().enumerate() {
+            let got = (band.push(f64::from(row[0])) as f32).to_bits();
+            if n >= 600 {
+                let d = got.abs_diff(row[amp].to_bits()) as usize;
+                ulps[d.min(5)] += 1;
+            }
+        }
+        println!("band {high_hz}: samples at 0..>=5 ulp {ulps:?}");
+    }
+}
+
+#[test]
+fn peak_frequency_reproduces_the_live_frequency_and_amplitude_bit_for_bit() {
+    let rows = fixtures::smart2_bandpass_stages();
+    let design = PeakDesign {
+        fft_order: 9,
+        low_hz: 6.0,
+        high_hz: 14.0,
+    };
+    let mut peak = PeakFrequency::new(&design, 500);
+    for (n, row) in rows.iter().enumerate() {
+        let got = peak.push(f64::from(row[0]));
+        if n == 1 {
+            // Two nonzero samples: the spectrum is flat to rounding, so the app's FFT
+            // rounding decides the bin and the clone's FFT does not reproduce it.
+            continue;
+        }
+        assert_eq!(
+            (got.frequency_hz as f32).to_bits(),
+            row[5].to_bits(),
+            "frequency, sample {n}"
+        );
+        assert_eq!(
+            (got.amplitude as f32).to_bits(),
+            row[6].to_bits(),
+            "amplitude, sample {n}"
+        );
+    }
 }
 
 #[test]

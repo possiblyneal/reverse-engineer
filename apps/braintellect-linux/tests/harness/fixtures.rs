@@ -439,3 +439,34 @@ pub fn smart2_stages() -> Vec<StageBlock> {
         })
         .collect()
 }
+
+/// One live sample of a single channel's `BandPassFilter` and `PeakFrequency` stages, in
+/// float32: the shared input in volts, the Band 10 FIR output and amplitude, the Band 80
+/// FIR output and amplitude, then the `PeakFrequency` frequency and amplitude.
+pub fn smart2_bandpass_stages() -> Vec<[f32; 7]> {
+    read("smart2_bandpass_stages.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            assert_eq!(c.len(), 7, "input, two bands of two stages, peak pair");
+            std::array::from_fn(|i| {
+                f32::from_bits(u32::from_str_radix(c[i], 16).expect("float32 bits"))
+            })
+        })
+        .collect()
+}
+
+/// One live Source-chain sample of channel 0, in volts: the band-stop input, then the
+/// band-stop, low-pass and high-pass outputs, as the app held them in float32.
+pub fn smart2_source_stages() -> Vec<[f32; 4]> {
+    read("smart2_source_stages.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            assert_eq!(c.len(), 4, "band-stop input and three stage outputs");
+            std::array::from_fn(|i| {
+                f32::from_bits(u32::from_str_radix(c[i], 16).expect("float32 bits"))
+            })
+        })
+        .collect()
+}

@@ -25,6 +25,11 @@ pub struct SourceDesign {
     pub high_pass_hz: f64,
 }
 
+/// Round to the `f32` the app stores between stages.
+fn to_f32(x: f64) -> f64 {
+    f64::from(x as f32)
+}
+
 /// One channel's filter chain.
 pub struct SourceFilters {
     notch: Option<Iir>,
@@ -50,8 +55,17 @@ impl SourceFilters {
     }
 
     pub fn push(&mut self, x: f64) -> f64 {
-        let x = self.notch.as_mut().map_or(x, |notch| notch.push(x));
-        self.high_pass.push(self.low_pass.push(x))
+        self.push_stages(x)[2]
+    }
+
+    /// The outputs of the band-stop (the input when it is off), the low-pass and the
+    /// high-pass for one sample. The app holds every stage's samples as `f32` while
+    /// the IPP filters compute in `f64`, so each stage rounds its output to `f32`.
+    pub fn push_stages(&mut self, x: f64) -> [f64; 3] {
+        let x = to_f32(x);
+        let notched = self.notch.as_mut().map_or(x, |notch| to_f32(notch.push(x)));
+        let low = to_f32(self.low_pass.push(notched));
+        [notched, low, to_f32(self.high_pass.push(low))]
     }
 }
 
