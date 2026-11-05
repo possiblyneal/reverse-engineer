@@ -38,7 +38,6 @@ SMART2_STAGE_BLOCKS = 400  # logged stage values: 1600 samples, past the 600-sam
 # plus 15 samples, the offset that minimises the Band 10/80 error once the 150 Hz
 # low-pass FIR (about 11.5 samples of group delay) is in the chain.
 SMART2_FIRST_SAMPLE = 2 * 34000 + 3659 + 15
-SMART2_WARMUP_SAMPLES = 1500  # Source-filter history before the first logged sample
 PEAK_BIN_HZ = 500 / 512  # PeakFrequency resolution: sample rate / FFT order 512
 FRAME_LEN = 32
 MARKER = bytes.fromhex("acbccc03")
@@ -403,7 +402,7 @@ def smart2_stages(src, header):
 
     uv = expected_microvolts([b"".join(stream_frames(src))], header)
     eeg_rows = []
-    for s in range(SMART2_FIRST_SAMPLE - SMART2_WARMUP_SAMPLES, SMART2_FIRST_SAMPLE + 4 * SMART2_TRIGGER_BLOCKS):
+    for s in range(SMART2_FIRST_SAMPLE, SMART2_FIRST_SAMPLE + 4 * SMART2_TRIGGER_BLOCKS):
         volts = uv[s // 2][1]
         eeg_rows.append(
             f"{s - SMART2_FIRST_SAMPLE}\t"

@@ -375,8 +375,8 @@ pub fn smart2_design() -> Smart2Design {
     design
 }
 
-/// Decoded microvolts per sample, with the sample's index relative to the first
-/// logged sample (negative: Source-filter history before it).
+/// Decoded microvolts per sample from the first logged sample on, with the
+/// sample's index relative to it.
 pub fn smart2_eeg() -> Vec<(i64, [f64; 4])> {
     read("smart2_eeg.tsv")
         .lines()

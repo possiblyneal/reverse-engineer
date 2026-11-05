@@ -66,8 +66,11 @@ those findings, it cites them.
   asserted: Band 10/80 amplitudes (median error 1 to 5 %) and
   PeakFrequency bins (2.5 % differ over the committed 1000-sample span); the ignored `stage_agreement_report` prints
   both, excluding the start-up samples and Band 10 Ch2 (`audio-feedback.md`,
-  "Not resolved"). Notes from decoded EEG match the baseline at 9 of 20 fires
-  (ignored `end_to_end_note_decisions_match_the_baseline`). Still unimplemented:
+  "Not resolved"). The graph starts the Source filters cold at the first
+  logged sample (no history rows). Notes from decoded EEG match the baseline at
+  17 of 20 fires (floor test `most_note_decisions_match_the_baseline_from_decoded_eeg`;
+  strict ignored `end_to_end_note_decisions_match_the_baseline` fails on fires 1, 2
+  and 5: start-up transient and counter timing, `audio-feedback.md`, "Note divergence"). Still unimplemented:
   `OutAmplitude`, the Evaluator (its code is a per-block input) and the Source
   chain's exact IPP filter designs (`audio-feedback.md`, "Run 3", "Run 4").
   `tests/parity_storage.rs` replays the record fixture through `src/storage.rs`

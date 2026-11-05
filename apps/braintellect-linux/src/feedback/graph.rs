@@ -153,12 +153,6 @@ impl Smart2Graph {
         })
     }
 
-    /// Run the Source filters over history before the elements start (the app's
-    /// filters were already running when the logged span began).
-    pub fn prime(&mut self, sample_uv: [f64; CHANNELS]) {
-        self.filtered(sample_uv);
-    }
-
     fn filtered(&mut self, sample_uv: [f64; CHANNELS]) -> [f64; CHANNELS] {
         std::array::from_fn(|c| self.source[c].push(sample_uv[c] * VOLTS_PER_MICROVOLT))
     }
