@@ -7,9 +7,11 @@ basis for a Linux client. Addresses are for the captured original
 `af7ff5430ee10c2d548450819f54a3f939af474953a42b959fd99739519c2560`,
 image base `0x400000`).
 
-Source: static disassembly (capstone over the PE), plus one live run (2026-11-04,
-issue #26) traced with Frida hooks on `BT_Device::write` and the `readAsync`
-reply reader (see "Live capture (2026-11-04)"). Observed facts cite a VA/file
+Source: static disassembly (capstone over the PE), plus two live runs (issue #26)
+traced with Frida hooks: 2026-11-04 on `BT_Device::write` and the `readAsync`
+reply reader, and a second run on the Win32 COM handle (`CreateFile`/`ReadFile`/
+`GetOverlappedResult`) cross-checked against a host usbmon capture (see "Live
+capture (2026-11-04)" and "Observed stream frame (COM-handle capture)"). Observed facts cite a VA/file
 offset or the live method; inferred behavior is marked. Items still needing a
 capture are called out explicitly under Unresolved.
 
@@ -88,9 +90,17 @@ On connect the app issues 101 → 110 → 112 and parses fixed-layout replies
   followed by the hex of the bytes written, and `setRequest returned: ` with the
   reply length — useful anchors for a live capture.
 
-## Inbound sample stream (processData_v5, VA `0x556560`, len 2650 bytes)
+## Inbound sample stream
 
-Packet layout (observed; `edi` = packet pointer from `[ebp+0xbc]`):
+The wire stream the device sends after start is the 32-byte frame in "Observed
+stream frame (COM-handle capture)" below. The `processData_v5` layout in this
+section (0x64 sync, 4-byte channel groups) is the static reading of a different
+parser. It was **not** the layout seen on the wire in the traced run, so treat it
+as unconfirmed legacy and do not implement it.
+
+### processData_v5 (VA `0x556560`, len 2650 bytes), static reading
+
+Packet layout (static; `edi` = packet pointer from `[ebp+0xbc]`):
 
 - **Sync byte**: `[edi+0]` must equal `0x64`; otherwise the app logs
   `bad header of packet […]? 0x` with `edi[0]`,`edi[1]` (check at VA `0x556aa3`).
@@ -112,12 +122,11 @@ Packet layout (observed; `edi` = packet pointer from `[ebp+0xbc]`):
 - Each decoded integer is converted to volts (below) via the per-channel
   processor object `[ebx+0x2c0]` (vtable `+0x18`) and forwarded to `0x5773a0`.
 
-The 0x64 sync, the big-endian counter, and 24-bit big-endian signed samples are
-consistent with the live log `setChannel(4 channels): success` and
-`DataBuffer DTOR: packetCounterErrors: 0, sampleValidationErrors: 0`
-(`device-connection.md`). The overall packet length and whether a
-checksum/`sampleValidation` field exists were not located statically; the
-`sampleValidationErrors` counter implies one (Unresolved).
+The big-endian counter and 24-bit big-endian signed samples were confirmed on the
+wire; the 0x64 sync and the 4-byte channel group were not (the wire frame has the
+`AC BC CC 03` marker and 3-byte samples). The relationship of this function and the
+`processData` path (about VA `0x556ff0`) to the ring-buffer parser at `0x55a280`
+(below) is unresolved; neither was on the observed wire path.
 
 ## Runtime confirmation (live session 2026-11-03)
 
@@ -131,10 +140,12 @@ stream geometry from the guest app log (`tmp/baseline-2026-11-03/braintellect.lo
   count; the active montage is 4 channels (`FP1FP2T3T4`), matching
   `[ebx+0x1e8] == 4` and `setChannel(4 channels): success`.
 - The `DataCapture`/`addDataPacket` buffers are **240000 bytes per 30 s**
-  (`receiveMessage` reports 15000 signals). 15000 frames / 30 s = 500 Hz, and
-  240000 / 15000 = **16 bytes/frame** = 4 channels × the 4-byte group above. So
-  the captured buffer is the **raw wire frames** concatenated, not a re-encoded
-  form: the `processData_v5` framing is the on-disk DataCapture framing.
+  (`receiveMessage` reports 15000 signals). 15000 signals / 30 s = 500 Hz. The
+  session-1 reading of 16 bytes per signal (4 channels × a 4-byte group) is
+  superseded: 240000 B / 30 s = 8000 B/s = 250 observed 32-byte frames/s, and each
+  frame carries 2 samples per channel (500 Hz per channel). The byte total matches
+  the raw wire frames concatenated (inferred from the arithmetic; the buffer
+  contents themselves were not read).
 
 No raw sample stream is persisted past the session; the DataCapture buffers are
 processed down to the stored result blobs (`session-storage.md`).
@@ -201,8 +212,8 @@ guest with no wearer; `frida-inject` (spawn mode) hooks logged every
 `BT_Device::write` (VA `0x54ffa0`; length at `[esp+4]`, buffer at `[esp+8]`) and
 every `BT_Device::readAsync` return (VA `0x550430`) with millisecond timestamps,
 alongside the app log. The streamed sample frames did **not** pass through the
-hooked read functions, so only the handshake replies were captured on the RX
-side (Unresolved).
+hooked read functions, so this run captured only the handshake replies on the RX
+side; the second run's COM-handle hook captured the stream (next section).
 
 ### Commands sent (observed, `write` hook)
 
@@ -254,17 +265,63 @@ for family 12: `2*2.4/(12*10) = 0.04` and `(2^23-1)*12*10/2.4 = 419430350`.
 
 `DataBuffer` reports `samplesPerPacket: 2`, `samplesToStore: 20`,
 `devicePacketSize: 56`, and ends the run with `packetCounterErrors: 0,
-sampleValidationErrors: 0`.
+sampleValidationErrors: 0`. `devicePacketSize: 56` matches the 56-byte handshake
+reply size, not the 32-byte stream frame (inferred from the sizes).
+
+### Observed stream frame (COM-handle capture)
+
+Method: second traced SMART-2 session (guest profile, no wearer, sensors off). A
+Frida hook on the Win32 COM handle (`GetOverlappedResult` completions) logged every
+received chunk with a millisecond timestamp. About 2.9 thousand frames were also
+checked against a host usbmon capture of the Bluetooth adapter. usbmon text keeps
+only the first 32 bytes of each URB, so that check is partial; every frame it
+covered matched the hooked bytes, none differed.
+
+- **Stream start (observed)**: the stream begins after `!*#48,1,0,4,0,0,0` and
+  runs **continuously**. It was not stopped at session end (the app was left
+  connected and frames kept arriving); the end of a session is an app-side event.
+- **Frame, 32 bytes (observed)**: marker `AC BC CC 03`, a 16-bit big-endian
+  counter, the two bytes `03 03`, then a 24-byte payload. There is no trailer or
+  checksum: the next marker follows the payload directly. All 194250 frames in
+  the capture are 32 bytes with `03 03` at header bytes +2/+3 (the last is cut by
+  the end of the log).
+- **Counter (observed)**: increments by 1 on every consecutive frame (no gap in
+  194250 frames) and wraps at 65536. The rate is 250.0 frames/s; the 240 s
+  exercise window held exactly 60000 frames.
+- **Payload (observed)**: 8 samples of 24-bit big-endian signed, 3 bytes each.
+  Channel-interleaved with 2 samples x 4 channels (inferred, see Unresolved). This
+  is 500 Hz per channel, matching `sampleRate: 500`.
+- **Low bits (observed)**: the low 2 bits of every sample's third byte are always
+  `11`. They are marker bits, so the usable resolution is 22 bits plus sign
+  (inferred: the app does not mask them before converting; not checked).
+- **Chunking (observed)**: ReadFile completions deliver arbitrary byte runs that do
+  not align with frames; a parser has to resync on the marker.
+
+#### sampleValidation and counter errors (static, plus trace)
+
+The ring-buffer parser at VA `0x55a280`, called from `0x55b08b`, finds the marker
+(header sync at `0x55a374`-`0x55a416`), checks the `03` bytes of the header
+(the byte-at-+3 check at `0x55a499` and `0x55a512`; the +2 check is inferred by
+symmetry, not confirmed), and decodes the samples at `0x55a8a2`-`0x55a8bb`.
+
+- **sampleValidation**: `(third byte of each sample & 3) == 3` (loop at
+  `0x55a69c`/`0x55a69e`), plus the two header `03` bytes. A failure increments
+  `sampleValidationErrors`, stored at `[obj+0x50]` (VA `0x55aa3b`).
+- **packetCounterErrors**: stored at `[obj+0x4c]` (VA `0x55a549`); a counter that
+  is not previous+1 increments it. The trace showed no counter gaps, matching the
+  logged `packetCounterErrors: 0, sampleValidationErrors: 0`.
 
 ## Unresolved
 
-- Raw streamed sample frames were not captured (the stream bypasses the hooked
-  read functions); a capture at the Win32 COM-handle layer is needed for the
-  packet trailer, exact framing against the 56-byte `devicePacketSize`, and the
-  `sampleValidation` check feeding `DataBuffer.sampleValidationErrors`.
 - 110 pairs 1-2 and the 112 payload meaning.
 - Whether the device reports family itself or the app derives it from the
   model/firmware fields.
+- Channel and sample order inside the 24-byte payload: channel-interleaved (two
+  samples of each channel back to back vs. one sample of each channel twice) is
+  inferred from per-slot means only, not from a known test signal.
+- Why the DataCapture header reports `samplesPerPacket 4` while `DataBuffer` logs 2.
+- How `processData_v5` (`0x556560`) and `processData` (about `0x556ff0`) relate to
+  the ring-buffer parser at `0x55a280`; neither ran on the observed path.
 
 These are the fields a protocol-conformant Linux client cannot yet reproduce
 exactly; the transport, the commands above, the handshake, and the volts formula
