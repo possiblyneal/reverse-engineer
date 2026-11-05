@@ -40,10 +40,12 @@ Source 1 ─Out1..Out4→ FFT Ch1..Ch4 (InSignal) ─OutFrequency→ Sensors (In
   (`flowEngine.property.name`). No ground channel (`G`, `G1`, `G2`) is connected.
 - `Sensors` is a `flowDisplayElementType` with `sensorLogicStyle = Image overlay`,
   `LODataSource = Line noise`, `hideGraphicsWhenRunning = true`,
-  `testAndSetLineNoiseFilter = true`, `frequencyTest = 120`, `deviceMinFloor = -120.0`,
+  `testAndSetLineNoiseFilter = true`, `deviceMinFloor = -120.0`,
   `deviceOffHeadFloor = -50`, `lineNoiseDifference = 15.5`,
   `lineNoiseChannelPairDifference = 0.5`, and `stateChangeDelay = 1000`. These are
-  design constants, the same for every session, not signal values.
+  `type="design"` constants, not signal values. `frequencyTest` is a `type="runtime"`
+  property, likely written by the 50/60 Hz line-noise test (`0x565300`), so its stored
+  value is not recorded here.
 
 The design properties reach the Head2D object through the display element's property
 setter (`0x56d100`–`0x56dc30`, keyed by property id) and the Head2D constructor
