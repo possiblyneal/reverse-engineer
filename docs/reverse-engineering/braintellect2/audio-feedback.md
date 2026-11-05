@@ -161,6 +161,29 @@ The stored type-5 logs (2026-11-04) show:
 - Which path produced 82 in exercise 125 is not determined; it needs the per-epoch input values.
 - No dispatch on `style` or `evaluatorLogic` was found in `processLogic`. Whether another style changes the logic is unresolved.
 
+## PeakFrequency and Note Hook Points (static, braintellect.exe 5.1.57)
+
+Image base `0x400000`; all addresses are VAs. Recovered with Ghidra headless; nothing here is yet checked against a runtime capture, so every algorithm item is inferred from disassembly until a decision log (hooks below) exists.
+
+### Observed in code
+
+- `DSPPkFreq::filter` is `0x632d90` (`__thiscall`, args: input float pointer, window length `N`, two output pointers). It copies the window to doubles, applies a window function through the statically linked IPP-style thunks (`0x66fd20`..`0x66fe40`), runs a real FFT, and reduces the magnitude spectrum to one peak. It writes the peak frequency to `*(this+0x58)` and the peak amplitude to `*(this+0x38)` as float32. The frequency is `(lowIdx + idx) * (rate / N)` with `idx` the argmax over the bins from `lowIdx` to `highIdx`.
+- The `PeakFrequency` element's process function is `0x6340d0`. For each new sample it shifts the window held at `this+0x1bc` (length `this+0x18c`, fill count `this+0x1c0`) and calls `0x632d90` once, so the element recomputes the peak per sample.
+- Threshold: pass test `0x62ed70` (`__thiscall`, one float), thresholds as doubles at `this+0x100` and `this+0x110`, pass flag at `this+0x89`; direction at `this+0x7c`, mode at `this+0x84`; automatic quantile recompute `0x62e6e0` using the order-statistic reader `0x62e3c0`. The quantile index is `round(n * (1 - q))` (or `round(n * q)` for the other direction), reduced by one when it equals `n`.
+- Counter block processor `0x642ed0` (`__thiscall`): the count at `this+0x18c` increments on each pass, and the trigger is raised and the count reset when the count reaches the `timeHigh` bound at `this+0x1a0`, compared against a per-block timer.
+- `SoundElement` pipe handler `0x59ad70`, note step lookup `0x5a0030` (maps the incoming note value into a 12-step pattern relative to `this+0x2c8`), and note play `0x5a04e0` (clamps the note to the range at `this+0x2d4`/`this+0x2d8`, then calls the output device through vtable slots `+0x1c`, `+0x20`, `+0x24`).
+
+### Not resolved
+
+- The conversion of the note input to the MIDI note number, including `noteAutoRange`.
+- The window function formula, the magnitude transform and the DC and Nyquist handling in `0x632d90`.
+- Whether the order-statistic index is zero- or one-based.
+- The trigger expression (`ExprTriggerAll`), the band-pass and Aggregator elements that feed it.
+
+### Why a live capture is required
+
+Static reading does not fix the unresolved items, and the stored baseline carries no note or trigger decisions (the type-9 XML has no PeakFreq, note, threshold or counter output). A capture needs the hooks above, logged with the same millisecond clock as the serial trace, during one SMART-2 session.
+
 ## Export Completeness and Startup
 
 The first tablet export survives as the extracted `tmp/bst-export/` tree; its original ZIP was not found in the worktree. Its `STATUS.txt` reports install capture succeeded, database capture failed, and registry capture did not complete. The retry archive's `STATUS.txt` reports that install capture was intentionally skipped, the raw database was captured without an SQL dump because `mysqld.exe` was not found, and no registry keys were found within the collector's bounded search. Neither export proves a complete tablet backup.
