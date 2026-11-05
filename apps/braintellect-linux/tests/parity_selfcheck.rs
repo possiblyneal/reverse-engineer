@@ -80,6 +80,30 @@ fn stored_record_green_on_baseline_red_on_wrong() {
 }
 
 #[test]
+fn pass_flags_green_on_baseline_red_on_wrong() {
+    let baseline: Vec<bool> = fixtures::feedback_blocks()
+        .iter()
+        .flat_map(|b| b.passes)
+        .collect();
+    assert!(baseline.iter().any(|&p| p) && baseline.iter().any(|&p| !p));
+    assertions::pass_flags(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut flipped = baseline.clone();
+    flipped[7] = !flipped[7];
+    assert!(assertions::pass_flags(&baseline, &flipped).is_err());
+    assert!(assertions::pass_flags(&baseline, &baseline[1..]).is_err());
+}
+
+#[test]
+fn feedback_fixtures_are_well_formed() {
+    let blocks = fixtures::feedback_blocks();
+    assert!(blocks.windows(2).all(|w| w[1].time_ms >= w[0].time_ms));
+    assert!(blocks.iter().all(|b| b.values.len() == b.passes.len()));
+    assert!(!fixtures::feedback_decisions().is_empty());
+    assert!(!fixtures::feedback_eeg().is_empty());
+}
+
+#[test]
 fn fixtures_are_scrubbed_and_well_formed() {
     let wire = fixtures::wire();
     let serial_reply = wire

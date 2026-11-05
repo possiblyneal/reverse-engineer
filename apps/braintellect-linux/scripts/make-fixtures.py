@@ -1,9 +1,9 @@
 #!/usr/bin/env python3
 """Regenerate the scrubbed parity fixtures from the raw no-wearer captures.
 
-Reads the run-2 capture under `tmp/s26/run2/` (never committed) and writes the
-minimal, scrubbed subset the parity-replay harness needs to
-`apps/braintellect-linux/tests/fixtures/`.
+Reads the run-2 capture under `tmp/s26/run2/` and the run-3 SMART-2 decision
+capture under `tmp/s26/run3/` (never committed) and writes the minimal, scrubbed
+subset the parity-replay harness needs to `apps/braintellect-linux/tests/fixtures/`.
 
 Scrubbing: the B-2 serial number (the 101 reply's device id, read from the
 capture, never hardcoded here) is replaced by a fixed placeholder; the wire
@@ -12,7 +12,7 @@ IDs, machine/profile/user names, session/client ids and timestamps never enter
 the fixtures: only the wire bytes, a short stream window, decoded-sample
 expectations, control decisions, and a handful of record fields are kept.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--out DIR]
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--out DIR]
 """
 import argparse
 import pathlib
@@ -20,6 +20,8 @@ import re
 import xml.etree.ElementTree as ET
 
 STREAM_FRAMES = 40
+FEEDBACK_BLOCKS = 2000  # 4 samples each (16 s); the threshold window is steady throughout
+FEEDBACK_EEG_MS = 5000  # EEG window length, from the first threshold sample
 FRAME_LEN = 32
 MARKER = bytes.fromhex("acbccc03")
 SERIAL_PLACEHOLDER = b"SCRUBBEDSN00"  # 12 bytes, same length as the device id
@@ -137,10 +139,78 @@ def record(t0, t9, rows):
     return out, header
 
 
+def feedback(src):
+    """Scrubbed EEG window and the aligned feedback decisions from run 3.
+
+    Times are milliseconds from the first threshold sample (hook clock), never
+    absolute. `blocks`: per 4-sample block the counter's wall-clock reading, the
+    smoothed threshold inputs and the observed pass flags. `decisions`: counter
+    fires (`Trigger`, value = block index) and the note input the sound element
+    received (`Note`).
+    """
+    blocks, cur, t0, counter_count, prev, fires = [], [], None, 0, 0, []
+    notes = []
+    for line in (src / "decisions.log").read_text(errors="replace").splitlines():
+        parts = line.split(" ")
+        if len(parts) < 3 or not parts[0].isdigit():
+            continue
+        ts, kind = int(parts[0]), parts[1]
+        if kind == "TH":
+            t0 = ts if t0 is None else t0
+            fields = dict(p.split("=") for p in parts[2:] if "=" in p)
+            if "pass" not in fields:  # a line torn by the two hooks' concurrent writers
+                continue
+            cur.append((float(fields["x"]), int(fields["pass"])))
+        elif kind == "CTR" and t0 is not None:
+            count = int(parts[4].split("=")[1])
+            passes = sum(p for _, p in cur)
+            if count != prev + passes:
+                fires.append((len(blocks), ts - t0))
+            prev = count
+            blocks.append((ts - t0, cur))
+            cur = []
+        elif kind == "SE_NOTEIDX" and t0 is not None:
+            notes.append((ts - t0, int(parts[3].split("=")[1])))
+    blocks = blocks[:FEEDBACK_BLOCKS]
+    end = blocks[-1][0]
+    decisions = sorted(
+        [(t, "Trigger", b) for b, t in fires if b < len(blocks)]
+        + [(t, "Note", n) for t, n in notes if t <= end]
+    )
+    return t0, blocks, decisions
+
+
+def feedback_eeg(src, t0, header):
+    """EEG frames (counter, 8 microvolt values) received within the window."""
+    trace = (src / "trace.log").read_text().splitlines()
+    data, stamps, started = bytearray(), [], False
+    for line in trace:
+        p = line.split(" ")
+        if len(p) < 6:
+            continue
+        if p[2] == "TX" and p[3] == "BT_Device::write" and bytes.fromhex(p[-1]).startswith(b"!*#48,1,"):
+            started = True
+        if started and p[2] == "RX" and p[3] == "win32" and p[4] == "GetOverlappedResult":
+            chunk = bytes.fromhex(p[-1])
+            stamps += [int(p[0])] * len(chunk)
+            data += chunk
+    # Re-synchronise on the frame marker: chunking does not align with frames.
+    rows, off = [], data.find(MARKER)
+    while off >= 0 and off + FRAME_LEN <= len(data):
+        ms = stamps[off] - t0
+        if 0 <= ms < FEEDBACK_EEG_MS:
+            rows.append((ms, data[off:off + FRAME_LEN]))
+        off += FRAME_LEN
+    chunks = [b"".join(f for _, f in rows)]
+    uv = expected_microvolts(chunks, header)
+    return [(ms, c, vs) for (ms, _), (c, vs) in zip(rows, uv)]
+
+
 def main():
     root = pathlib.Path(__file__).resolve().parents[3]
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", type=pathlib.Path, default=root / "tmp/s26/run2")
+    ap.add_argument("--src3", type=pathlib.Path, default=root / "tmp/s26/run3")
     ap.add_argument(
         "--out", type=pathlib.Path,
         default=root / "apps/braintellect-linux/tests/fixtures",
@@ -169,6 +239,18 @@ def main():
         for t, k, o, n in decisions((args.src / "128-t5.xml").read_text())))
     (args.out / "record.tsv").write_text(
         "".join(f"{k}\t{v}\n" for k, v in rec.items()))
+
+    t0, blocks, decs = feedback(args.src3)
+    header3 = dict(re.findall(
+        r"<base:(\w+)>([^<]*)</base:\1>", (args.src3 / "129-t0.xml").read_text()))
+    (args.out / "feedback_blocks.tsv").write_text("".join(
+        f"{t}\t" + "\t".join(repr(v) for v, _ in vs) + "\t"
+        + "\t".join(str(p) for _, p in vs) + "\n" for t, vs in blocks))
+    (args.out / "feedback_decisions.tsv").write_text(
+        "".join(f"{t}\t{k}\t{v}\n" for t, k, v in decs))
+    (args.out / "feedback_eeg.tsv").write_text("".join(
+        f"{ms}\t{c}\t" + "\t".join(f"{v:.9f}" for v in vs) + "\n"
+        for ms, c, vs in feedback_eeg(args.src3, t0, header3)))
 
 
 if __name__ == "__main__":

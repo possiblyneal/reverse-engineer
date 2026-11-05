@@ -72,6 +72,24 @@ pub fn decisions(expected: &[Decision], actual: &[Decision]) -> Parity {
     Ok(())
 }
 
+/// Threshold pass flags match sample for sample (boolean: no tolerance applies).
+pub fn pass_flags(expected: &[bool], actual: &[bool]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "pass flag count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected.iter().zip(actual).position(|(e, a)| e != a) {
+        Some(i) => mismatch(format!(
+            "pass flag {i}: expected {}, got {}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Stored record has the same fields; numeric values match within
 /// [`RECORD_EPSILON`], all others exactly.
 pub fn stored_record(expected: &StoredRecord, actual: &StoredRecord) -> Parity {
