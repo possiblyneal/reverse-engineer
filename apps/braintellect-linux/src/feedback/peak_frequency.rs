@@ -32,17 +32,19 @@ pub struct PeakFrequency {
     bin_hz: f64,
     window: Vec<f64>,
     window_mean: f64,
-    /// Oldest first, zero until filled.
+    /// Oldest first. Until `n` samples have arrived they fill from the front and the
+    /// rest stays zero; after that the oldest drops off the front.
     ring: VecDeque<f64>,
+    filled: usize,
 }
 
 impl PeakFrequency {
     pub fn new(design: &PeakDesign, rate_hz: usize) -> Self {
         let n = 1usize << design.fft_order;
         let bin_hz = rate_hz as f64 / n as f64;
-        // Hann denominator N, the variant that matched run 4 (97.8 % of 2000 samples).
+        // Symmetric Hann (`ippsWinHann`, denominator N - 1): bit exact against the live capture.
         let window: Vec<f64> = (0..n)
-            .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / n as f64).cos())
+            .map(|i| 0.5 - 0.5 * (2.0 * PI * i as f64 / (n as f64 - 1.0)).cos())
             .collect();
         Self {
             n,
@@ -52,13 +54,19 @@ impl PeakFrequency {
             window_mean: window.iter().sum::<f64>() / n as f64,
             window,
             ring: VecDeque::from(vec![0.0; n]),
+            filled: 0,
         }
     }
 
     /// Feed one sample and return the peak of the newest window.
     pub fn push(&mut self, x: f64) -> Peak {
-        self.ring.pop_front();
-        self.ring.push_back(x);
+        if self.filled < self.n {
+            self.ring[self.filled] = x;
+            self.filled += 1;
+        } else {
+            self.ring.pop_front();
+            self.ring.push_back(x);
+        }
         let mut re: Vec<f64> = self
             .ring
             .iter()
@@ -77,7 +85,9 @@ impl PeakFrequency {
         Peak {
             bin: best.0,
             frequency_hz: best.0 as f64 * self.bin_hz,
-            amplitude: AMPLITUDE_SCALE / self.n as f64 * best.1 / self.window_mean,
+            amplitude: f64::from(
+                (AMPLITUDE_SCALE / self.n as f64) as f32 * best.1 as f32 / self.window_mean as f32,
+            ),
         }
     }
 }
@@ -141,9 +151,9 @@ mod tests {
         assert_eq!(peak.bin, 10);
         assert!((peak.frequency_hz - 10.0 * 500.0 / 512.0).abs() < 1e-12);
         // |X| = A * N / 4 under a Hann window; the formula (4 / N) |X| / mean(window)
-        // then gives 2 A.
+        // then gives about 2 A (a symmetric window and the float32 result are inexact).
         assert!(
-            (peak.amplitude / 6e-6 - 1.0).abs() < 1e-9,
+            (peak.amplitude / 6e-6 - 1.0).abs() < 1e-2,
             "{}",
             peak.amplitude
         );

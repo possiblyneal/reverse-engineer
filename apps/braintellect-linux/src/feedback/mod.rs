@@ -21,15 +21,15 @@ mod source;
 mod threshold;
 mod trigger_all;
 
-pub use band_pass::BandPassDesign;
+pub use band_pass::{BandPass, BandPassDesign};
 pub use counter::Counter;
 pub use graph::{
     BandPassSpec, BlockDecision, DesignError, PeakSpec, SampleOutput, Smart2Design, Smart2Graph,
     BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,
 };
 pub use note::{NoteSelection, PeakFrequencies};
-pub use peak_frequency::{Peak, PeakDesign};
-pub use source::{Interference2, SourceDesign};
+pub use peak_frequency::{Peak, PeakDesign, PeakFrequency};
+pub use source::{Interference2, SourceDesign, SourceFilters};
 pub use threshold::Threshold;
 pub use trigger_all::{trigger_all, BandAmplitudes, UnsupportedControl};
 

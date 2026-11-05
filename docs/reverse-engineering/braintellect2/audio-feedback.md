@@ -266,15 +266,43 @@ Offline match, run 4, filters started warm (6000 samples of history), band-pass 
 - Band 10 Ch2 stays at 0.73 although its median error is 1 %: a few late-held maxima differ (the 83-sample max window is sensitive to single peaks).
 - Not matched: the first about 600 samples of both bands (see "Not resolved"). This table started the Source filters warm; that is superseded: the logged Band 10 start-up matches only with cold Source filters ("Note divergence from decoded EEG").
 
+### Run 5 live Source-chain capture (observed)
+
+A Frida hook injected into the running `braintellect.exe` (no restart) logged the inputs and outputs of the filter apply `0x651490` per sample for channel 0 at the four Source return sites `0x557fb5`, `0x557fe6`, `0x558011`, `0x55803c`, with every read range-checked. The session was a no-wearer, sensors-off stream with no exercise running; 6036 samples were captured. Raw logs stay in `tmp/s43/live/` (never committed); `smart2_source_stages.tsv` holds the scrubbed stage values.
+
+Observed:
+- All four slots run, one call each per sample (n = 1), and each stage's output is bit-identical to the next stage's input. Slot kinds: `+0x30` kind 0 (FIR, 256 taps, edge 47.5 Hz: the `"45Hz LP"` interference filter), `+0x34` kind 1 (IIR, edges 23.5/25.75 Hz), `+0x38` kind 0 (FIR, 24 taps, 150 Hz), `+0x3c` kind 1 (IIR, 1.5 Hz). Samples are `float32`. The live guest profile has interference filter 1 on; the run 4 design has it `Off`, so slot `+0x30` is not part of the SMART-2 design the clone replays.
+- Free fits of the captured stage input to output reproduce the clone's designs: the low-pass is a symmetric 24-tap FIR with unit DC gain; the band-stop is a 4th-order IIR; the high-pass is first order with `b0 = 1 / (1 + w)`, `w = tan(pi * 1.5 / 500)`.
+- Fed the captured band-stop input, the clone's f64 chain (Hamming 24-tap low-pass unit DC gain, order-2-Butterworth band-stop, first-order bilinear high-pass, existing formulas unchanged) with each stage output rounded to `float32` reproduces every stage output bit for bit once the filter memory has converged (3000 samples; the capture started mid-stream). Rounding is required: without it the outputs differ in the last `float32` bit. The IPP IIR filters compute with `f64` state and coefficients and round only the output (an `f32` state or `f32` coefficients matches 15 to 62 % of samples).
+
+Consequence: the Source chain is exact for the SMART-2 design.
+
+### Run 5 live BandPass and PeakFrequency capture (observed)
+
+After a hard restart (process kill, no graceful exit) and an exercise start, a second hook (`hook7`) logged, with pointers and lengths validated before every read: the `ippsFIRGenBandpass` tap output once per BandPassFilter object, each object's per-block input, FIR output and `OutAmplitude` (apply `0x651490`, amplitude `0x650cf0`, call site `0x66ea81`, four samples per block), and the PeakFrequency input window and outputs (`0x632d90`). Four channels each have Band 10 (1.0 to 3.0 Hz) and Band 80 (23.0 to 36.0 Hz) objects; about 5800 samples per object were kept. Raw logs stay in `tmp/s43/live/`.
+
+Observed:
+- The generated taps (128, `f64`) equal the clone's `bandpass_taps` (Hamming, unit gain at the band centre) to 1e-16. Edges are 0.002 to 0.006 and 0.046 to 0.072 of the sample rate.
+- The FIR output is the sequential `f64` sum of `tap[k] * x[n-k]` (k from 0, zero history at object start) rounded once to `float32`. The clone reproduces every FIR output of Band 10 and Band 80 bit for bit from the object's first sample.
+- `OutAmplitude` is a sliding maximum of the absolute FIR output over `W` samples (`W = 83` for Band 10, `W = 6` for Band 80; the maximum is exact) followed by a 16-tap mean (`0x66ffc0`, `float32` taps of 0.125).
+- PeakFrequency's window is an `float32` array filled from index 0 with the Source output (the same samples the band-passes read) until 512 have arrived, then the oldest drops off the front. The window is the symmetric Hann (denominator `N - 1`), and the clone reproduces the logged frequency and amplitude bit for bit over all captured samples except sample 1 (two nonzero samples, a flat spectrum whose bin is set by FFT rounding). The amplitude is computed in `float32` (`(4 / N)`, the magnitude and the window mean each rounded to `float32`); the same in `f64` differs from the app in 26 % of samples at the last `float32` bit.
+
+Inferred:
+- The 16-tap mean is the IPP `float32` FIR.
+
+Not resolved:
+- The `OutAmplitude` mean stage is not bit exact. A plain `f64` mean of the last 16 maxima rounded to `float32` matches about half of the samples, within 1 to 3 `float32` ulps (about 3e-7 relative); no summation order tried (sequential, reversed, pairwise, 2/4/8-lane, peeled heads) removes the gap, and the steady state shows ulp bumps at fixed block positions, so the stage carries state beyond the 16-sample window. It is reported by `band_pass_amplitude_agreement_report`, not asserted.
+- The 1 to 5 % Band 10 and Band 80 amplitude differences against run 4 are not in the FIR, the window or the mean structure (the clone matches the live FIR bit for bit and the mean to 3e-7 given identical input). They come from the run-4 input or the start-up state of the objects, which the live capture does not cover.
+
 ### PeakFrequency (decompile, matched)
 
 Vtable `0x18bc414` (secondary `0x18bc400`); `DSPPkFreq::filter` `0x632d90`; constructor about `0x633400`-`0x633f23`; process `0x6340d0`; free `0x632c10`.
 
 - `N = 2^fftOrder = 512` (`fftOrder` 9), `df = 500 / 512`. Bins `ftol(low / df)`..`ftol(high / df)`: Ch1, Ch2 6..14; Ch3, Ch4 7..15.
-- The input is a ring of `this+0x18c` samples, newest at the end and the older part zero until filled, windowed by a Hann window (`ippsWinHann_64f_I` over ones; window mean at `this+0x68` is sum / N).
+- The input is a ring of `this+0x18c` samples, newest at the end once full, filled from the front with the tail zero until then (observed in the run 5 capture), windowed by a symmetric Hann window (`ippsWinHann_64f_I` over ones, denominator `N - 1`; window mean at `this+0x68` is sum / N).
 - Unscaled real FFT (flag 8), conj-pack expansion to complex, magnitude, first maximum over the bin range. Frequency = `(lowbin + idx) * df`; amplitude = `(4.0 / N) * max / mean(window)` (constant `4.0` at `0x1895398`).
 - Thunks (inferred): `0x66fd90` Zero_64f, `0x66fd80` Mul_64f_I, `0x66fd70` FFTFwd_RToPack_64f, `0x66fd60` ConjPack_64fc, `0x66fd50` Magnitude_64fc, `0x66fd40` MaxIndx_64f; window selectors `0x66fda0` Hann, `0x66fdb0` Hamming, `0x66fdc0` Kaiser.
-- Offline match: 1955 of 2000 samples (97.8 %) with a Hann denominator `N` (the `N - 1` and `N + 1` variants and an added high-pass were no better). The mismatches are near-ties between adjacent bins, so the true input differs slightly from the raw frames, consistent with the unlocated Source-side stage.
+- Superseded by the run 5 capture: the denominator is `N - 1` and the result is `float32`, bit exact on the live input. Earlier offline match: 1955 of 2000 samples (97.8 %) with a Hann denominator `N` (the `N - 1` and `N + 1` variants and an added high-pass were no better on run 4). The mismatches are near-ties between adjacent bins, so the true input differs slightly from the raw frames, consistent with the unlocated Source-side stage.
 
 ### Aggregator (static, partial)
 

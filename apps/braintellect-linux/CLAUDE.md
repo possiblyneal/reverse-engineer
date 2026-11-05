@@ -62,17 +62,22 @@ those findings, it cites them.
   `BandPass`, `PeakFrequency` and the `continuous` Aggregator (the `Smoother`),
   all parameterised by `Smart2Design`, which `smart2_design.tsv` fills from the
   design XML. `tests/parity_smart2_stages.rs` asserts the Aggregator exactly
-  from the logged bands and the 20 counter triggers from decoded EEG. Not
-  asserted: Band 10/80 amplitudes (median error 1 to 5 %) and
-  PeakFrequency bins (2.5 % differ over the committed 1000-sample span); the ignored `stage_agreement_report` prints
-  both, excluding the start-up samples and Band 10 Ch2 (`audio-feedback.md`,
-  "Not resolved"). The graph starts the Source filters cold at the first
+  from the logged bands, the Source chain bit for bit against the run-5 live
+  capture (`smart2_source_stages.tsv`; each stage rounds to `f32` as the app does),
+  the Band 10 and Band 80 FIR outputs and the PeakFrequency frequency and
+  amplitude bit for bit against the run-5 live capture
+  (`smart2_bandpass_stages.tsv`; the FIR output and the amplitude round to `f32`),
+  and the 20 counter triggers from decoded EEG. Not asserted: the Band 10/80
+  `OutAmplitude` 16-tap mean (1 to 3 `f32` ulps off, printed by
+  `band_pass_amplitude_agreement_report`) and the run-4 band amplitudes (median
+  error 1 to 5 %, printed by the ignored `stage_agreement_report`, which excludes
+  the start-up samples and Band 10 Ch2; `audio-feedback.md`, "Run 5 live BandPass
+  and PeakFrequency capture"). The graph starts the Source filters cold at the first
   logged sample (no history rows). Notes from decoded EEG match the baseline at
   17 of 20 fires (floor test `most_note_decisions_match_the_baseline_from_decoded_eeg`;
   strict ignored `end_to_end_note_decisions_match_the_baseline` fails on fires 1, 2
   and 5: start-up transient and counter timing, `audio-feedback.md`, "Note divergence"). Still unimplemented:
-  `OutAmplitude`, the Evaluator (its code is a per-block input) and the Source
-  chain's exact IPP filter designs (`audio-feedback.md`, "Run 3", "Run 4").
+  `OutAmplitude` and the Evaluator (its code is a per-block input).
   `tests/parity_storage.rs` replays the record fixture through `src/storage.rs`
   (`tests/harness/session.rs` maps the flat fixture to and from `SessionRecord`).
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
@@ -92,7 +97,8 @@ those findings, it cites them.
   `python3 -I scripts/make-fixtures.py` from the raw capture in the repo's
   `tmp/s26/run2/` (handshake, stream, record), `tmp/s26/run3/` (feedback) and
   `tmp/s26/run4/` (`smart2_*`, via `--src4`, including `smart2_design.tsv`,
-  `smart2_eeg.tsv` and `smart2_stages.tsv`); raw captures stay in `tmp/`, never in Git. Grep the fixtures
+  `smart2_eeg.tsv` and `smart2_stages.tsv`) and `tmp/s43/live/` (`--src5`,
+  `smart2_source_stages.tsv`, `smart2_bandpass_stages.tsv`); raw captures stay in `tmp/`, never in Git. Grep the fixtures
   for the MAC and serial before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
   SMART-2 feedback graph → audio output → session storage → session UI.

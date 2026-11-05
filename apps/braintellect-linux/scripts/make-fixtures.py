@@ -19,11 +19,17 @@ decoded no-wearer channel input aligned to the logged stage values, and those
 values: the Band 10/80 amplitudes, the Aggregator outputs and the PeakFrequency
 bins, per 4-sample block (`audio-feedback.md`, "Alignment").
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--out DIR]
+The Source-chain fixture (`smart2_source_stages.tsv`) carries one channel's live
+stage values from the run-5 capture under `tmp/s43/live/` (`hook6.log`, never
+committed): for each sample the 25 Hz band-stop input and the band-stop, low-pass
+and high-pass outputs, as the float32 bit patterns the app holds.
+
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--out DIR]
 """
 import argparse
 import pathlib
 import re
+import struct
 import xml.etree.ElementTree as ET
 
 STREAM_FRAMES = 40
@@ -436,12 +442,91 @@ def feedback_eeg(src, t0, header):
     return [(ms, c, vs) for (ms, _), (c, vs) in zip(rows, uv)]
 
 
+# Return sites of the filter apply (`0x651490`) inside `processData` `0x557f00`, in
+# chain order, for the 25 Hz band-stop, the low-pass and the high-pass.
+SOURCE_SITES = ("0x557fe6", "0x558011", "0x55803c")
+
+
+def source_stages(src):
+    """`smart2_source_stages.tsv`: channel 0's band-stop input and the three stage outputs."""
+    stages = {site: [] for site in SOURCE_SITES}
+    for line in (src / "hook6.log").read_text().splitlines():
+        m = re.match(r"\d+ SRC (0x\w+) this=\S+ n=1 in=(\w{8}) out=(\w{8}) ", line)
+        if m and m.group(1) in stages:
+            stages[m.group(1)].append((m.group(2), m.group(3)))
+    n = len(stages[SOURCE_SITES[0]])
+    assert n and all(len(v) == n for v in stages.values()), "four-stage capture is incomplete"
+
+    def bits(le_hex):
+        return f"{int.from_bytes(bytes.fromhex(le_hex), 'little'):08x}"
+
+    return "".join(
+        "\t".join(bits(h) for h in (
+            stages[SOURCE_SITES[0]][i][0], *(stages[s][i][1] for s in SOURCE_SITES))) + "\n"
+        for i in range(n))
+
+
+BANDPASS_SAMPLES = 6000  # live samples kept (cold start included); keeps the file under 500 KB
+BAND_EDGES = {(1.0, 3.0): "band10", (23.0, 36.0): "band80"}  # Hz, from the BandPass object
+
+
+def bandpass_stages(src):
+    """`smart2_bandpass_stages.tsv`: one channel's live BandPass and PeakFrequency stages.
+
+    Per sample, as float32 bit patterns: the shared input (the Source output), the FIR
+    output and `OutAmplitude` of Band 10 and of Band 80, then the PeakFrequency frequency
+    and amplitude. The channel is the one whose BandPass objects and PeakFrequency window
+    open with the same first sample (the first such channel in the log).
+    """
+    def bits(le_hex):
+        return [f"{int.from_bytes(bytes.fromhex(le_hex[i:i + 8]), 'little'):08x}" for i in range(0, len(le_hex), 8)]
+
+    edges, blocks, peak_out, peak_first = {}, {}, {}, {}
+    for line in (src / "hook7.log").read_text().splitlines():
+        rest = line.partition(" ")[2]
+        m = re.match(r"OBJ BPF (\S+) (\w+)$", rest)
+        if m:
+            raw = bytes.fromhex(m.group(2))
+            edges[m.group(1)] = (struct.unpack_from("<d", raw, 0x20)[0], struct.unpack_from("<d", raw, 0x28)[0])
+            continue
+        m = re.match(r"BPF 0x66ea81 this=(\S+) n=4 in=(\w{32}) out=(\w{32}) amp=(\w{32})$", rest)
+        if m:
+            blocks.setdefault(m.group(1), []).append(m.groups()[1:])
+            continue
+        m = re.match(r"PK this=(\S+) c=(\d+) N=512 last4=\w+ last8=\w+ o4=(\w{8})\w{8} o5=(\w{8})\w{8}(?: win=(\w{8}))?", rest)
+        if m:
+            peak_out.setdefault(m.group(1), {})[int(m.group(2))] = m.group(3, 4)
+            if m.group(5):
+                peak_first.setdefault(bits(m.group(5))[0], []).append(m.group(1))
+
+    chosen = {}
+    for obj, hz in edges.items():
+        if obj in blocks and hz in BAND_EDGES:
+            chosen.setdefault(bits(blocks[obj][0][0])[0], {})[BAND_EDGES[hz]] = obj
+    candidates = [
+        (b, peak_first[first][0]) for first, b in chosen.items()
+        if len(b) == 2 and len(set(peak_first.get(first, []))) == 1
+    ]
+    assert candidates, "no channel has both bands and a PeakFrequency window"
+    bands, pk = candidates[0]
+    rows = []
+    for i in range(BANDPASS_SAMPLES):
+        k, j = divmod(i, 4)
+        row = [bits(blocks[bands["band10"]][k][0])[j]]
+        for band in ("band10", "band80"):
+            row += [bits(blocks[bands[band]][k][1])[j], bits(blocks[bands[band]][k][2])[j]]
+        row += [f"{int.from_bytes(bytes.fromhex(h), 'little'):08x}" for h in peak_out[pk][i + 1]]
+        rows.append("\t".join(row) + "\n")
+    return "".join(rows)
+
+
 def main():
     root = pathlib.Path(__file__).resolve().parents[3]
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", type=pathlib.Path, default=root / "tmp/s26/run2")
     ap.add_argument("--src3", type=pathlib.Path, default=root / "tmp/s26/run3")
     ap.add_argument("--src4", type=pathlib.Path, default=root / "tmp/s26/run4")
+    ap.add_argument("--src5", type=pathlib.Path, default=root / "tmp/s43/live")
     ap.add_argument(
         "--out", type=pathlib.Path,
         default=root / "apps/braintellect-linux/tests/fixtures",
@@ -493,6 +578,8 @@ def main():
     stages, eeg = smart2_stages(args.src4, header4)
     (args.out / "smart2_stages.tsv").write_text(stages)
     (args.out / "smart2_eeg.tsv").write_text(eeg)
+    (args.out / "smart2_source_stages.tsv").write_text(source_stages(args.src5))
+    (args.out / "smart2_bandpass_stages.tsv").write_text(bandpass_stages(args.src5))
     (args.out / "smart2_design.tsv").write_text("".join(
         "\t".join(r) + "\n" for r in design_rows(args.src4, header4)))
 

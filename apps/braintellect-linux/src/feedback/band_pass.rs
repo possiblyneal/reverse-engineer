@@ -50,7 +50,15 @@ impl BandPass {
 
     /// Feed one sample (volts) and return the amplitude.
     pub fn push(&mut self, x: f64) -> f64 {
-        let y = self.fir.push(x).abs();
+        self.push_stages(x)[1]
+    }
+
+    /// Feed one sample (volts) and return the FIR output and the amplitude. The app
+    /// holds the FIR output in float32 (f64 sum of the taps, rounded once), so it is
+    /// rounded here and the later stages see the rounded value.
+    pub fn push_stages(&mut self, x: f64) -> [f64; 2] {
+        let fir = f64::from(self.fir.push(x) as f32);
+        let y = fir.abs();
         let i = self.seen;
         self.seen += 1;
         while self.maxima.back().is_some_and(|&(_, v)| v <= y) {
@@ -69,7 +77,7 @@ impl BandPass {
         if self.means.len() > MEAN_TAPS {
             self.means.pop_front();
         }
-        MEAN_GAIN * self.means.iter().sum::<f64>()
+        [fir, MEAN_GAIN * self.means.iter().sum::<f64>()]
     }
 }
 
