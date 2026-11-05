@@ -27,9 +27,9 @@ those findings, it cites them.
   (the sensor gain is not floored; the live app runs with 10), command encoding
   (`command`), the 32-byte frame parser with counter and `sampleValidation`
   error counters (`stream`), the handshake/start/stop/stream `Session` over any
-  `Read + Write` (`session`), and the RFCOMM socket adapter (`rfcomm`). Channel
-  order within a frame is unresolved, so samples are surfaced in payload order;
-  the device family and gains are supplied by the caller, not read from the device.
+  `Read + Write` (`session`), and the RFCOMM socket adapter (`rfcomm`). Frames
+  surface 4 channels in resolved order (channel c reads payload slots c and 4+c,
+  oldest first); the device family and gains are supplied by the caller, not read from the device.
 - **Transport boundary.** Protocol logic runs over `Read + Write`; only
   `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
   (`scripts/run braintellect-linux -- --mac <MAC>`) needs the adapter free of the
@@ -49,8 +49,13 @@ those findings, it cites them.
   fixture-fed in-memory transport that replays handshake replies and the stream.
   `tests/parity_feedback.rs` replays the threshold-stage input through
   `src/feedback/` (`Threshold` then `Counter`, via `TriggerPath`) and matches the
-  pass flags and counter triggers; the upstream stages, per-channel peaks, channel
-  order and note mapping are unimplemented (`audio-feedback.md`, "Run 3").
+  pass flags and counter triggers. The run-4 fixtures (`smart2_*`) replay
+  `ExprTriggerAll`, the smoother and the 15000-sample min/max tracker with the
+  note map (`NoteSelection`) from the logged amplitudes and PeakFrequencies,
+  matching pass flags, triggers and every block's note; notes at fires replay at
+  the baseline's fire blocks because the counter's timer is sub-block and fires
+  one block late twice in 20. Still unimplemented: `OutAmplitude`, the Aggregator
+  and `PeakFrequency` computation (`audio-feedback.md`, "Run 3", "Run 4").
   `tests/parity_storage.rs` replays the record fixture through `src/storage.rs`
   (`tests/harness/session.rs` maps the flat fixture to and from `SessionRecord`).
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
@@ -68,7 +73,8 @@ those findings, it cites them.
   fields), with the B-2 serial replaced by the placeholder `SCRUBBEDSN00` and no
   MAC, host id, machine/profile/user name, or timestamp. Regenerate it only with
   `python3 -I scripts/make-fixtures.py` from the raw capture in the repo's
-  `tmp/s26/run2/` (handshake, stream, record) and `tmp/s26/run3/` (feedback); raw captures stay in `tmp/`, never in Git. Grep the fixtures
+  `tmp/s26/run2/` (handshake, stream, record), `tmp/s26/run3/` (feedback) and
+  `tmp/s26/run4/` (`smart2_*`, via `--src4`); raw captures stay in `tmp/`, never in Git. Grep the fixtures
   for the MAC and serial before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
   SMART-2 feedback graph → audio output → session storage → session UI.

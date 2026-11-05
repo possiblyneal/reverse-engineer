@@ -1,9 +1,10 @@
 #!/usr/bin/env python3
 """Regenerate the scrubbed parity fixtures from the raw no-wearer captures.
 
-Reads the run-2 capture under `tmp/s26/run2/` and the run-3 SMART-2 decision
-capture under `tmp/s26/run3/` (never committed) and writes the minimal, scrubbed
-subset the parity-replay harness needs to `apps/braintellect-linux/tests/fixtures/`.
+Reads the run-2 capture under `tmp/s26/run2/`, the run-3 SMART-2 decision
+capture under `tmp/s26/run3/` and the run-4 upstream-stage capture under
+`tmp/s26/run4/` (never committed) and writes the minimal, scrubbed subset the
+parity-replay harness needs to `apps/braintellect-linux/tests/fixtures/`.
 
 Scrubbing: the B-2 serial number (the 101 reply's device id, read from the
 capture, never hardcoded here) is replaced by a fixed placeholder; the wire
@@ -12,7 +13,7 @@ IDs, machine/profile/user names, session/client ids and timestamps never enter
 the fixtures: only the wire bytes, a short stream window, decoded-sample
 expectations, control decisions, and a handful of record fields are kept.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--out DIR]
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--out DIR]
 """
 import argparse
 import pathlib
@@ -22,6 +23,9 @@ import xml.etree.ElementTree as ET
 STREAM_FRAMES = 40
 FEEDBACK_BLOCKS = 2000  # 4 samples each (16 s); the threshold window is steady throughout
 FEEDBACK_EEG_MS = 5000  # EEG window length, from the first threshold sample
+SMART2_TRIGGER_BLOCKS = 1500  # ExprTriggerAll inputs; the threshold window is steady well before the end
+SMART2_NOTE_BLOCKS = 15200  # past the 15000-sample note tracker window and the Evaluator's 111 -> 183 switch
+PEAK_BIN_HZ = 500 / 512  # PeakFrequency resolution: sample rate / FFT order 512
 FRAME_LEN = 32
 MARKER = bytes.fromhex("acbccc03")
 SERIAL_PLACEHOLDER = b"SCRUBBEDSN00"  # 12 bytes, same length as the device id
@@ -98,7 +102,11 @@ def i24(b):
 
 
 def expected_microvolts(chunks, header):
-    """Independent (Python) implementation of the documented ADC->volts formula."""
+    """Independent (Python) implementation of the documented ADC->volts formula.
+
+    Each row holds 8 values in channel order: channel 0's two samples (oldest
+    first), then channel 1's, and so on.
+    """
     family = int(header["deviceFamily"])
     divisor = (float(header["deviceGain"]) * FULL_SCALE[family]
                * float(header["sensorGain"]) / VREF[family])
@@ -108,7 +116,9 @@ def expected_microvolts(chunks, header):
         frame = stream[off:off + FRAME_LEN]
         assert frame[:4] == MARKER and frame[6:8] == b"\x03\x03", "frame desync"
         counter = int.from_bytes(frame[4:6], "big")
-        volts = [i24(frame[8 + 3 * k:11 + 3 * k]) / divisor * 1e6 for k in range(8)]
+        payload = [i24(frame[8 + 3 * k:11 + 3 * k]) / divisor * 1e6 for k in range(8)]
+        # Channel c reads payload slots c and 4 + c (b2-protocol.md, "Unresolved").
+        volts = [payload[c + 4 * n] for c in range(4) for n in range(2)]
         rows.append((counter, volts))
     return rows
 
@@ -180,8 +190,92 @@ def feedback(src):
     return t0, blocks, decisions
 
 
+F32_DIGITS = "%.9g"  # enough digits to round-trip a single-precision float
+
+
+def expression_records(line):
+    """The input arrays of an ExpressionTransform log line: one list per record."""
+    return [
+        [float(x) for x in re.search(r"\[(.*?)\]", rec).group(1).split(",")]
+        for rec in line.split("|")[1:]
+    ]
+
+
+def smart2(src):
+    """Run-4 upstream-stage fixtures: ExprTriggerAll and ExprNoteSelection inputs
+    with the decisions the app produced from them.
+
+    The two expression elements are told apart by their input count (9 =
+    `ExprTriggerAll`: Band 10/80 amplitudes A..H and the Evaluator code J; 5 =
+    `ExprNoteSelection`: PeakFrequency A..D and J). Heap addresses and absolute
+    timestamps are dropped; times are milliseconds from the first threshold sample.
+    Returns (trigger blocks, note blocks, decisions) as fixture text.
+    """
+    amps, peaks, notes, blocks, selected = [], [], [], [], []
+    passes, t0, prev, fires = [], None, 0, []
+    for line in (src / "decisions5.log").read_text(errors="replace").splitlines():
+        parts = line.split(" ", 3)
+        if len(parts) < 3 or not parts[0].isdigit():
+            continue
+        ts, kind = int(parts[0]), parts[1]
+        if kind == "EX" and parts[3].startswith("n=9 "):
+            amps.append(expression_records(line))
+        elif kind == "EX" and parts[3].startswith("n=5 "):
+            peaks.append(expression_records(line))
+        elif kind == "NP.out":
+            notes.append(int(line.rsplit("note=", 1)[1]))
+        elif kind == "TH":
+            t0 = ts if t0 is None else t0
+            fields = dict(p.split("=") for p in line.split(" ")[3:] if "=" in p)
+            passes.append(int(fields["pass"]))
+        elif kind == "CTR" and t0 is not None:
+            count = int(line.split("count=")[1].split(" ")[0])
+            if len(passes) != 4:
+                raise SystemExit("threshold block is not 4 samples")
+            if count != prev + sum(passes):
+                fires.append((len(blocks), ts - t0))
+            prev = count
+            blocks.append((ts - t0, passes))
+            passes = []
+        elif kind == "SE_NOTEIDX" and t0 is not None:
+            selected.append((ts - t0, int(line.split(" in=")[1].split(" ")[0])))
+    if not len(amps) == len(peaks) == len(notes) == len(blocks):
+        raise SystemExit("run-4 stage logs are not aligned block for block")
+
+    def control(records):
+        j = records[-1]
+        if len(set(j)) != 1:
+            raise SystemExit("Evaluator code changed inside a block")
+        return int(j[0])
+
+    trigger_rows = []
+    for (time_ms, flags), rec in zip(blocks[:SMART2_TRIGGER_BLOCKS], amps):
+        values = [F32_DIGITS % v for r in rec[4:8] for v in r]
+        trigger_rows.append(
+            f"{time_ms}\t{control(rec)}\t" + "\t".join(values) + "\t"
+            + "\t".join(map(str, flags)) + "\n")
+
+    def hexbins(record):
+        bins = [v / PEAK_BIN_HZ for v in record]
+        if any(b != int(b) or not 0 <= b <= 15 for b in bins):
+            raise SystemExit("PeakFrequency is not a bin of the 512-point FFT")
+        return "".join("%x" % int(b) for b in bins)
+
+    note_rows = [
+        f"{control(rec)}\t" + "\t".join(hexbins(r) for r in rec[:4]) + f"\t{note}\n"
+        for rec, note in zip(peaks[:SMART2_NOTE_BLOCKS], notes)
+    ]
+
+    end = blocks[SMART2_TRIGGER_BLOCKS - 1][0]
+    decisions = sorted(
+        [(t, "Trigger", b) for b, t in fires if b < SMART2_TRIGGER_BLOCKS]
+        + [(t, "Note", n) for t, n in selected if t <= end])
+    decision_rows = [f"{t}\t{k}\t{v}\n" for t, k, v in decisions]
+    return "".join(trigger_rows), "".join(note_rows), "".join(decision_rows)
+
+
 def feedback_eeg(src, t0, header):
-    """EEG frames (counter, 8 microvolt values) received within the window."""
+    """EEG frames (counter, 8 microvolt values in channel order) received within the window."""
     trace = (src / "trace.log").read_text().splitlines()
     data, stamps, started = bytearray(), [], False
     for line in trace:
@@ -211,6 +305,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", type=pathlib.Path, default=root / "tmp/s26/run2")
     ap.add_argument("--src3", type=pathlib.Path, default=root / "tmp/s26/run3")
+    ap.add_argument("--src4", type=pathlib.Path, default=root / "tmp/s26/run4")
     ap.add_argument(
         "--out", type=pathlib.Path,
         default=root / "apps/braintellect-linux/tests/fixtures",
@@ -251,6 +346,11 @@ def main():
     (args.out / "feedback_eeg.tsv").write_text("".join(
         f"{ms}\t{c}\t" + "\t".join(f"{v:.9f}" for v in vs) + "\n"
         for ms, c, vs in feedback_eeg(args.src3, t0, header3)))
+
+    trigger, note, decs4 = smart2(args.src4)
+    (args.out / "smart2_trigger_blocks.tsv").write_text(trigger)
+    (args.out / "smart2_note_blocks.tsv").write_text(note)
+    (args.out / "smart2_decisions.tsv").write_text(decs4)
 
 
 if __name__ == "__main__":

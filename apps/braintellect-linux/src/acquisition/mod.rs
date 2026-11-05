@@ -5,7 +5,7 @@
 //!
 //! Not implemented (the protocol doc marks them unresolved): the meaning of the
 //! 110 pairs 1-2 and the 112 payload, deriving the device family from the
-//! handshake, the channel order inside a frame's payload, and power-off.
+//! handshake, and power-off.
 
 pub mod command;
 pub mod decode;

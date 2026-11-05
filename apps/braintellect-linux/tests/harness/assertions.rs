@@ -72,6 +72,25 @@ pub fn decisions(expected: &[Decision], actual: &[Decision]) -> Parity {
     Ok(())
 }
 
+/// The note computed for each block matches the baseline's, block for block
+/// (integers: no tolerance applies).
+pub fn notes(expected: &[i32], actual: &[i32]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "note count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected.iter().zip(actual).position(|(e, a)| e != a) {
+        Some(i) => mismatch(format!(
+            "block {i} note: expected {}, got {}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Threshold pass flags match sample for sample (boolean: no tolerance applies).
 pub fn pass_flags(expected: &[bool], actual: &[bool]) -> Parity {
     if expected.len() != actual.len() {

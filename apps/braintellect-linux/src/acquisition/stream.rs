@@ -5,8 +5,9 @@
 //! "sampleValidation and counter errors"). The static `processData_v5` reading
 //! (0x64 sync, 4-byte channel groups) is unconfirmed legacy and not used.
 //!
-//! Which of the 8 samples belongs to which channel is unresolved, so samples
-//! are surfaced in payload order.
+//! Channel `c` (0..3) owns payload slots `c` and `4 + c`, oldest first
+//! (`b2-protocol.md`, "Unresolved", observed in run 4), so a frame surfaces as 4
+//! channels of 2 samples each.
 
 use super::decode::{decode_sample_i24_be, ChannelCalibration, DeviceFamily};
 
@@ -17,6 +18,10 @@ pub const FRAME_LEN: usize = 32;
 const PAYLOAD_START: usize = 8;
 /// Samples per frame: 8 x 24-bit big-endian signed.
 pub const SAMPLES_PER_FRAME: usize = 8;
+/// Active channels the payload carries.
+pub const CHANNELS: usize = 4;
+/// Samples of each channel in one frame.
+pub const SAMPLES_PER_CHANNEL: usize = SAMPLES_PER_FRAME / CHANNELS;
 
 /// What converts raw samples to microvolts. The device family and channel gain
 /// are not decoded from the handshake (device-vs-app family is unresolved), so
@@ -27,12 +32,12 @@ pub struct StreamConfig {
     pub family: DeviceFamily,
 }
 
-/// One validated frame, decoded: the frame counter and the 8 samples in
-/// payload order, in microvolts.
+/// One validated frame, decoded: the frame counter and each channel's two
+/// samples (oldest first), in microvolts. Indexed `[channel][sample]`.
 #[derive(Debug, Clone, PartialEq)]
 pub struct SampleFrame {
     pub counter: u16,
-    pub microvolts: [f64; SAMPLES_PER_FRAME],
+    pub channels: [[f64; SAMPLES_PER_CHANNEL]; CHANNELS],
 }
 
 /// The error counters the original keeps (`DataBuffer.packetCounterErrors` and
@@ -103,13 +108,17 @@ impl FrameParser {
     }
 }
 
-/// Decode a payload's 8 samples to microvolts (`b2-protocol.md`, ADC -> volts).
+/// Decode a payload's 8 samples to microvolts (`b2-protocol.md`, ADC -> volts),
+/// regrouped by channel: channel `c` takes payload slots `c` and `4 + c`.
 #[must_use]
-pub fn decode_payload(payload: &[u8; 24], config: StreamConfig) -> [f64; SAMPLES_PER_FRAME] {
-    let mut out = [0.0; SAMPLES_PER_FRAME];
-    for (slot, s) in out.iter_mut().zip(payload.chunks_exact(3)) {
+pub fn decode_payload(
+    payload: &[u8; 24],
+    config: StreamConfig,
+) -> [[f64; SAMPLES_PER_CHANNEL]; CHANNELS] {
+    let slot = |i: usize| {
+        let s = &payload[3 * i..3 * i + 3];
         let raw = decode_sample_i24_be([s[0], s[1], s[2]]);
-        *slot = config.calibration.to_volts(raw, config.family) * 1e6;
-    }
-    out
+        config.calibration.to_volts(raw, config.family) * 1e6
+    };
+    std::array::from_fn(|c| std::array::from_fn(|n| slot(c + CHANNELS * n)))
 }

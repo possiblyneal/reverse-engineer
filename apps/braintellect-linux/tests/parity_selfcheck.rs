@@ -124,3 +124,30 @@ fn fixtures_are_scrubbed_and_well_formed() {
     assert!(counters.windows(2).all(|w| w[1] == w[0].wrapping_add(1)));
     assert_eq!(counters.len(), fixtures::expected_microvolts().len());
 }
+
+#[test]
+fn notes_green_on_baseline_red_on_wrong() {
+    let baseline: Vec<i32> = fixtures::smart2_note_blocks()
+        .iter()
+        .map(|b| b.note)
+        .collect();
+    assert!(baseline.windows(2).any(|w| w[0] != w[1]));
+    assertions::notes(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut off_by_one = baseline.clone();
+    off_by_one[7] += 1;
+    assert!(assertions::notes(&baseline, &off_by_one).is_err());
+    assert!(assertions::notes(&baseline, &baseline[1..]).is_err());
+}
+
+#[test]
+fn smart2_fixtures_are_well_formed() {
+    let triggers = fixtures::smart2_trigger_blocks();
+    let notes = fixtures::smart2_note_blocks();
+    assert!(triggers.windows(2).all(|w| w[1].time_ms >= w[0].time_ms));
+    assert!(triggers.len() <= notes.len(), "trigger span is a prefix");
+    assert!(notes.iter().any(|b| b.control == 111) && notes.iter().any(|b| b.control == 183));
+    let decisions = fixtures::smart2_decisions();
+    assert!(decisions.iter().any(|d| d.kind == "Trigger"));
+    assert!(decisions.iter().any(|d| d.kind == "Note"));
+}
