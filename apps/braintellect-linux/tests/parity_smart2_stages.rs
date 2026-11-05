@@ -14,8 +14,6 @@ use harness::fixtures::{self, Decision};
 
 /// Same counter timer start as `parity_feedback.rs`.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
-/// Source-filter history rows at the head of `smart2_eeg.tsv`.
-const WARMUP_SAMPLES: usize = 1500;
 /// Logged samples excluded from the stage figures: `BandPassFilter` start-up,
 /// `audio-feedback.md` "Not resolved", first entry.
 const BAND_START_UP_SAMPLES: usize = 600;
@@ -27,11 +25,7 @@ const AGGREGATOR_WINDOW: usize = 500 * 60;
 fn replay() -> Vec<BlockDecision> {
     let mut graph =
         Smart2Graph::new(fixtures::smart2_design(), -TIMER_BEFORE_FIRST_BLOCK_MS).expect("design");
-    let rows: Vec<[f64; 4]> = fixtures::smart2_eeg().into_iter().map(|r| r.1).collect();
-    let (warm_up, logged) = rows.split_at(WARMUP_SAMPLES);
-    for &row in warm_up {
-        graph.prime(row);
-    }
+    let logged: Vec<[f64; 4]> = fixtures::smart2_eeg().into_iter().map(|r| r.1).collect();
     fixtures::smart2_trigger_blocks()
         .iter()
         .zip(logged.chunks(BLOCK_LEN))
@@ -81,13 +75,8 @@ fn end_to_end_trigger_decisions_match_the_baseline() {
     assertions::decisions(&expected, &actual).expect("trigger parity from decoded EEG");
 }
 
-/// Known gap: the note differs from the baseline at 11 of 20 fires, the first
-/// 11 of the run; the cause is not isolated (the PeakFrequency bins
-/// differ for 2.5 % of the committed span, `stage_agreement_report`). Run with `--ignored`
-/// to see the figure; it fails until that is resolved.
-#[test]
-#[ignore = "9 of 20 note decisions match from decoded EEG"]
-fn end_to_end_note_decisions_match_the_baseline() {
+/// The `Note` decisions from decoded EEG, then the baseline's.
+fn note_decisions() -> (Vec<Decision>, Vec<Decision>) {
     let blocks = fixtures::smart2_trigger_blocks();
     let actual: Vec<Decision> = replay()
         .iter()
@@ -105,15 +94,38 @@ fn end_to_end_note_decisions_match_the_baseline() {
         .into_iter()
         .filter(|d| d.kind == "Note")
         .collect();
+    (expected, actual)
+}
+
+/// Notes the graph reproduces from decoded EEG with the Source filters cold at the
+/// first logged sample (9 of 20 with warm filters). Not a tolerance: a floor that
+/// keeps that gain until the strict test below passes.
+const NOTES_MATCHING_FROM_DECODED_EEG: usize = 17;
+
+#[test]
+fn most_note_decisions_match_the_baseline_from_decoded_eeg() {
+    let (expected, actual) = note_decisions();
+    assert_eq!(expected.len(), actual.len(), "one note per counter fire");
     let matching = expected
         .iter()
         .zip(&actual)
         .filter(|(e, a)| e.new == a.new)
         .count();
-    println!(
-        "note decisions matching the baseline: {matching} of {}",
+    assert!(
+        matching >= NOTES_MATCHING_FROM_DECODED_EEG,
+        "{matching} of {} notes match",
         expected.len()
     );
+}
+
+/// Known gap: fires 1, 2 and 5 differ. Fires 1 and 2 read PeakFrequency values from
+/// the first 130 blocks, where the cold Source transient and the start-up window
+/// dominate; fire 5 is a counter fire one block late (`audio-feedback.md`, "Not
+/// resolved"). Run with `--ignored`; it fails until those are resolved.
+#[test]
+#[ignore = "17 of 20 note decisions match from decoded EEG"]
+fn end_to_end_note_decisions_match_the_baseline() {
+    let (expected, actual) = note_decisions();
     assertions::decisions(&expected, &actual).expect("note parity from decoded EEG");
 }
 
