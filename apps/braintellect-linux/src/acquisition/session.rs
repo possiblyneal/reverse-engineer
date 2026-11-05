@@ -1,0 +1,166 @@
+//! A connected B-2 session over any byte stream (`Read + Write`): handshake,
+//! start/stop, and the decoded sample stream.
+//!
+//! The command sequence is the one the real app wrote in the 2026-11-04 trace
+//! (`wire.txt` fixture): stop, a query pass, mode and signal-injection setup,
+//! a second query pass; then, on start, three stops and the start command.
+
+use std::fmt;
+use std::io::{self, Read, Write};
+
+use super::command::{
+    Command, REQUEST_CHANNEL_INFO, REQUEST_SERIAL, REQUEST_SYSTEM_INFO_1, REQUEST_SYSTEM_INFO_2,
+};
+use super::stream::{decode_payload, FrameParser, SampleFrame, StreamConfig, StreamStats};
+
+/// Handshake replies are exactly 56 bytes (`b2-protocol.md`, reply layout).
+const REPLY_LEN: usize = 56;
+const REPLY_MARKER: [u8; 4] = [0xAC, 0xBC, 0xCC, 0x03];
+/// Serial reply: `[8]` echoes the code, then six 2-byte pairs each followed by a
+/// `03` separator from `[10]` (12-byte id).
+const SERIAL_START: usize = 10;
+const SERIAL_PAIRS: usize = 6;
+/// The app wrote `setStop` three times before `setStart` (observed).
+const STOPS_BEFORE_START: usize = 3;
+
+#[derive(Debug)]
+pub enum Error {
+    Io(io::Error),
+    /// A reply lacked the marker or did not echo the request code.
+    BadReply {
+        code: u8,
+    },
+}
+
+impl fmt::Display for Error {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            Self::Io(e) => write!(f, "transport error: {e}"),
+            Self::BadReply { code } => write!(f, "malformed reply to request {code}"),
+        }
+    }
+}
+
+impl std::error::Error for Error {}
+
+impl From<io::Error> for Error {
+    fn from(e: io::Error) -> Self {
+        Self::Io(e)
+    }
+}
+
+/// A session whose handshake has completed: holding one is the ready state.
+pub struct Session<T> {
+    transport: T,
+    config: StreamConfig,
+    serial: [u8; SERIAL_PAIRS * 2],
+    parser: FrameParser,
+}
+
+impl<T: Read + Write> Session<T> {
+    /// Run the handshake over `transport`.
+    ///
+    /// # Errors
+    /// Fails on a transport error or a reply that is not the expected 56-byte
+    /// frame echoing its request.
+    pub fn open(transport: T, config: StreamConfig) -> Result<Self, Error> {
+        let mut session = Self {
+            transport,
+            config,
+            serial: [0; SERIAL_PAIRS * 2],
+            parser: FrameParser::default(),
+        };
+        session.send(Command::Stop)?;
+        session.query_pass()?;
+        session.send(Command::SetModeNormalEeg)?;
+        session.send(Command::SetSignalInjectionOff)?;
+        session.query_pass()?;
+        Ok(session)
+    }
+
+    /// The device serial number from the 101 reply.
+    #[must_use]
+    pub fn serial(&self) -> &[u8] {
+        &self.serial
+    }
+
+    /// Start streaming with `channels` active channels.
+    ///
+    /// # Errors
+    /// Fails on a transport error.
+    pub fn start(&mut self, channels: u8) -> Result<(), Error> {
+        for _ in 0..STOPS_BEFORE_START {
+            self.send(Command::Stop)?;
+        }
+        self.send(Command::Start { channels })
+    }
+
+    /// The next valid decoded frame, or `None` when the stream has ended.
+    /// Counter and validation errors accumulate in [`Self::stats`].
+    ///
+    /// # Errors
+    /// Fails on a transport error.
+    pub fn next_frame(&mut self) -> Result<Option<SampleFrame>, Error> {
+        let mut chunk = [0u8; 256];
+        loop {
+            if let Some((counter, payload)) = self.parser.next_frame() {
+                return Ok(Some(SampleFrame {
+                    counter,
+                    microvolts: decode_payload(&payload, self.config),
+                }));
+            }
+            match self.transport.read(&mut chunk) {
+                Ok(0) => return Ok(None),
+                Ok(n) => self.parser.push(&chunk[..n]),
+                Err(e) if e.kind() == io::ErrorKind::Interrupted => {}
+                Err(e) => return Err(e.into()),
+            }
+        }
+    }
+
+    #[must_use]
+    pub fn stats(&self) -> StreamStats {
+        self.parser.stats()
+    }
+
+    /// Stop streaming and hand the transport back to the caller to close.
+    ///
+    /// # Errors
+    /// Fails if the stop command cannot be written.
+    pub fn disconnect(mut self) -> Result<T, Error> {
+        self.send(Command::Stop)?;
+        Ok(self.transport)
+    }
+
+    fn send(&mut self, command: Command) -> Result<(), Error> {
+        self.transport.write_all(&command.encode())?;
+        self.transport.flush()?;
+        Ok(())
+    }
+
+    fn request(&mut self, code: u8) -> Result<[u8; REPLY_LEN], Error> {
+        self.send(Command::Request(code))?;
+        let mut reply = [0u8; REPLY_LEN];
+        self.transport.read_exact(&mut reply)?;
+        if reply[..4] != REPLY_MARKER || reply[8] != code {
+            return Err(Error::BadReply { code });
+        }
+        Ok(reply)
+    }
+
+    /// 101, 110, 112, then 131-138. Only the serial is interpreted: the 110/112
+    /// and channel-information payloads are not fully understood.
+    fn query_pass(&mut self) -> Result<(), Error> {
+        let reply = self.request(REQUEST_SERIAL)?;
+        for (i, pair) in self.serial.chunks_exact_mut(2).enumerate() {
+            let at = SERIAL_START + i * 3;
+            pair.copy_from_slice(&reply[at..at + 2]);
+        }
+        self.request(REQUEST_SYSTEM_INFO_1)?;
+        self.request(REQUEST_SYSTEM_INFO_2)?;
+        for code in REQUEST_CHANNEL_INFO {
+            self.request(code)?;
+        }
+        Ok(())
+    }
+}
