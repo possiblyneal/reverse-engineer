@@ -44,7 +44,9 @@ those findings, it cites them.
   (command bytes, microvolts, note/trigger decisions, stored record) and assert
   observable behavior only. Tolerances (`SAMPLE_EPSILON_UV`, `TIMING_WINDOW_MS`,
   `RECORD_EPSILON`) are defined once in `tests/harness/tolerance.rs`; never
-  restate them. `tests/parity_selfcheck.rs` proves each assertion is green on the
+  restate them. No relative or correlation tolerance: a stage is asserted only
+  once it matches within these, and stays a reported figure until then
+  (operator decision). `tests/parity_selfcheck.rs` proves each assertion is green on the
   baseline and red on a wrong output. `tests/harness/transport.rs` is the
   fixture-fed in-memory transport that replays handshake replies and the stream.
   `tests/parity_feedback.rs` replays the threshold-stage input through
@@ -61,8 +63,7 @@ those findings, it cites them.
   all parameterised by `Smart2Design`, which `smart2_design.tsv` fills from the
   design XML. `tests/parity_smart2_stages.rs` asserts the Aggregator exactly
   from the logged bands and the 20 counter triggers from decoded EEG. Not
-  asserted, because the harness has no tolerance that fits and none may be
-  added without a decision: Band 10/80 amplitudes (median error 1 to 5 %) and
+  asserted: Band 10/80 amplitudes (median error 1 to 5 %) and
   PeakFrequency bins (2.5 % differ over the committed 1000-sample span); the ignored `stage_agreement_report` prints
   both, excluding the start-up samples and Band 10 Ch2 (`audio-feedback.md`,
   "Not resolved"). Notes from decoded EEG match the baseline at 9 of 20 fires
