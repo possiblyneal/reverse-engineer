@@ -24,12 +24,28 @@ those findings, it cites them.
   unresolved — the `setStart` command framing, the 110/112/131 reply layouts,
   the device family the B-2 reports, and the inbound packet's trailer/length and
   `sampleValidation` check — are not implemented until the T2 baseline capture
-  resolves them. Implemented so far: the verified `decode` arithmetic only.
+  resolves them. Implemented so far: the verified `decode` arithmetic only (the sensor gain is not floored; the live app runs with 10).
 - **Do not copy the original's bugs.** Reproduce intended behavior, not defects.
   Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
   audio endpoint exists, and the validation-induced null cascades where the
   original assumes a valid license/device/calibration state and faults when it
   is absent. Handle missing devices, endpoints, and invalid input as errors.
+- **One seam: the parity-replay harness** (`tests/harness/`). Every layer's tests
+  (`tests/parity_<layer>.rs`) go through its loaders and per-layer assertions
+  (command bytes, microvolts, note/trigger decisions, stored record) and assert
+  observable behavior only. Tolerances (`SAMPLE_EPSILON_UV`, `TIMING_WINDOW_MS`,
+  `RECORD_EPSILON`) are defined once in `tests/harness/tolerance.rs`; never
+  restate them. `tests/parity_selfcheck.rs` proves each assertion is green on the
+  baseline and red on a wrong output. Layers not built yet (feedback graph,
+  storage, command encoding) have assertions and fixtures but no clone code.
+- **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
+  committed so CI replays headlessly. It is derived only from no-wearer,
+  sensors-off captures, minimal (a short stream window, a handful of record
+  fields), with the B-2 serial replaced by the placeholder `SCRUBBEDSN00` and no
+  MAC, host id, machine/profile/user name, or timestamp. Regenerate it only with
+  `python3 -I scripts/make-fixtures.py` from the raw capture in the repo's
+  `tmp/s26/run2/`; raw captures stay in `tmp/`, never in Git. Grep the fixtures
+  for the MAC and serial before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
   SMART-2 feedback graph → audio output → session storage → session UI.
 
@@ -42,6 +58,8 @@ those findings, it cites them.
 
 ## Verification
 
+- `cargo test` replays the committed fixtures through the harness; the self-check is
+  `tests/parity_selfcheck.rs`.
 - `scripts/check` runs the Rust capabilities: `cargo fmt --check`,
   `cargo clippy -- -D warnings`, `cargo test`, `cargo build --locked`.
 

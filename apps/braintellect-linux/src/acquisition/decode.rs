@@ -58,16 +58,17 @@ impl DeviceFamily {
 pub const CHANNEL_GAIN_MIN: f64 = 1.0;
 /// Highest channel gain (PGA) the original accepts, `24.0` (`.rdata` `0x18954dc`).
 pub const CHANNEL_GAIN_MAX: f64 = 24.0;
-/// Lowest sensor gain the original accepts, `1000.0` (`.rdata` `0x1895360`).
-pub const SENSOR_GAIN_MIN: f64 = 1000.0;
 
 /// Why a [`ChannelCalibration`] was rejected.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CalibrationError {
     /// `channel_gain` outside `[CHANNEL_GAIN_MIN, CHANNEL_GAIN_MAX]` (or NaN).
     ChannelGainOutOfRange,
-    /// `sensor_gain` below `SENSOR_GAIN_MIN` (or NaN).
-    SensorGainTooLow,
+    /// `sensor_gain` not a positive number. The static `1000.0` in
+    /// `setSensorGain` is not a floor: the live app runs with 10
+    /// (`b2-protocol.md`, sensorGain), so only a zero/negative/NaN gain, which
+    /// would break the divisor, is rejected.
+    SensorGainNotPositive,
 }
 
 /// Per-channel calibration: the PGA gain `G_c` and sensor gain `G_s` the
@@ -90,8 +91,8 @@ impl ChannelCalibration {
         if !(CHANNEL_GAIN_MIN..=CHANNEL_GAIN_MAX).contains(&channel_gain) {
             return Err(CalibrationError::ChannelGainOutOfRange);
         }
-        if sensor_gain.is_nan() || sensor_gain < SENSOR_GAIN_MIN {
-            return Err(CalibrationError::SensorGainTooLow);
+        if sensor_gain.is_nan() || sensor_gain <= 0.0 {
+            return Err(CalibrationError::SensorGainNotPositive);
         }
         Ok(Self {
             channel_gain,
@@ -195,9 +196,15 @@ mod tests {
             Err(CalibrationError::ChannelGainOutOfRange)
         );
         assert_eq!(
-            ChannelCalibration::new(1.0, 999.0),
-            Err(CalibrationError::SensorGainTooLow)
+            ChannelCalibration::new(1.0, 0.0),
+            Err(CalibrationError::SensorGainNotPositive)
         );
+        assert_eq!(
+            ChannelCalibration::new(1.0, f64::NAN),
+            Err(CalibrationError::SensorGainNotPositive)
+        );
+        // The baseline runs with sensorGain 10.
+        assert!(ChannelCalibration::new(12.0, 10.0).is_ok());
         assert!(ChannelCalibration::new(1.0, 1000.0).is_ok());
         assert!(ChannelCalibration::new(24.0, 50_000.0).is_ok());
     }
