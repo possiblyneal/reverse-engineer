@@ -47,8 +47,18 @@ those findings, it cites them.
   restate them. `tests/parity_selfcheck.rs` proves each assertion is green on the
   baseline and red on a wrong output. `tests/harness/transport.rs` is the
   fixture-fed in-memory transport that replays handshake replies and the stream.
-  Layers not built yet (feedback graph, storage) have assertions and fixtures
-  but no clone code.
+  The feedback-graph layer has assertions and fixtures but no clone code yet;
+  `tests/parity_storage.rs` replays the record fixture through `src/storage.rs`
+  (`tests/harness/session.rs` maps the flat fixture to and from `SessionRecord`).
+- **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
+  database (`rusqlite`, bundled SQLite), at `$XDG_DATA_HOME/braintellect-linux/sessions.db`,
+  else `~/.local/share/braintellect-linux/sessions.db`; `Store::open(path)` overrides
+  it (tests use a scratch path). The schema is normalized (`session` header and
+  duration, `channel`, `series`, `point`) and keeps the fields and meaning the original
+  recorded (`docs/reverse-engineering/braintellect2/session-storage.md`), not its MySQL
+  or Java-serialized, encrypted blobs. `PRAGMA user_version` is the schema version
+  (`SCHEMA_VERSION`); another version is refused, never migrated. Offline: no network,
+  and the original's records are never read or migrated.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal (a short stream window, a handful of record
