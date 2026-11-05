@@ -7,5 +7,6 @@
 
 pub mod assertions;
 pub mod fixtures;
+pub mod session;
 pub mod tolerance;
 pub mod transport;

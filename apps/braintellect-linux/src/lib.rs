@@ -14,3 +14,5 @@
 //! guesses.
 
 pub mod acquisition;
+
+pub mod storage;
