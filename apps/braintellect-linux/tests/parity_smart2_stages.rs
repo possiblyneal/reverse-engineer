@@ -10,8 +10,8 @@
 mod harness;
 
 use braintellect_linux::feedback::{
-    BandPass, BandPassDesign, BlockDecision, Interference2, PeakDesign, PeakFrequency, Smart2Graph,
-    Smoother, SourceDesign, SourceFilters, BLOCK_LEN,
+    BandPass, BandPassDesign, BlockDecision, Interference1, Interference2, PeakDesign,
+    PeakFrequency, Smart2Graph, Smoother, SourceDesign, SourceFilters, BLOCK_LEN,
 };
 use harness::assertions;
 use harness::fixtures::{self, Decision};
@@ -42,13 +42,14 @@ fn replay() -> Vec<BlockDecision> {
 }
 
 /// Live samples before the capture's filter state has converged: the capture was
-/// hooked mid-stream, the clone starts cold, and the band-stop and high-pass memories
-/// fade within this many samples.
+/// hooked mid-stream, the clone starts cold, and the filter memories fade within this
+/// many samples.
 const SOURCE_CONVERGENCE_SAMPLES: usize = 3000;
 
 #[test]
 fn source_chain_reproduces_the_live_stage_outputs_bit_for_bit() {
     let design = SourceDesign {
+        interference1: Interference1::LowPass45,
         interference2: Interference2::Hz25,
         low_pass_hz: 150.0,
         high_pass_hz: 1.5,
@@ -61,7 +62,7 @@ fn source_chain_reproduces_the_live_stage_outputs_bit_for_bit() {
         if n < SOURCE_CONVERGENCE_SAMPLES {
             continue;
         }
-        for (stage, (&g, &want)) in got.iter().zip(&row[1..]).enumerate() {
+        for (stage, (&g, &want)) in got.iter().zip(&row[2..]).enumerate() {
             assert_eq!(
                 (g as f32).to_bits(),
                 want.to_bits(),
