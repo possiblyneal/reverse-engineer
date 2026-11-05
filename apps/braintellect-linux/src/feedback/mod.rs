@@ -29,7 +29,7 @@ pub use graph::{
 };
 pub use note::{NoteSelection, PeakFrequencies};
 pub use peak_frequency::{Peak, PeakDesign, PeakFrequency};
-pub use source::{Interference2, SourceDesign, SourceFilters};
+pub use source::{Interference1, Interference2, SourceDesign, SourceFilters};
 pub use threshold::Threshold;
 pub use trigger_all::{trigger_all, BandAmplitudes, UnsupportedControl};
 

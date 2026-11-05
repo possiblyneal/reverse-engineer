@@ -6,7 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use braintellect_linux::feedback::{
-    BandPassDesign, BandPassSpec, Interference2, PeakDesign, PeakSpec, Smart2Design, SourceDesign,
+    BandPassDesign, BandPassSpec, Interference1, Interference2, PeakDesign, PeakSpec, Smart2Design,
+    SourceDesign,
 };
 
 fn read(name: &str) -> String {
@@ -317,6 +318,7 @@ pub fn smart2_design() -> Smart2Design {
     let mut design = Smart2Design {
         rate_hz: 0,
         source: SourceDesign {
+            interference1: Interference1::Off,
             interference2: Interference2::Off,
             low_pass_hz: 0.0,
             high_pass_hz: 0.0,
@@ -456,14 +458,15 @@ pub fn smart2_bandpass_stages() -> Vec<[f32; 7]> {
         .collect()
 }
 
-/// One live Source-chain sample of channel 0, in volts: the band-stop input, then the
-/// band-stop, low-pass and high-pass outputs, as the app held them in float32.
-pub fn smart2_source_stages() -> Vec<[f32; 4]> {
+/// One live Source-chain sample of channel 0, in volts: the chain input, then the
+/// 45 Hz interference low-pass, band-stop, low-pass and high-pass outputs, as the app
+/// held them in float32.
+pub fn smart2_source_stages() -> Vec<[f32; 5]> {
     read("smart2_source_stages.tsv")
         .lines()
         .map(|l| {
             let c: Vec<&str> = l.split('\t').collect();
-            assert_eq!(c.len(), 4, "band-stop input and three stage outputs");
+            assert_eq!(c.len(), 5, "chain input and four stage outputs");
             std::array::from_fn(|i| {
                 f32::from_bits(u32::from_str_radix(c[i], 16).expect("float32 bits"))
             })

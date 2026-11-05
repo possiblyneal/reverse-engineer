@@ -443,19 +443,20 @@ def feedback_eeg(src, t0, header):
 
 
 # Return sites of the filter apply (`0x651490`) inside `processData` `0x557f00`, in
-# chain order, for the 25 Hz band-stop, the low-pass and the high-pass.
-SOURCE_SITES = ("0x557fe6", "0x558011", "0x55803c")
+# chain order, for the 45 Hz interference low-pass, the 25 Hz band-stop, the 150 Hz
+# low-pass and the 1.5 Hz high-pass.
+SOURCE_SITES = ("0x557fb5", "0x557fe6", "0x558011", "0x55803c")
 
 
 def source_stages(src):
-    """`smart2_source_stages.tsv`: channel 0's band-stop input and the three stage outputs."""
+    """`smart2_source_stages.tsv`: channel 0's Source-chain input and the four stage outputs."""
     stages = {site: [] for site in SOURCE_SITES}
     for line in (src / "hook6.log").read_text().splitlines():
         m = re.match(r"\d+ SRC (0x\w+) this=\S+ n=1 in=(\w{8}) out=(\w{8}) ", line)
         if m and m.group(1) in stages:
             stages[m.group(1)].append((m.group(2), m.group(3)))
     n = len(stages[SOURCE_SITES[0]])
-    assert n and all(len(v) == n for v in stages.values()), "four-stage capture is incomplete"
+    assert n and all(len(v) == n for v in stages.values()), "source-chain capture is incomplete"
 
     def bits(le_hex):
         return f"{int.from_bytes(bytes.fromhex(le_hex), 'little'):08x}"
