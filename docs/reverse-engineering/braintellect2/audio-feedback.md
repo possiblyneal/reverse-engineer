@@ -203,16 +203,17 @@ One complete SMART-2 session (guest profile, no wearer, sensors off, 240 s, 30,0
 
 - **PK hook silence in run 3:** `0x632d90` and `0x6340d0` are called. The run 3 `onLeave` read dereferenced a wrong object or field (access violation at 0x200), which Frida swallowed. Run 4 logged the same failure as an error; the PeakFreq values were captured instead as the A..D inputs of `ExprNoteSelection`.
 - **Channel order:** see `b2-protocol.md`; PeakFreq Ch`n` reads payload slots `n-1` and `n+3`.
-- **PeakFrequency:** exact algorithm recovered from `0x632d90`, see "Recovered upstream stages" below. 97.8 % of 2000 samples match when the raw channel is windowed directly; the residual is near-ties at bin transitions.
+- **PeakFrequency:** exact algorithm recovered from `0x632d90`, see "Recovered upstream stages" below. 99.7 % of 1000 samples match once the Source software filters (25 Hz notch, 1.5 Hz high-pass) are applied before the window; the earlier 97.8 % was the raw channel windowed directly.
 - **ExprNoteSelection:** input `x` is PeakFreq D when `J == 183`, else `(C + D) / 2`. Per sample `x` feeds a tracker (trailing 15000 samples, min and max) and a smoother (trailing 62-sample mean). The note is `trunc((hi - lo) * ratio) + lo` with `lo = 40`, `hi = 76`, `ratio = (mean - min) / (max - min)` (0 when the range is not positive), in float32 through the map at `0x578240`. The note is taken at each counter fire. Exact against the logged inputs.
 - **ExprTriggerAll:** `J == 111` gives `E + F + G + H`, `J == 183` gives `H`; the Threshold input is that value in volts, smoothed in microvolts by a 62-sample smoother. Exact against the logged inputs. Inputs A..D are the Band 10 (1-3 Hz) then Band 80 (23-36 Hz) BPF amplitudes of Ch1, Ch2 and E..H the same for Ch3, Ch4 (A, B = Ch1, Ch2 Band 10; C, D = Ch1, Ch2 Band 80; E, F = Ch3, Ch4 Band 10; G, H = Ch3, Ch4 Band 80).
 - **Evaluator J:** 111 until 120000 ms, 183 afterwards (first block with 183 is 14999).
 
 ### Not resolved
 
-- The Source-side stage between the raw frames and the band-pass and PeakFrequency elements (see below) was not located in code. It is the likely cause of the Band 80 mismatch, the Band 10 start-up mismatch and the PeakFrequency residual.
-- The exact Band 80 FIR design and normalisation.
-- The Aggregator per-sample aggregation was not decompiled (only its setup and property virtuals); the 60 s boxcar (window 30000) is taken from the logged sum and window.
+- The first about 600 logged samples of Band 10 and Band 80 (BandPassFilter start-up) do not match: the replay with a warm Source chain and a zero-state band-pass reproduces neither the size nor the timing of the early transient. Candidate causes (initial filter state, gating of the first blocks, a different start offset) were tried only coarsely and none fits.
+- The exact IIR design behind the Source notch and high-pass (IPP generator internals) and whether the 150 Hz low-pass FIR is applied: the replay cannot tell it from a 4-sample change of alignment.
+- Why the log records `dataAlreadyFiltered: 1` while the software filters demonstrably act (`+0x10c` flag; see "Source-side software filters").
+- The Aggregator numeric replay against logged output (the code reading is below).
 - The trigger path cannot yet be replayed end to end from recorded EEG; the stages from the logged amplitudes onward, and the note path from logged PeakFreq, are verified.
 
 ## Recovered upstream stages (static decompile, checked offline against run 4)
@@ -231,8 +232,37 @@ Vtable `0x18bf7fc`; rebuild `0x66dc00`; FIR constructor `0x650ed0`; IIR construc
 - Stage 2: `tmp[i]` = max-abs (`ippsMaxAbs_32f`) of `y` over the last `W` samples (sliding, zero-initialised history). `W = max(trunc(rate / (2 * highCutoff)), blockLen)`: Band 10 (1-3 Hz) gives `W = 83`, Band 80 (23-36 Hz) gives `W = 6`.
 - Stage 3: `OutAmplitude` = 16-tap FIR of `tmp`, each tap `2.0 / 16` (constant `2.0` at `0x18953a8`).
 - This explains the earlier puzzle: Band 10 holds for runs because the 83-sample max window changes rarely; the 16-tap mean produces the linear ramps between holds; Band 80 (`W = 6`) never holds. A Hamming FIR followed by `|y|` and a boxcar could not reproduce either.
-- Offline match: Band 10 steady state (after about 450 samples) agrees within 0-14 % (median 4 %, scale factor 1.026) only if a first-order high-pass near 1.5 Hz precedes the FIR; the raw frames carry a DC offset the real pipeline does not show. The high-pass is inferred from the fit, not found in code.
-- Not matched: Band 80 (correlation 0.39-0.54 although the first hump resembles the model) and Band 10 before about 450 samples.
+- The input to this element is not the raw frame: the Source applies the software filter chain described in "Source-side software filters" first. The earlier fit that inferred a 1.5 Hz high-pass was the high-pass slot of that chain; the Band 80 mismatch was its 25 Hz notch.
+- Offline match with that chain (run 4, 2000 samples, FIR order 128 = 128 taps, Hamming, `W` 83 and 6, 16-tap `2/16` mean): see the match table in "Source-side software filters". Band 10 steady state and Band 80 after about 600 samples match; the start-up does not.
+
+### Source-side software filters (decompile, matched)
+
+The transform between the raw B-2 frames and the Source outputs that feed BandPassFilter and PeakFrequency is the device-layer software filter chain of `BSTAmplifierDataProcessor`.
+
+Observed in code:
+- Per sample, `processData` (`0x555c00`) converts the 3-byte big-endian value (`0x555930`; scale factors from `0x5558c0`) and, when the byte at `this+0x10c` is zero, calls `0x557f00`, which runs the channel's filter slots through the filter apply `0x651490` in this order, skipping null slots: `+0x30` interference filter, `+0x34` interference filter 2, `+0x38` low-pass, `+0x3c` high-pass. The result goes to the engine queue `0x5773a0`.
+- `setInterferenceFilter` `0x554fe0`: `"60 Hz"` IIR band-stop (kind 3, type 5, order 1, 59/61 Hz); `"50 Hz"` the same at 49/51 Hz; `"50/60 Hz"` FIR band-stop (Hamming, 64 taps, 42/68 Hz); `"45Hz LP"` FIR low-pass (Hamming, 256 taps, 47.5 Hz).
+- `setInterferenceFilter2` `0x555370`: `"25 Hz"` IIR band-stop (kind 3, type 5, order 2, 23.5/25.75 Hz, ripple argument 0.1); `"10 Hz"` FIR band-stop (Hamming, 384 taps, 9/11 Hz).
+- `setLPFilter` `0x554ae0`: FIR (`0x650ed0`), kind 0, Hamming, 24 taps, requires 0 < cutoff <= rate. `setHPFilter` `0x554d60`: IIR (`0x6536a0`), kind 1, type 5, order 1, ripple argument 0.1.
+- Run 4 `app.log` (observed): `interferenceFilter -> Off`, `interferenceFilter2 -> 25 Hz`, `lowPassCutoff -> 150.0`, `highPassCutoff -> 1.5`, `sampleRate: 500`, `dataStorageStyle: filtered`, `dataAlreadyFiltered: 1`.
+- The BandPassFilter element (`0x66dc00`) picks FIR (`0x650ed0`, mode 0) or IIR (`0x6536a0`, mode 1) from `this+0x198`; the run 4 design gives every BandPassFilter windowType Hamming and filterOrder 128.
+
+Inferred:
+- Type 5 is Butterworth and the IIR generators prewarp and use the bilinear transform; the replay builds the band-stop from an order-2 analogue Butterworth prototype (a 4th-order digital filter, two biquads) and the high-pass as a first-order bilinear Butterworth. The order-1-prototype variant fits worse (Band 80 correlation 0.73 against 0.79 on the first 1600 samples).
+- The flag at `+0x10c` is zero in the run 4 path: the 1.5 Hz high-pass and the 25 Hz notch both visibly act on the data, although the log reports `dataAlreadyFiltered: 1`. The flag's source (a string compare in the constructor `0x5576b0` at `0x5577ab` against a runtime-initialised global) was not resolved.
+- Alignment: the best fit is 4 samples later than the earlier PeakFrequency-derived start (logged sample 0 = channel sample `2 * 34000 + 3659 + 4`). A 150 Hz Hamming FIR low-pass would add about 11.5 samples of delay; with it, the best offset moves to about 15 and the match is the same, so whether the low-pass runs cannot be decided from this data.
+
+Offline match, run 4, filters started warm (6000 samples of history), band-pass started at zero state at logged sample 0, pure-Python replay (`python3 -I`, no signal values recorded here). Correlation and relative error are against the logged BandPassFilter amplitude:
+
+| Input to the band-pass | Band 10 (n >= 450), Ch1..Ch4 | Band 80 (n >= 600), Ch1..Ch4 |
+|---|---|---|
+| raw frame | high-pass missing: scale off about 12x | not tried |
+| 1.5 Hz high-pass only | corr 0.998 / 0.730 / 0.971 / 0.987 | corr 0.648 / 0.666 / 0.424 / 0.193 |
+| 25 Hz notch + 1.5 Hz high-pass | corr 0.998 / 0.731 / 0.971 / 0.987 (median error 1.0-2.5 %) | corr 0.997 / 0.998 / 0.999 / 0.998 (median error 6.2 / 3.2 / 1.7 / 1.7 %, 90th percentile 31 / 13 / 7 / 7.5 %) |
+
+- PeakFrequency bin, Ch1, samples 1000-1999: raw 986/1000 at offset 0, 974/1000 at offset 4; notch + high-pass 997/1000 at offset 4 (high-pass only 992/1000). The earlier 97.8 % figure was over a different 2000-sample span.
+- Band 10 Ch2 stays at 0.73 although its median error is 1 %: a few late-held maxima differ (the 83-sample max window is sensitive to single peaks).
+- Not matched: the first about 600 samples of both bands (see "Not resolved"). Zero-state Source filters at sample 0 make the early part worse, not better.
 
 ### PeakFrequency (decompile, matched)
 
@@ -246,7 +276,11 @@ Vtable `0x18bc414` (secondary `0x18bc400`); `DSPPkFreq::filter` `0x632d90`; cons
 
 ### Aggregator (static, partial)
 
-`AggregatorFilter` vtable `0x18bf91c` (secondary `0x18bf90c`). Observed in code: reset on message type 3 (`0x649c70`); property setter `0x649b60` creates the aggregation object at `this+0x1e4` from the mode string; setup `0x64a3e0` derives a sample count from the rate and the window property and passes `rate * [0x62]` to that object's virtual `+0x18`. The per-sample aggregation (aggregation object vtable `0x18bf978`, constructor `0x6542a0`) was not read.
+`AggregatorFilter` vtable `0x18bf91c` (secondary `0x18bf90c`). Observed in code: reset on message type 3 (`0x649c70`); property setter `0x649b60` creates the aggregation object at `this+0x1e4` from the flow-style string; setup `0x64a3e0` passes `rate * [0x62]` (sample rate times `averageEpoch`) to that object's virtual `+0x18`.
+
+- Style strings (static initialisers at `0x13f8620`, `0x13f8640`, `0x13f8660`): `0x1fbf194` = `"absolute"`, `0x1fbf3c4` = `"continuous"`, `0x1fbf178` = `"discrete"`. `"absolute"` creates the `0x18bf978` object (0x70 bytes; running sum in a double at `+0x60`, count at `+0x68`; value = sum / count, `0x649850`). `"continuous"` and `"discrete"` create the `0x6542a0` object (0x60 bytes, vtable `0x18c1a98`). The run 4 design uses `"continuous"` with `averageEpoch` 60 for all six Aggregators, so the `0x18bf978` object is not on the replayed path.
+- `0x18c1a98` per-sample (virtual `+8`, `0x6543f0`): `v' = scale * v + offset` (floats at `+0x50`, `+0x54`, copied by the constructor from the owning property block at `+0x18c`, `+0x190`). When the window length at `+0x58` is above zero (set by virtual `+0x18`, `0x654510`, which also rebuilds the buffer through `+0x1c`, `0x654530`), `v'` goes through the moving average `0x654fe0`; otherwise `v'` is the output. The block entry (virtual `+4`, `0x6544d0`) just repeats the per-sample call. The output is held as a float at `+0x5c`.
+- Moving average `0x654fe0` (object `0x654f20(window, 0, 1)`): circular buffer of doubles. Running sum += `x`, then -= the overwritten oldest entry (float arithmetic, stored in a double), the slot is overwritten with `x`, and the result is sum / `min(samples seen, window)`. This is a sliding boxcar mean with a partial-fill divisor, window `rate * averageEpoch` = 30000 samples at 500 Hz, matching the 60 s boxcar read earlier from the logged sum and window. Inferred, not replayed: `scale` = 1 and `offset` = 0 (not read from the design); the Evaluator-side `0x654440` (sign times log) variant is not used by this path.
 
 ## Export Completeness and Startup
 
