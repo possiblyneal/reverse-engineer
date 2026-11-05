@@ -135,8 +135,8 @@ read with a throwaway `mysql:5.7` container, blobs decoded as above.
 - No stored row records lead-off or sensor-contact state. The only stored trace of
   missing sensors is in the signal itself: every band, LMH, line-noise, and FFT series in
   type 9 is an order of magnitude lower than in the worn session and nearly flat.
-- The type-5 Evaluator log differs. In the worn session it logged a `ControlChange`
-  at 01:00 (control value 111 → 82, then held). With no sensors it logged only
+- The type-5 Evaluator log differs. In the worn session it logged `ControlLog` 111 at 01:00, then a
+  `ControlChange` at 02:00 (control value 111 → 82, then held). With no sensors it logged only
   `ControlLog` entries with the value held at 111. The evaluator codes are mapped in
   `audio-feedback.md`.
 - Launched with `C:\bsttest\bin` as its working directory, the app ran this session

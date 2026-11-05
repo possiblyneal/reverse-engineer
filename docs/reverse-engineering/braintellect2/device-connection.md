@@ -188,7 +188,7 @@ power-cycling the controller did not help. Confirming this from the guest's bond
 tracked in #38.
 
 Observed 2026-11-04 (host usbmon capture of the passed-through adapter during an "Add a
-device" attempt in `braintellect-offline`): the guest pages the B-2 (`88:6B:0F:8F:B7:10`),
+device" attempt in `braintellect-offline`): the guest pages the B-2,
 the ACL link and L2CAP signaling come up, and the guest sends `Authentication_Requested`.
 Within 75–130 ms the link drops with `Disconnection_Complete` reason `0x17` (Repeated
 Attempts). No `Link_Key_Request` or `IO_Capability_Request` event reaches the guest. This

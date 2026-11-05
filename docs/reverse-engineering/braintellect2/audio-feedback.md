@@ -101,20 +101,20 @@ Static disassembly of `braintellect.exe` (SHA-256 `af7ff5430ee10c2d548450819f54a
 - **Manual mode** copies `threshold`, `lowerThreshold`, and `upperThreshold` divided by `1e6` (`0x6300e0`).
 - **Resets:** a type-2 data message resets the series, and type-3 or type-4 control messages reset the window (`0x62f8f0` → `0x62f460`).
 
-So in SMART-2 (single, `decrease`, auto), the threshold is the 0.65 quantile of the smoothed signal over the last 5,000 ms, and a sample passes when it falls below it. `upperThreshold` (0.75) and `threshold` (10.0) have no effect in this configuration.
+So in SMART-2 (single, `decrease`, auto), the input is smoothed over 125 ms, the threshold is the 0.65 quantile of that smoothed signal over the last 5,000 ms, and a sample passes when it falls below it. `upperThreshold` (0.75) and `threshold` (10.0) have no effect in this configuration.
 
 ### Counter (observed)
 
 The property map is at `0x13f2afa` and the setter is at `0x6433d0`. `type` accepts `rising`, `falling`, `timeHigh`, and `timeLow`. `triggerEpoch` sets `+0x1a0` and `triggerModulus` sets `+0x1a4`.
 
 - `timeHigh` runs handler `0x642ed0` with predicate `x > 0` (`0x642610`). `timeLow` uses `x == 0` (`0x642630`).
-- For each sample where the predicate holds, the handler increments a count. If the timer (`0xf30a30`) shows at least `triggerEpoch` elapsed, it zeroes the count and sets the trigger. The timer restarts after any block that fired. The constructor (`0x643240`) starts the timer.
+- The handler reads the timer (`0xf30a30`) once per input block, before its sample loop. For each sample where the predicate holds, it increments a count. If that block's elapsed time is at least `triggerEpoch`, it also zeroes the count and sets the trigger, which is not cleared again within the block. The timer restarts after any block that fired. The constructor (`0x643240`) starts the timer.
 - `triggerModulus` is read only by the `rising`/`falling` handler (`0x642cc0`, trigger when `count % modulus == 0`).
 
 ### Inferred
 
 - About 65% of the 5,000 ms window passes by construction, so the auto threshold tracks the signal: about two thirds of recent samples pass, whatever the absolute level.
-- `timeHigh` fires on the first passing sample at least `triggerEpoch` (500 ms) after the last fire or after start. The input does not have to stay high for those 500 ms, and the trigger repeats at most once per epoch while passes continue.
+- `timeHigh` fires on the first passing sample in the first block that begins at least `triggerEpoch` (500 ms) after the last fire or after start. The trigger output then stays 1 for the rest of that block. The input does not have to stay high for those 500 ms. Fires repeat at most once per epoch while passes continue, subject to block size and to how `SoundElement` consumes the trigger.
 - `triggerEpoch` is read as milliseconds against the timer. The divisor at `0x1895360` and the constructor defaults were not reconciled.
 - The 0-based or 1-based indexing of the order statistic in `0x62e3c0` is unresolved, which shifts the quantile by one sample.
 
@@ -241,5 +241,5 @@ the samples are complete.
 ## Limitations
 
 - The recovered design establishes parameters and graph wiring, not a clinical interpretation or efficacy claim.
-- The database contains sensitive material. This document intentionally does not reproduce names, dates, session contents, or signal values.
+- The database contains sensitive material. These documents reproduce no patient names, recovered-session contents, or signal values. They do cite the dates, exercise numbers, and Evaluator control-value traces of the operator's own 2026-11-04 test sessions, which carry no personal data.
 - The raw signal blobs are Java-serialized data and have not been semantically decoded in this record.
