@@ -199,6 +199,23 @@ Image base `0x400000`; all addresses are VAs. Recovered with Ghidra headless; no
 
 Static reading does not fix the unresolved items, and the stored baseline carries no note or trigger decisions (the type-9 XML has no PeakFreq, note, threshold or counter output). A capture needs the hooks above, logged with the same millisecond clock as the serial trace, during one SMART-2 session.
 
+## Run 4 Capture: Stages Upstream of the Threshold (observed)
+
+One complete SMART-2 session (guest profile, no wearer, sensors off, 240 s, 30,005 blocks of 4 samples) under one combined Frida script, hard-restarted app. The raw logs stay in the main checkout's `tmp/s26/run4/` (never committed). Verified by replaying the logged inputs against the logged outputs:
+
+- **PK hook silence in run 3:** `0x632d90` and `0x6340d0` are called. The run 3 `onLeave` read dereferenced a wrong object or field (access violation at 0x200), which Frida swallowed. Run 4 logged the same failure as an error; the PeakFreq values were captured instead as the A..D inputs of `ExprNoteSelection`.
+- **Channel order:** see `b2-protocol.md`; PeakFreq Ch`n` reads payload slots `n-1` and `n+3`.
+- **PeakFrequency:** a 512-sample zero-initialised ring per channel, Hann window, real FFT magnitude, argmax over bins 6..14 (Ch1, Ch2) or 7..15 (Ch3, Ch4), frequency `bin * 500 / 512`, recomputed per sample. 98-99 % of samples match in steady state; the residual 1-2 % and the first 512 samples are unexplained.
+- **ExprNoteSelection:** input `x` is PeakFreq D when `J == 183`, else `(C + D) / 2`. Per sample `x` feeds a tracker (trailing 15000 samples, min and max) and a smoother (trailing 62-sample mean). The note is `trunc((hi - lo) * ratio) + lo` with `lo = 40`, `hi = 76`, `ratio = (mean - min) / (max - min)` (0 when the range is not positive), in float32 through the map at `0x578240`. The note is taken at each counter fire. Exact against the logged inputs.
+- **ExprTriggerAll:** `J == 111` gives `E + F + G + H`, `J == 183` gives `H`; the Threshold input is that value in volts, smoothed in microvolts by a 62-sample smoother. Exact against the logged inputs. Inputs A..D are the Band 10 (1-3 Hz) then Band 80 (23-36 Hz) BPF amplitudes of Ch1, Ch2 and E..H the same for Ch3, Ch4 (A, B = Ch1, Ch2 Band 10; C, D = Ch1, Ch2 Band 80; E, F = Ch3, Ch4 Band 10; G, H = Ch3, Ch4 Band 80).
+- **Evaluator J:** 111 until 120000 ms, 183 afterwards (first block with 183 is 14999).
+
+### Not resolved
+
+- The BandPassFilter `OutAmplitude` definition. A Hamming FIR (order 128 or 129 taps) on the deinterleaved raw channel followed by `|y|` and boxcar means of 8..128 samples correlates only 0.4-0.85 with the logged amplitudes, and the Band 10 outputs of Ch1, Ch2, Ch3 and Ch4 hold constant for runs of samples (46 % of steps unchanged), while Band 80 outputs never hold. The envelope type, the filter normalisation and the volt scale were not recovered; the `BandPassFilter` class strings have no direct code references in the image, so the code path was not located statically.
+- The Aggregator is a 60 s boxcar (window 30000) of the amplitude by its logged sum and window; not checked beyond that.
+- Because the amplitude is unresolved, the trigger path cannot yet be replayed from recorded EEG; only the stages from the logged amplitudes onward, and the note path from logged PeakFreq, are verified.
+
 ## Export Completeness and Startup
 
 The first tablet export survives as the extracted `tmp/bst-export/` tree; its original ZIP was not found in the worktree. Its `STATUS.txt` reports install capture succeeded, database capture failed, and registry capture did not complete. The retry archive's `STATUS.txt` reports that install capture was intentionally skipped, the raw database was captured without an SQL dump because `mysqld.exe` was not found, and no registry keys were found within the collector's bounded search. Neither export proves a complete tablet backup.

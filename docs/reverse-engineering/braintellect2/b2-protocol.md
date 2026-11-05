@@ -316,9 +316,14 @@ symmetry, not confirmed), and decodes the samples at `0x55a8a2`-`0x55a8bb`.
 - 110 pairs 1-2 and the 112 payload meaning.
 - Whether the device reports family itself or the app derives it from the
   model/firmware fields.
-- Channel and sample order inside the 24-byte payload: channel-interleaved (two
-  samples of each channel back to back vs. one sample of each channel twice) is
-  inferred from per-slot means only, not from a known test signal.
+- Channel and sample order inside the 24-byte payload (observed, run 4): for
+  channel `c` (0..3) the two samples of a frame are payload slots `c` and
+  `4 + c`, oldest first; channel `c` is Ch`c+1`, so PeakFreq Ch1..Ch4 read slots
+  0..3 and 4..7. Evidence: the app's logged per-channel `DSPPkFreq` peaks
+  (`tmp/s26/run4/decisions5.log`) match a Hann/512 FFT peak search over exactly
+  that deinterleave for 98-99 % of samples per channel in steady state, and
+  match no other slot permutation. Still inferred: nothing about a known test
+  signal, since the session ran with sensors off.
 - Why the DataCapture header reports `samplesPerPacket 4` while `DataBuffer` logs 2.
 - How `processData_v5` (`0x556560`) and `processData` (about `0x556ff0`) relate to
   the ring-buffer parser at `0x55a280`; neither ran on the observed path.
