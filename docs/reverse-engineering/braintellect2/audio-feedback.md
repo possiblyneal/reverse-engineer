@@ -178,7 +178,7 @@ The stored type-5 logs (2026-11-04) show:
 
 ## PeakFrequency and Note Hook Points (static, braintellect.exe 5.1.57)
 
-Image base `0x400000`; all addresses are VAs. Recovered with Ghidra headless; nothing here is yet checked against a runtime capture, so every algorithm item is inferred from disassembly until a decision log (hooks below) exists.
+Image base `0x400000`; all addresses are VAs. Recovered with Ghidra headless. The window, FFT and bin range of `0x632d90` are superseded by the Run 4 sections below; the remaining items are inferred from disassembly.
 
 ### Observed in code
 
@@ -191,9 +191,7 @@ Image base `0x400000`; all addresses are VAs. Recovered with Ghidra headless; no
 ### Not resolved
 
 - The conversion of the note input to the MIDI note number, including `noteAutoRange`.
-- The window function formula, the magnitude transform and the DC and Nyquist handling in `0x632d90`.
 - Whether the order-statistic index is zero- or one-based.
-- The trigger expression (`ExprTriggerAll`), the band-pass and Aggregator elements that feed it.
 
 ### Why a live capture is required
 
@@ -205,16 +203,50 @@ One complete SMART-2 session (guest profile, no wearer, sensors off, 240 s, 30,0
 
 - **PK hook silence in run 3:** `0x632d90` and `0x6340d0` are called. The run 3 `onLeave` read dereferenced a wrong object or field (access violation at 0x200), which Frida swallowed. Run 4 logged the same failure as an error; the PeakFreq values were captured instead as the A..D inputs of `ExprNoteSelection`.
 - **Channel order:** see `b2-protocol.md`; PeakFreq Ch`n` reads payload slots `n-1` and `n+3`.
-- **PeakFrequency:** a 512-sample zero-initialised ring per channel, Hann window, real FFT magnitude, argmax over bins 6..14 (Ch1, Ch2) or 7..15 (Ch3, Ch4), frequency `bin * 500 / 512`, recomputed per sample. 98-99 % of samples match in steady state; the residual 1-2 % and the first 512 samples are unexplained.
+- **PeakFrequency:** exact algorithm recovered from `0x632d90`, see "Recovered upstream stages" below. 97.8 % of 2000 samples match when the raw channel is windowed directly; the residual is near-ties at bin transitions.
 - **ExprNoteSelection:** input `x` is PeakFreq D when `J == 183`, else `(C + D) / 2`. Per sample `x` feeds a tracker (trailing 15000 samples, min and max) and a smoother (trailing 62-sample mean). The note is `trunc((hi - lo) * ratio) + lo` with `lo = 40`, `hi = 76`, `ratio = (mean - min) / (max - min)` (0 when the range is not positive), in float32 through the map at `0x578240`. The note is taken at each counter fire. Exact against the logged inputs.
 - **ExprTriggerAll:** `J == 111` gives `E + F + G + H`, `J == 183` gives `H`; the Threshold input is that value in volts, smoothed in microvolts by a 62-sample smoother. Exact against the logged inputs. Inputs A..D are the Band 10 (1-3 Hz) then Band 80 (23-36 Hz) BPF amplitudes of Ch1, Ch2 and E..H the same for Ch3, Ch4 (A, B = Ch1, Ch2 Band 10; C, D = Ch1, Ch2 Band 80; E, F = Ch3, Ch4 Band 10; G, H = Ch3, Ch4 Band 80).
 - **Evaluator J:** 111 until 120000 ms, 183 afterwards (first block with 183 is 14999).
 
 ### Not resolved
 
-- The BandPassFilter `OutAmplitude` definition. A Hamming FIR (order 128 or 129 taps) on the deinterleaved raw channel followed by `|y|` and boxcar means of 8..128 samples correlates only 0.4-0.85 with the logged amplitudes, and the Band 10 outputs of Ch1, Ch2, Ch3 and Ch4 hold constant for runs of samples (46 % of steps unchanged), while Band 80 outputs never hold. The envelope type, the filter normalisation and the volt scale were not recovered; the `BandPassFilter` class strings have no direct code references in the image, so the code path was not located statically.
-- The Aggregator is a 60 s boxcar (window 30000) of the amplitude by its logged sum and window; not checked beyond that.
-- Because the amplitude is unresolved, the trigger path cannot yet be replayed from recorded EEG; only the stages from the logged amplitudes onward, and the note path from logged PeakFreq, are verified.
+- The Source-side stage between the raw frames and the band-pass and PeakFrequency elements (see below) was not located in code. It is the likely cause of the Band 80 mismatch, the Band 10 start-up mismatch and the PeakFrequency residual.
+- The exact Band 80 FIR design and normalisation.
+- The Aggregator per-sample aggregation was not decompiled (only its setup and property virtuals); the 60 s boxcar (window 30000) is taken from the logged sum and window.
+- The trigger path cannot yet be replayed end to end from recorded EEG; the stages from the logged amplitudes onward, and the note path from logged PeakFreq, are verified.
+
+## Recovered upstream stages (static decompile, checked offline against run 4)
+
+Headless Ghidra on `braintellect.exe` 5.1.57, image base `0x400000`; the classes were found through MSVC RTTI. IPP calls go through thunk tables indexed by `_DAT_0200f428`; thunk identities below are inferred from argument shapes, not from names. Scratch scripts and captures stay in the main checkout's `tmp/s43/` (not committed). Checks replay the run 4 serial frames (channel `c` = payload slots `c` and `4+c`, volts per `b2-protocol.md`) against the logged stage values.
+
+### Alignment (observed)
+
+Logged sample 0 of Ch1 is absolute channel sample `2 * 34000 + 3659` of the run 4 stream (frame about 35829.5), found by sliding-DFT against the logged PeakFreq. Earlier guesses were wrong.
+
+### BandPassFilter OutAmplitude (decompile, partly matched)
+
+Vtable `0x18bf7fc`; rebuild `0x66dc00`; FIR constructor `0x650ed0`; IIR constructor `0x6536a0`; apply `0x651490`; amplitude `0x650cf0`; sizing `0x6506c0`; 16-tap setup `0x6507e0`; per-block process `0x66e9f0`.
+
+- Stage 1: `y` = FIR of the input, taps from `ippsFIRGenBandpass` with edges `f / rate`.
+- Stage 2: `tmp[i]` = max-abs (`ippsMaxAbs_32f`) of `y` over the last `W` samples (sliding, zero-initialised history). `W = max(trunc(rate / (2 * highCutoff)), blockLen)`: Band 10 (1-3 Hz) gives `W = 83`, Band 80 (23-36 Hz) gives `W = 6`.
+- Stage 3: `OutAmplitude` = 16-tap FIR of `tmp`, each tap `2.0 / 16` (constant `2.0` at `0x18953a8`).
+- This explains the earlier puzzle: Band 10 holds for runs because the 83-sample max window changes rarely; the 16-tap mean produces the linear ramps between holds; Band 80 (`W = 6`) never holds. A Hamming FIR followed by `|y|` and a boxcar could not reproduce either.
+- Offline match: Band 10 steady state (after about 450 samples) agrees within 0-14 % (median 4 %, scale factor 1.026) only if a first-order high-pass near 1.5 Hz precedes the FIR; the raw frames carry a DC offset the real pipeline does not show. The high-pass is inferred from the fit, not found in code.
+- Not matched: Band 80 (correlation 0.39-0.54 although the first hump resembles the model) and Band 10 before about 450 samples.
+
+### PeakFrequency (decompile, matched)
+
+Vtable `0x18bc414` (secondary `0x18bc400`); `DSPPkFreq::filter` `0x632d90`; constructor about `0x633400`-`0x633f23`; process `0x6340d0`; free `0x632c10`.
+
+- `N = 2^fftOrder = 512` (`fftOrder` 9), `df = 500 / 512`. Bins `ftol(low / df)`..`ftol(high / df)`: Ch1, Ch2 6..14; Ch3, Ch4 7..15.
+- The input is a ring of `this+0x18c` samples, newest at the end and the older part zero until filled, windowed by a Hann window (`ippsWinHann_64f_I` over ones; window mean at `this+0x68` is sum / N).
+- Unscaled real FFT (flag 8), conj-pack expansion to complex, magnitude, first maximum over the bin range. Frequency = `(lowbin + idx) * df`; amplitude = `(4.0 / N) * max / mean(window)` (constant `4.0` at `0x1895398`).
+- Thunks (inferred): `0x66fd90` Zero_64f, `0x66fd80` Mul_64f_I, `0x66fd70` FFTFwd_RToPack_64f, `0x66fd60` ConjPack_64fc, `0x66fd50` Magnitude_64fc, `0x66fd40` MaxIndx_64f; window selectors `0x66fda0` Hann, `0x66fdb0` Hamming, `0x66fdc0` Kaiser.
+- Offline match: 1955 of 2000 samples (97.8 %) with a Hann denominator `N` (the `N - 1` and `N + 1` variants and an added high-pass were no better). The mismatches are near-ties between adjacent bins, so the true input differs slightly from the raw frames, consistent with the unlocated Source-side stage.
+
+### Aggregator (static, partial)
+
+`AggregatorFilter` vtable `0x18bf91c` (secondary `0x18bf90c`). Observed in code: reset on message type 3 (`0x649c70`); property setter `0x649b60` creates the aggregation object at `this+0x1e4` from the mode string; setup `0x64a3e0` derives a sample count from the rate and the window property and passes `rate * [0x62]` to that object's virtual `+0x18`. The per-sample aggregation (aggregation object vtable `0x18bf978`, constructor `0x6542a0`) was not read.
 
 ## Export Completeness and Startup
 
