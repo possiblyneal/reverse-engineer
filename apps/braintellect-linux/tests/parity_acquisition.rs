@@ -75,8 +75,12 @@ fn stream_decodes_to_baseline_microvolts_and_counters() {
         counters,
         expected.iter().map(|(c, _)| *c).collect::<Vec<_>>()
     );
+    // The baseline rows list channel 1's two samples first, then channel 2's, ...
     let expected_uv: Vec<f64> = expected.into_iter().flat_map(|(_, uv)| uv).collect();
-    let actual_uv: Vec<f64> = frames.iter().flat_map(|f| f.microvolts).collect();
+    let actual_uv: Vec<f64> = frames
+        .iter()
+        .flat_map(|f| f.channels.into_iter().flatten())
+        .collect();
     assertions::microvolts(&expected_uv, &actual_uv).expect("microvolts parity");
     assert_eq!(stats, StreamStats::default(), "baseline has no errors");
 }

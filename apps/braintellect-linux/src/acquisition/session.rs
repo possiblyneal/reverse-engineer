@@ -106,7 +106,7 @@ impl<T: Read + Write> Session<T> {
             if let Some((counter, payload)) = self.parser.next_frame() {
                 return Ok(Some(SampleFrame {
                     counter,
-                    microvolts: decode_payload(&payload, self.config),
+                    channels: decode_payload(&payload, self.config),
                 }));
             }
             match self.transport.read(&mut chunk) {

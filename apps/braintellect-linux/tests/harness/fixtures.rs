@@ -112,7 +112,8 @@ pub fn stream_chunks() -> Vec<Vec<u8>> {
     read("stream.txt").lines().map(unhex).collect()
 }
 
-/// Baseline microvolts per frame: counter and the 8 payload samples.
+/// Baseline microvolts per frame: counter and the 8 samples in channel order
+/// (channel 1's two samples, then channel 2's, ...).
 pub fn expected_microvolts() -> Vec<(u16, Vec<f64>)> {
     read("microvolts.tsv")
         .lines()
@@ -179,7 +180,11 @@ pub fn feedback_blocks() -> Vec<FeedbackBlock> {
 /// (a counter fire, `new` = 1) and `Note` (the note input the sound element
 /// received, `new` = its value). `old` is 0.
 pub fn feedback_decisions() -> Vec<Decision> {
-    read("feedback_decisions.tsv")
+    time_kind_value_decisions("feedback_decisions.tsv")
+}
+
+fn time_kind_value_decisions(name: &str) -> Vec<Decision> {
+    read(name)
         .lines()
         .map(|l| {
             let c: Vec<&str> = l.split('\t').collect();
@@ -198,7 +203,7 @@ pub fn feedback_decisions() -> Vec<Decision> {
 }
 
 /// One received EEG frame of the window: arrival time, counter, and the 8
-/// payload microvolt values in payload order (channel order is unresolved).
+/// microvolt values in channel order.
 pub struct EegFrame {
     pub time_ms: u64,
     pub counter: u16,
@@ -217,5 +222,87 @@ pub fn feedback_eeg() -> Vec<EegFrame> {
                 microvolts: std::array::from_fn(|i| c[2 + i].parse().expect("microvolts")),
             }
         })
+        .collect()
+}
+
+/// One block of the run-4 `ExprTriggerAll` stage: the counter's clock reading,
+/// the Evaluator code, the Band 10/80 amplitudes E..H in volts (`[input][sample]`)
+/// and the pass flags the app's threshold produced from them.
+pub struct TriggerBlock {
+    pub time_ms: u64,
+    pub control: u32,
+    pub amplitudes: [[f32; 4]; 4],
+    pub passes: [bool; 4],
+}
+
+/// The run-4 `ExprTriggerAll` blocks, in order.
+pub fn smart2_trigger_blocks() -> Vec<TriggerBlock> {
+    read("smart2_trigger_blocks.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            assert_eq!(c.len(), 22, "time, code, 16 amplitudes, 4 pass flags");
+            TriggerBlock {
+                time_ms: c[0].parse().expect("time"),
+                control: c[1].parse().expect("code"),
+                amplitudes: std::array::from_fn(|i| {
+                    std::array::from_fn(|n| c[2 + 4 * i + n].parse().expect("amplitude"))
+                }),
+                passes: std::array::from_fn(|i| c[18 + i] == "1"),
+            }
+        })
+        .collect()
+}
+
+/// One block of the run-4 `ExprNoteSelection` stage: the Evaluator code, the
+/// PeakFrequency of channels 1..4 in Hz (`[channel][sample]`) and the note the
+/// app computed from them.
+pub struct NoteBlock {
+    pub control: u32,
+    pub peaks: [[f32; 4]; 4],
+    pub note: i32,
+}
+
+/// PeakFrequency resolution: sample rate / FFT order (500 Hz / 512). The fixture
+/// stores each peak as its FFT bin, one hex digit per sample.
+const PEAK_BIN_HZ: f32 = 500.0 / 512.0;
+
+/// The run-4 `ExprNoteSelection` blocks, in order.
+pub fn smart2_note_blocks() -> Vec<NoteBlock> {
+    read("smart2_note_blocks.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            assert_eq!(c.len(), 6, "code, 4 channels of bins, note");
+            NoteBlock {
+                control: c[0].parse().expect("code"),
+                peaks: std::array::from_fn(|ch| {
+                    let bins = c[1 + ch].as_bytes();
+                    assert_eq!(bins.len(), 4, "one bin per sample");
+                    std::array::from_fn(|n| {
+                        let bin = (bins[n] as char).to_digit(16).expect("hex bin");
+                        bin as f32 * PEAK_BIN_HZ
+                    })
+                }),
+                note: c[5].parse().expect("note"),
+            }
+        })
+        .collect()
+}
+
+/// The run-4 `Trigger` (counter fire) and `Note` (the note the sound element
+/// received at a fire) decisions over the span of [`smart2_trigger_blocks`],
+/// as [`feedback_decisions`] encodes them.
+pub fn smart2_decisions() -> Vec<Decision> {
+    time_kind_value_decisions("smart2_decisions.tsv")
+}
+
+/// The blocks of the run-4 counter fires (the `Trigger` rows' value column).
+pub fn smart2_fire_blocks() -> Vec<usize> {
+    read("smart2_decisions.tsv")
+        .lines()
+        .map(|l| l.split('\t').collect::<Vec<_>>())
+        .filter(|c| c[1] == "Trigger")
+        .map(|c| c[2].parse().expect("block"))
         .collect()
 }

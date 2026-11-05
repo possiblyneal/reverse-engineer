@@ -1,17 +1,31 @@
-//! The SMART-2 feedback graph's trigger path: `Threshold 20` feeding
-//! `ThresholdCounter`, as configured in `BT-SMART-2-v5.1.2`.
+//! The SMART-2 feedback graph, as configured in `BT-SMART-2-v5.1.2`: the trigger
+//! path (`ExprTriggerAll` into `Threshold 20` into `ThresholdCounter`) and note
+//! selection (`ExprNoteSelection`).
 //!
 //! Evidence and open items: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
-//! Not implemented (unresolved or not captured): the band-pass, Aggregator and
-//! `ExprTriggerAll` stages upstream of the threshold, the threshold's own
-//! `averageEpoch` smoothing, per-channel `PeakFrequency`, `ExprNoteSelection`
-//! channel order, and the `SoundElement` note mapping.
+//! Not implemented (unresolved): the band-pass `OutAmplitude`, the Aggregator
+//! and per-channel `PeakFrequency` computation, so both paths start from the
+//! values those stages logged; and the `SoundElement` note playback.
 
 mod counter;
+mod note;
+mod smoother;
 mod threshold;
+mod trigger_all;
 
 pub use counter::Counter;
+pub use note::{NoteSelection, PeakFrequencies};
 pub use threshold::Threshold;
+pub use trigger_all::{trigger_all, BandAmplitudes, UnsupportedControl};
+
+use smoother::Smoother;
+
+/// Sample rate of the stream the graph runs at.
+const RATE_HZ: usize = 500;
+/// `averageEpoch` of `Threshold 20`, in milliseconds.
+const AVERAGE_EPOCH_MS: usize = 125;
+/// `ExprTriggerAll` yields volts; the threshold stage works in microvolts.
+const VOLTS_TO_MICROVOLTS: f64 = 1e6;
 
 /// What one block of threshold input produced.
 pub struct BlockOutput {
@@ -21,8 +35,10 @@ pub struct BlockOutput {
     pub trigger: bool,
 }
 
-/// `Threshold 20` then `ThresholdCounter`, fed one block at a time.
+/// `ExprTriggerAll`, then `Threshold 20` and `ThresholdCounter`, fed one block
+/// at a time.
 pub struct TriggerPath {
+    smoother: Smoother,
     threshold: Threshold,
     counter: Counter,
 }
@@ -33,9 +49,31 @@ impl TriggerPath {
     /// `now_ms` passed to [`TriggerPath::process_block`].
     pub fn smart2(timer_start_ms: i64) -> Self {
         Self {
-            threshold: Threshold::smart2(500),
+            smoother: Smoother::new(RATE_HZ * AVERAGE_EPOCH_MS / 1000),
+            threshold: Threshold::smart2(RATE_HZ),
             counter: Counter::smart2(timer_start_ms),
         }
+    }
+
+    /// Process one block of band amplitudes under the Evaluator code `control`,
+    /// read at clock time `now_ms`: `ExprTriggerAll`, microvolt scaling, the
+    /// `averageEpoch` smoothing, then [`TriggerPath::process_block`].
+    ///
+    /// # Errors
+    /// Fails on an Evaluator code `ExprTriggerAll` has no recovered result for.
+    pub fn process_amplitudes(
+        &mut self,
+        now_ms: i64,
+        control: u32,
+        block: &[BandAmplitudes],
+    ) -> Result<BlockOutput, UnsupportedControl> {
+        let mut smoothed = Vec::with_capacity(block.len());
+        for &amplitudes in block {
+            let microvolts =
+                (f64::from(trigger_all(control, amplitudes)?) * VOLTS_TO_MICROVOLTS) as f32;
+            smoothed.push(f64::from(self.smoother.push(microvolts)));
+        }
+        Ok(self.process_block(now_ms, &smoothed))
     }
 
     /// Process one block of smoothed inputs read at clock time `now_ms`.

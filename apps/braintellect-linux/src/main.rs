@@ -27,7 +27,12 @@ fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     );
     session.start(ACTIVE_CHANNELS)?;
     while let Some(frame) = session.next_frame()? {
-        let uv: Vec<String> = frame.microvolts.iter().map(|v| format!("{v:.3}")).collect();
+        let uv: Vec<String> = frame
+            .channels
+            .iter()
+            .flatten()
+            .map(|v| format!("{v:.3}"))
+            .collect();
         println!("{}\t{}", frame.counter, uv.join("\t"));
     }
     eprintln!("stream ended, {:?}", session.stats());
