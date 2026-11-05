@@ -211,6 +211,8 @@ One complete SMART-2 session (guest profile, no wearer, sensors off, 240 s, 30,0
 ### Not resolved
 
 - The first about 600 logged samples of Band 10 and Band 80 (BandPassFilter start-up) do not match: the replay with a warm Source chain and a zero-state band-pass reproduces neither the size nor the timing of the early transient. Candidate causes (initial filter state, gating of the first blocks, a different start offset) were tried only coarsely and none fits.
+- Band 10 on Ch2 (correlation 0.73 at a median error of about 1 %): a few late-held maxima in the 83-sample max window differ, cause not isolated. The Rust replay (`apps/braintellect-linux/tests/parity_smart2_stages.rs`) leaves it out of its stage figures, as it does the start-up span above.
+- Band-pass and PeakFrequency parity has no tolerance: the Rust replay from decoded EEG shows median relative errors of 1 to 5 % on the other Bands and 2.5 % of PeakFrequency bins differing over the 1000 logged samples after the start-up span, and 11 of 20 note decisions differ. The harness defines no tolerance for that, so those outputs are reported, not asserted.
 - The exact IIR design behind the Source notch and high-pass (IPP generator internals) and whether the 150 Hz low-pass FIR is applied: the replay cannot tell it from a 4-sample change of alignment.
 - Why the log records `dataAlreadyFiltered: 1` while the software filters demonstrably act (`+0x10c` flag; see "Source-side software filters").
 - The Aggregator numeric replay against logged output (the code reading is below).

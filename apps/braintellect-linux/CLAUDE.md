@@ -54,8 +54,21 @@ those findings, it cites them.
   note map (`NoteSelection`) from the logged amplitudes and PeakFrequencies,
   matching pass flags, triggers and every block's note; notes at fires replay at
   the baseline's fire blocks because the counter's timer is sub-block and fires
-  one block late twice in 20. Still unimplemented: `OutAmplitude`, the Aggregator
-  and `PeakFrequency` computation (`audio-feedback.md`, "Run 3", "Run 4").
+  one block late twice in 20. `Smart2Graph` (`src/feedback/graph.rs`) runs the
+  stages upstream of those from decoded EEG: the Source chain (`source.rs`: 25 Hz
+  band-stop, 150 Hz FIR low-pass, 1.5 Hz high-pass; `iir.rs`, `fir.rs`),
+  `BandPass`, `PeakFrequency` and the `continuous` Aggregator (the `Smoother`),
+  all parameterised by `Smart2Design`, which `smart2_design.tsv` fills from the
+  design XML. `tests/parity_smart2_stages.rs` asserts the Aggregator exactly
+  from the logged bands and the 20 counter triggers from decoded EEG. Not
+  asserted, because the harness has no tolerance that fits and none may be
+  added without a decision: Band 10/80 amplitudes (median error 1 to 5 %) and
+  PeakFrequency bins (2.5 % differ over the committed 1000-sample span); the ignored `stage_agreement_report` prints
+  both, excluding the start-up samples and Band 10 Ch2 (`audio-feedback.md`,
+  "Not resolved"). Notes from decoded EEG match the baseline at 9 of 20 fires
+  (ignored `end_to_end_note_decisions_match_the_baseline`). Still unimplemented:
+  `OutAmplitude`, the Evaluator (its code is a per-block input) and the Source
+  chain's exact IPP filter designs (`audio-feedback.md`, "Run 3", "Run 4").
   `tests/parity_storage.rs` replays the record fixture through `src/storage.rs`
   (`tests/harness/session.rs` maps the flat fixture to and from `SessionRecord`).
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
@@ -74,7 +87,8 @@ those findings, it cites them.
   MAC, host id, machine/profile/user name, or timestamp. Regenerate it only with
   `python3 -I scripts/make-fixtures.py` from the raw capture in the repo's
   `tmp/s26/run2/` (handshake, stream, record), `tmp/s26/run3/` (feedback) and
-  `tmp/s26/run4/` (`smart2_*`, via `--src4`); raw captures stay in `tmp/`, never in Git. Grep the fixtures
+  `tmp/s26/run4/` (`smart2_*`, via `--src4`, including `smart2_design.tsv`,
+  `smart2_eeg.tsv` and `smart2_stages.tsv`); raw captures stay in `tmp/`, never in Git. Grep the fixtures
   for the MAC and serial before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
   SMART-2 feedback graph → audio output → session storage → session UI.

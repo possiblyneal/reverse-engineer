@@ -13,6 +13,12 @@ IDs, machine/profile/user names, session/client ids and timestamps never enter
 the fixtures: only the wire bytes, a short stream window, decoded-sample
 expectations, control decisions, and a handful of record fields are kept.
 
+The run-4 stage fixtures (`smart2_design.tsv`, `smart2_eeg.tsv`,
+`smart2_stages.tsv`) carry the design properties of the upstream elements, the
+decoded no-wearer channel input aligned to the logged stage values, and those
+values: the Band 10/80 amplitudes, the Aggregator outputs and the PeakFrequency
+bins, per 4-sample block (`audio-feedback.md`, "Alignment").
+
 Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--out DIR]
 """
 import argparse
@@ -25,6 +31,14 @@ FEEDBACK_BLOCKS = 2000  # 4 samples each (16 s); the threshold window is steady 
 FEEDBACK_EEG_MS = 5000  # EEG window length, from the first threshold sample
 SMART2_TRIGGER_BLOCKS = 1500  # ExprTriggerAll inputs; the threshold window is steady well before the end
 SMART2_NOTE_BLOCKS = 15200  # past the 15000-sample note tracker window and the Evaluator's 111 -> 183 switch
+SMART2_STAGE_BLOCKS = 400  # logged stage values: 1600 samples, past the 600-sample start-up; kept under the 500 KB file limit
+# Channel sample (counting both samples of every frame, from the start command) of
+# the logged stage values' first sample: `2 * 34000 + 3659` found by sliding-DFT
+# against the logged PeakFrequency (`audio-feedback.md`, "Alignment (observed)"),
+# plus 15 samples, the offset that minimises the Band 10/80 error once the 150 Hz
+# low-pass FIR (about 11.5 samples of group delay) is in the chain.
+SMART2_FIRST_SAMPLE = 2 * 34000 + 3659 + 15
+SMART2_WARMUP_SAMPLES = 1500  # Source-filter history before the first logged sample
 PEAK_BIN_HZ = 500 / 512  # PeakFrequency resolution: sample rate / FFT order 512
 FRAME_LEN = 32
 MARKER = bytes.fromhex("acbccc03")
@@ -274,6 +288,129 @@ def smart2(src):
     return "".join(trigger_rows), "".join(note_rows), "".join(decision_rows)
 
 
+def stream_frames(src):
+    """Every 32-byte stream frame received after the start command, in order."""
+    data, started = bytearray(), False
+    for line in (src / "trace5.log").read_text().splitlines():
+        p = line.split(" ")
+        if len(p) < 6:
+            continue
+        if p[2] == "TX" and p[3] == "BT_Device::write" and bytes.fromhex(p[-1]).startswith(b"!*#48,1,"):
+            started = True
+        if started and p[2] == "RX" and p[3] == "win32" and p[4] == "GetOverlappedResult":
+            try:
+                data += bytes.fromhex(p[-1])
+            except ValueError:
+                continue
+    frames, off = [], data.find(MARKER)
+    while 0 <= off and off + FRAME_LEN <= len(data):
+        if data[off:off + 4] != MARKER:
+            off = data.find(MARKER, off + 1)
+            continue
+        frames.append(bytes(data[off:off + FRAME_LEN]))
+        off += FRAME_LEN
+    return frames
+
+
+def local(tag):
+    return tag.rsplit("}", 1)[-1]
+
+
+def design_rows(src, header):
+    """The design properties of the upstream elements, as tab-separated rows.
+
+    Element names (`BPF Ch1 Band 10`, `PeakFreq Ch1`) give channel and band label;
+    the Source filter settings come from the session header and the app log.
+    """
+    root = ET.fromstring((src / "130-t1.xml").read_text())
+    interference2 = re.findall(
+        r"interferenceFilter2 -> (.*)", (src / "app.log").read_text(errors="replace"))[-1]
+    rows = [
+        ("rate", header["samplesPerSecond"]),
+        ("source", "interferenceFilter2", interference2.strip()),
+        ("source", "lowPassCutoff", header["deviceLowPassCutoff"]),
+        ("source", "highPassCutoff", header["deviceHighPassCutoff"]),
+    ]
+    aggregators = set()
+    for element in root.iter():
+        if local(element.tag) != "element":
+            continue
+        name = element.get("name")
+        props = {p.get("key").rsplit(".", 1)[1]: p.text
+                 for p in element.iter() if local(p.tag) == "property"}
+        if m := re.fullmatch(r"BPF Ch(\d) (Band \d+)", name):
+            rows.append(("bandpass", m[1], m[2], props["lowFrequency"], props["highFrequency"],
+                         props["windowType"], props["filterOrder"]))
+        elif m := re.fullmatch(r"PeakFreq Ch(\d)", name):
+            rows.append(("peak", m[1], props["fftOrder"], props["lowFrequency"],
+                         props["highFrequency"], props["windowType"]))
+        elif re.fullmatch(r"Aggregator Ch\d Band \d+", name):
+            aggregators.add((props["flowStyle"], props["averageEpoch"]))
+    if len(aggregators) != 1:
+        raise SystemExit("Aggregators differ in style or epoch")
+    rows.append(("aggregator", *aggregators.pop()))
+    return rows
+
+
+def smart2_stages(src, header):
+    """Run-4 stage values per block and the decoded EEG aligned to them.
+
+    `smart2_stages.tsv`, one row per 4-sample block: the Evaluator code, the 8
+    band-pass amplitudes A..H in volts (4 samples each; A, B = Ch1, Ch2 Band 10,
+    C, D = Ch1, Ch2 Band 80, E, F = Ch3, Ch4 Band 10, G, H = Ch3, Ch4 Band 80),
+    the 8 Aggregator outputs in the same order, and the 4 PeakFrequency bins (hex,
+    one digit per sample). `smart2_eeg.tsv`: the first column is the sample's
+    index relative to the first logged sample (negative: Source-filter history),
+    then microvolts for channels 1..4.
+    """
+    amps, aggs, peaks = [], {}, []
+    for line in (src / "decisions5.log").read_text(errors="replace").splitlines():
+        parts = line.split(" ", 3)
+        if len(parts) < 4 or parts[1] != "EX":
+            continue
+        if parts[3].startswith("n=9 "):
+            amps.append(expression_records(line))
+        elif parts[3].startswith("n=5 "):
+            peaks.append(expression_records(line))
+        elif parts[3].startswith("n=2 "):
+            aggs.setdefault(parts[2], []).append(expression_records(line))
+    count = SMART2_STAGE_BLOCKS
+    if min(len(amps), len(peaks), *map(len, aggs.values())) < count:
+        raise SystemExit("run-4 stage logs are shorter than the stage span")
+    # Each Aggregator feeds one Balance expression; the Aggregator's first output
+    # equals its band-pass input's first sample, which tells the inputs apart.
+    first = [amps[0][i][0] for i in range(8)]
+    by_input = {}
+    for records in aggs.values():
+        for slot in (0, 1):
+            by_input[first.index(records[0][slot][0])] = (records, slot)
+    if sorted(by_input) != list(range(8)):
+        raise SystemExit("Aggregator outputs do not map onto the 8 band-pass inputs")
+
+    def control(records):
+        j = records[-1]
+        if len(set(j)) != 1:
+            raise SystemExit("Evaluator code changed inside a block")
+        return int(j[0])
+
+    stage_rows = []
+    for b in range(count):
+        band = [F32_DIGITS % v for rec in amps[b][:8] for v in rec]
+        agg = [F32_DIGITS % v for i in range(8) for v in by_input[i][0][b][by_input[i][1]]]
+        bins = [
+            "".join("%x" % round(v / PEAK_BIN_HZ) for v in rec) for rec in peaks[b][:4]]
+        stage_rows.append("\t".join([str(control(amps[b])), *band, *agg, *bins]) + "\n")
+
+    uv = expected_microvolts([b"".join(stream_frames(src))], header)
+    eeg_rows = []
+    for s in range(SMART2_FIRST_SAMPLE - SMART2_WARMUP_SAMPLES, SMART2_FIRST_SAMPLE + 4 * SMART2_TRIGGER_BLOCKS):
+        volts = uv[s // 2][1]
+        eeg_rows.append(
+            f"{s - SMART2_FIRST_SAMPLE}\t"
+            + "\t".join("%.6f" % volts[2 * c + s % 2] for c in range(4)) + "\n")
+    return "".join(stage_rows), "".join(eeg_rows)
+
+
 def feedback_eeg(src, t0, header):
     """EEG frames (counter, 8 microvolt values in channel order) received within the window."""
     trace = (src / "trace.log").read_text().splitlines()
@@ -351,6 +488,14 @@ def main():
     (args.out / "smart2_trigger_blocks.tsv").write_text(trigger)
     (args.out / "smart2_note_blocks.tsv").write_text(note)
     (args.out / "smart2_decisions.tsv").write_text(decs4)
+
+    header4 = dict(re.findall(
+        r"<base:(\w+)>([^<]*)</base:\1>", (args.src4 / "130-t0.xml").read_text()))
+    stages, eeg = smart2_stages(args.src4, header4)
+    (args.out / "smart2_stages.tsv").write_text(stages)
+    (args.out / "smart2_eeg.tsv").write_text(eeg)
+    (args.out / "smart2_design.tsv").write_text("".join(
+        "\t".join(r) + "\n" for r in design_rows(args.src4, header4)))
 
 
 if __name__ == "__main__":
