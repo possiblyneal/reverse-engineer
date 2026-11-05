@@ -150,3 +150,72 @@ pub fn stored_record() -> StoredRecord {
             .collect(),
     )
 }
+
+/// One block of the threshold stage as the real app processed it: the counter's
+/// clock reading, the 4 smoothed threshold inputs, and the pass flags it produced.
+pub struct FeedbackBlock {
+    pub time_ms: u64,
+    pub values: [f64; 4],
+    pub passes: [bool; 4],
+}
+
+/// The baseline threshold-stage blocks, in order.
+pub fn feedback_blocks() -> Vec<FeedbackBlock> {
+    read("feedback_blocks.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            assert_eq!(c.len(), 9, "time, 4 values, 4 pass flags");
+            FeedbackBlock {
+                time_ms: c[0].parse().expect("time"),
+                values: std::array::from_fn(|i| c[1 + i].parse().expect("value")),
+                passes: std::array::from_fn(|i| c[5 + i] == "1"),
+            }
+        })
+        .collect()
+}
+
+/// The baseline feedback decisions, aligned to [`feedback_blocks`]: `Trigger`
+/// (a counter fire, `new` = 1) and `Note` (the note input the sound element
+/// received, `new` = its value). `old` is 0.
+pub fn feedback_decisions() -> Vec<Decision> {
+    read("feedback_decisions.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            Decision {
+                time_ms: c[0].parse().expect("time"),
+                kind: c[1].to_owned(),
+                old: 0,
+                new: if c[1] == "Trigger" {
+                    1
+                } else {
+                    c[2].parse().expect("note")
+                },
+            }
+        })
+        .collect()
+}
+
+/// One received EEG frame of the window: arrival time, counter, and the 8
+/// payload microvolt values in payload order (channel order is unresolved).
+pub struct EegFrame {
+    pub time_ms: u64,
+    pub counter: u16,
+    pub microvolts: [f64; 8],
+}
+
+/// The baseline EEG window, aligned to [`feedback_blocks`] (same zero).
+pub fn feedback_eeg() -> Vec<EegFrame> {
+    read("feedback_eeg.tsv")
+        .lines()
+        .map(|l| {
+            let c: Vec<&str> = l.split('\t').collect();
+            EegFrame {
+                time_ms: c[0].parse().expect("time"),
+                counter: c[1].parse().expect("counter"),
+                microvolts: std::array::from_fn(|i| c[2 + i].parse().expect("microvolts")),
+            }
+        })
+        .collect()
+}

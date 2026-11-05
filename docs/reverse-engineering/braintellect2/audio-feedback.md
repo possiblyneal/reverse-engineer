@@ -116,11 +116,26 @@ The property map is at `0x13f2afa` and the setter is at `0x6433d0`. `type` accep
 - About 65% of the 5,000 ms window passes by construction, so the auto threshold tracks the signal: about two thirds of recent samples pass, whatever the absolute level.
 - `timeHigh` fires on the first passing sample in the first block that begins at least `triggerEpoch` (500 ms) after the last fire or after start. The trigger output then stays 1 for the rest of that block. The input does not have to stay high for those 500 ms. Fires repeat at most once per epoch while passes continue, subject to block size and to how `SoundElement` consumes the trigger.
 - `triggerEpoch` is read as milliseconds against the timer. The divisor at `0x1895360` and the constructor defaults were not reconciled.
-- The 0-based or 1-based indexing of the order statistic in `0x62e3c0` is unresolved, which shifts the quantile by one sample.
+- The static `round(n·lower)` reading of the quantile index is superseded by the run-3 capture below (`trunc(n·lower)`, zero-based).
 
 ### Logging (observed)
 
 No runtime log string exists for threshold pass/fail, threshold updates, or counter fires. Only the validation errors exist (for example `"invalid trigger epoch"`, `0x18becfc`). A session's `braintellect.log` therefore cannot confirm this behavior. Only the element outputs in a recorded feedback series can.
+
+### Run 3 decision capture (observed)
+
+One SMART-2 session (guest profile, no wearer, sensors off) captured with one Frida script hooking the serial reads and the threshold and counter functions on a shared clock. Raw captures stay in the main checkout's `tmp/s26/run3/` (not committed); the committed fixtures are `tests/fixtures/feedback_{blocks,decisions,eeg}.tsv`, scrubbed and reproduced by `scripts/make-fixtures.py`.
+
+- **Quantile index:** the threshold is the sorted window's element at `trunc(n·lower)`, zero-based, clamped to `n − 1`, with `lower` the single-precision `0.65`. This replaces the static `round(n·lower)` reading.
+- **Window capacity:** a fixed 2,500 values (500 Hz × 5,000 ms). The threshold is recomputed after every input block and applies to the next block's samples.
+- **Pass flags:** the clone reproduces every recorded pass flag of the fixture's blocks (0 mismatches).
+- **Counter clock:** the timer is read once per block, as the static reading said. The clone reproduces every recorded fire given the observed per-block timer reading and a timer start at least 250 ms before the first block (the baseline's first fire is 250 ms after the first block). The exact start offset is unresolved.
+- **Decision stream:** `Trigger` and `Note` decisions are in `feedback_decisions.tsv`. The clone reproduces the `Trigger` decisions only.
+
+Gaps (not reproducible from this evidence, so not implemented):
+
+- The capture covers about 163 of 240 s: the guest's D: volume filled and the hook logs stopped. The PeakFrequency hook recorded nothing, cause unknown, so no per-channel peak outputs exist.
+- Upstream stages (band-pass, Aggregator, `ExprTriggerAll`), the `averageEpoch` smoothing, `ExprNoteSelection` channel order, and the `SoundElement` note mapping are unresolved. The channel-order mapping is not adopted: the evidence does not single one out. End-to-end EEG-to-decision parity is therefore not claimed; `feedback_eeg.tsv` holds the aligned EEG window for when those stages are recovered.
 
 ## SMART-2 Evaluator
 

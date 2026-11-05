@@ -47,7 +47,10 @@ those findings, it cites them.
   restate them. `tests/parity_selfcheck.rs` proves each assertion is green on the
   baseline and red on a wrong output. `tests/harness/transport.rs` is the
   fixture-fed in-memory transport that replays handshake replies and the stream.
-  The feedback-graph layer has assertions and fixtures but no clone code yet;
+  `tests/parity_feedback.rs` replays the threshold-stage input through
+  `src/feedback/` (`Threshold` then `Counter`, via `TriggerPath`) and matches the
+  pass flags and counter triggers; the upstream stages, per-channel peaks, channel
+  order and note mapping are unimplemented (`audio-feedback.md`, "Run 3").
   `tests/parity_storage.rs` replays the record fixture through `src/storage.rs`
   (`tests/harness/session.rs` maps the flat fixture to and from `SessionRecord`).
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
@@ -65,7 +68,7 @@ those findings, it cites them.
   fields), with the B-2 serial replaced by the placeholder `SCRUBBEDSN00` and no
   MAC, host id, machine/profile/user name, or timestamp. Regenerate it only with
   `python3 -I scripts/make-fixtures.py` from the raw capture in the repo's
-  `tmp/s26/run2/`; raw captures stay in `tmp/`, never in Git. Grep the fixtures
+  `tmp/s26/run2/` (handshake, stream, record) and `tmp/s26/run3/` (feedback); raw captures stay in `tmp/`, never in Git. Grep the fixtures
   for the MAC and serial before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
   SMART-2 feedback graph → audio output → session storage → session UI.
