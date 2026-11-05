@@ -106,6 +106,12 @@ pub fn stream_frames() -> Vec<Frame> {
         .collect()
 }
 
+/// The baseline stream window as the capture delivered it: one chunk per
+/// fixture line, not aligned with frames.
+pub fn stream_chunks() -> Vec<Vec<u8>> {
+    read("stream.txt").lines().map(unhex).collect()
+}
+
 /// Baseline microvolts per frame: counter and the 8 payload samples.
 pub fn expected_microvolts() -> Vec<(u16, Vec<f64>)> {
     read("microvolts.tsv")

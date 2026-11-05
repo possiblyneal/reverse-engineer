@@ -21,10 +21,19 @@ those findings, it cites them.
   by inspection of internal structure.
 - **No guessing past the evidence.** The protocol source of truth is
   `docs/reverse-engineering/braintellect2/b2-protocol.md`. Items it marks
-  unresolved — the `setStart` command framing, the 110/112/131 reply layouts,
-  the device family the B-2 reports, and the inbound packet's trailer/length and
-  `sampleValidation` check — are not implemented until the T2 baseline capture
-  resolves them. Implemented so far: the verified `decode` arithmetic only (the sensor gain is not floored; the live app runs with 10).
+  unresolved — the 110/112/131 reply layouts,
+  the device family the B-2 reports, and the 110/112 payload meaning — are not
+  implemented. Implemented so far (`src/acquisition/`): the `decode` arithmetic
+  (the sensor gain is not floored; the live app runs with 10), command encoding
+  (`command`), the 32-byte frame parser with counter and `sampleValidation`
+  error counters (`stream`), the handshake/start/stop/stream `Session` over any
+  `Read + Write` (`session`), and the RFCOMM socket adapter (`rfcomm`). Channel
+  order within a frame is unresolved, so samples are surfaced in payload order;
+  the device family and gains are supplied by the caller, not read from the device.
+- **Transport boundary.** Protocol logic runs over `Read + Write`; only
+  `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
+  (`scripts/run braintellect-linux -- --mac <MAC>`) needs the adapter free of the
+  Windows VM (pairing on the host invalidates the VM's bond) and is manual.
 - **Do not copy the original's bugs.** Reproduce intended behavior, not defects.
   Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
   audio endpoint exists, and the validation-induced null cascades where the
@@ -36,8 +45,10 @@ those findings, it cites them.
   observable behavior only. Tolerances (`SAMPLE_EPSILON_UV`, `TIMING_WINDOW_MS`,
   `RECORD_EPSILON`) are defined once in `tests/harness/tolerance.rs`; never
   restate them. `tests/parity_selfcheck.rs` proves each assertion is green on the
-  baseline and red on a wrong output. Layers not built yet (feedback graph,
-  storage, command encoding) have assertions and fixtures but no clone code.
+  baseline and red on a wrong output. `tests/harness/transport.rs` is the
+  fixture-fed in-memory transport that replays handshake replies and the stream.
+  Layers not built yet (feedback graph, storage) have assertions and fixtures
+  but no clone code.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal (a short stream window, a handful of record
