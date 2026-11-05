@@ -33,4 +33,4 @@ and the target index live here.
 ## Child Index
 
 - `braintellect2/CLAUDE.md` — BRAINtellect2 / B-2 findings (wire protocol, device
-  connection, audio feedback, session storage) and the HIRREM literature corpus.
+  connection, audio feedback, session storage, sensor status) and the HIRREM literature corpus.

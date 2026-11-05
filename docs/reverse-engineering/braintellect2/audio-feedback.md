@@ -81,17 +81,85 @@ The tone trigger comes from `Threshold 20`, followed by `ThresholdCounter`:
 | Counter type | `timeHigh` |
 | Counter trigger epoch | 500 ms |
 
-Observed wiring sends the threshold pass/fail state to the counter, whose output triggers the sound. The counter is configured with a 500 ms trigger epoch; whether that means continuously high input and how it resets or repeats remain unverified.
+The threshold's pass/fail output feeds the counter, and the counter's output triggers the sound. The design also sets `threshold = 10.0`, `duration = 0`, `reverseRatioOnDecrease = false`, and `triggerModulus = 1`.
 
-### Static implementation evidence
+### Threshold (observed)
 
-Static disassembly of `braintellect.exe` (SHA-256 `af7ff5430ee10c2d548450819f54a3f939af474953a42b959fd99739519c2560`) shows:
+Static disassembly of `braintellect.exe` (SHA-256 `af7ff5430ee10c2d548450819f54a3f939af474953a42b959fd99739519c2560`) with Ghidra headless. The property map is at `0x13e7eda`–`0x13e80f8` and setup is at `0x6300e0`.
 
-- The processing loop at `0x62f920`–`0x62fcc6` passes input through `ThresholdSeries` and converts its Boolean result to `0.0` or `1.0` at `0x62fa35`–`0x62fa48`.
-- An inspected simple-comparison branch at `0x62ed70` marks a sample successful when it is greater than or equal to its comparison threshold. This does not establish which branch implements the active design's `decrease` goal.
-- `timeHigh` selects handler `0x643140` at `0x6431df`–`0x643204`; this identifies dispatch but not the counter's full timing or reset behavior.
+- **Smoothing:** `averageEpoch` (ms) sets a boxcar mean over the last `rate·averageEpoch/1000` samples (`0x6543f0` → `0x654fe0`). During warm-up it divides by the number of samples seen. The smoothed value `v` is `OutSignal`.
+- **Window:** the last `rate·thresholdEpoch/1000` values of `v`, kept as a ring and a sorted multiset (`0x62e850`). `thresholdEpoch` must be at least 50 ms.
+- **Auto threshold** (`0x62e6e0`, after every input block in auto mode, gated at `0x62fd2f`). With `n` values in the window:
+  - single, goal `increase`: `k = round(n·(1 − lower))`;
+  - single, goal `decrease`: `k = round(n·lower)`;
+  - `k = n` is clamped to `n − 1`, and the threshold is the `k`-th order statistic of the window (`0x62e3c0`);
+  - double: low = order statistic at `round(n·(1 − lower))`, high = order statistic at `round(n·upper)`;
+  - an empty window gives `0.0`.
+- **Pass test** (`0x62ed70`): single `increase` passes when `v > thr`, single `decrease` when `v < thr` (strict), and double when `low < v < high`.
+- **Duration** (`0x62edd4`–`0x62ee35`): `0` means each sample passes or fails on its own. Otherwise passing time accumulates, the output stays `0` until it reaches `duration`, and any fail resets it.
+- **Outputs** (loop `0x62f920`): `OutPassFail`, `OutPassPercent` (passes ÷ filled count), `OutRatio` (`v/thr`; `(thr − v)/thr` when `reverseRatioOnDecrease` is set and the goal is `decrease`), `OutSignal`, and `OutThresholdLow`/`OutThresholdHigh`.
+- **Manual mode** copies `threshold`, `lowerThreshold`, and `upperThreshold` divided by `1e6` (`0x6300e0`).
+- **Resets:** a type-2 data message resets the series, and type-3 or type-4 control messages reset the window (`0x62f8f0` → `0x62f460`).
 
-If Boolean results are averaged, the average is a success fraction, but the inspected code does not establish that this happens or that `0.65` and `0.75` control it. Their meaning, the automatic-adjustment formula, and the roles of the 5,000 ms and 125 ms epochs remain unresolved. No runtime behavior was verified.
+So in SMART-2 (single, `decrease`, auto), the input is smoothed over 125 ms, the threshold is the 0.65 quantile of that smoothed signal over the last 5,000 ms, and a sample passes when it falls below it. `upperThreshold` (0.75) and `threshold` (10.0) have no effect in this configuration.
+
+### Counter (observed)
+
+The property map is at `0x13f2afa` and the setter is at `0x6433d0`. `type` accepts `rising`, `falling`, `timeHigh`, and `timeLow`. `triggerEpoch` sets `+0x1a0` and `triggerModulus` sets `+0x1a4`.
+
+- `timeHigh` runs handler `0x642ed0` with predicate `x > 0` (`0x642610`). `timeLow` uses `x == 0` (`0x642630`).
+- The handler reads the timer (`0xf30a30`) once per input block, before its sample loop. For each sample where the predicate holds, it increments a count. If that block's elapsed time is at least `triggerEpoch`, it also zeroes the count and sets the trigger, which is not cleared again within the block. The timer restarts after any block that fired. The constructor (`0x643240`) starts the timer.
+- `triggerModulus` is read only by the `rising`/`falling` handler (`0x642cc0`, trigger when `count % modulus == 0`).
+
+### Inferred
+
+- About 65% of the 5,000 ms window passes by construction, so the auto threshold tracks the signal: about two thirds of recent samples pass, whatever the absolute level.
+- `timeHigh` fires on the first passing sample in the first block that begins at least `triggerEpoch` (500 ms) after the last fire or after start. The trigger output then stays 1 for the rest of that block. The input does not have to stay high for those 500 ms. Fires repeat at most once per epoch while passes continue, subject to block size and to how `SoundElement` consumes the trigger.
+- `triggerEpoch` is read as milliseconds against the timer. The divisor at `0x1895360` and the constructor defaults were not reconciled.
+- The 0-based or 1-based indexing of the order statistic in `0x62e3c0` is unresolved, which shifts the quantile by one sample.
+
+### Logging (observed)
+
+No runtime log string exists for threshold pass/fail, threshold updates, or counter fires. Only the validation errors exist (for example `"invalid trigger epoch"`, `0x18becfc`). A session's `braintellect.log` therefore cannot confirm this behavior. Only the element outputs in a recorded feedback series can.
+
+## SMART-2 Evaluator
+
+The `Evaluator` element (`style = coherenceChecker`, `valuesToCheck = 2`, `coherenceThreshold = 0.80`, `balanceThreshold = 0.15`, `defaultControlValue = 111`, `averageEpoch = 60`, `sendControlMessageEachEpoch = true`) produces the control value that `ExprNoteSelection` and `ExprTriggerAll` decode.
+
+Inputs from the design:
+
+- **Balance** is `(B − A)/min(A, B)` over 60 s averages of band-passed amplitude, for the Ch1/Ch2 and Ch3/Ch4 pairs in Band 10 (1–3 Hz) and Band 80 (23–36 Hz).
+- **Coherence** inputs exist only for Ch3/Ch4, in Band 10 and Band 80.
+
+### Observed
+
+The key table is at `0x13f1144`–`0x13f1253`, the setter at `0x63dc28`–`0x63dedb`, and the constructor defaults at `0x640907`–`0x640989`.
+
+- **Epoch:** `averageEpoch` is in **seconds** here: epoch samples = `averageEpoch × rate`, with no `/1000` (`0x63f7ef`–`0x63f80f`). At each boundary, `process` (`0x640130`) pushes the latest input into each series, which holds the last `valuesToCheck` epochs (`0x63e540`), and runs `processLogic` (`0x63eb70`) once.
+- **Decision**, recomputed from `defaultControlValue` every epoch:
+  1. **Coherence:** the first Coherence series that is full and has every value with `|value| > coherenceThreshold` wins (`0x63e2c0`). The code comes from the Balance input on the same band with the largest `|latest|`. `balanceThreshold` is not applied on this path.
+  2. **Balance:** otherwise, among Balance series that are full and have every value with `|value| > balanceThreshold`, the largest `|latest|` wins.
+  3. Otherwise the default stands.
+- **Code** = band base (`"Band 10"` → 11, `"Band 80"` → 81; `0x640a22`–`0x640a51`) + 100 for `"Channels 3n4"` (`0x63efa3`) + 1 if the latest balance is below 0, else 2 (`0x63f011`–`0x63f040`). That gives 12/13, 82/83, 112/113, or 182/183. Balance below 0 means channel A is larger, so the code ends in 2.
+- **Control message** (`0x64033f`–`0x640420`): `"Old control value: …, new control value: …"` is `ControlChange` when the value changed and `ControlLog` when it did not. With `sendControlMessageEachEpoch`, every epoch logs one.
+
+So **111 is `defaultControlValue`**, meaning no test passed. It is not an `ExprNoteSelection` code: it falls to "otherwise" and averages channels 3 and 4. **82** is Band 80, Ch1/Ch2 pair, channel 1 larger.
+
+**Design mismatch:** for the Ch3/Ch4 pair the Evaluator produces 112/113 and 182/183. `ExprNoteSelection` lists 102/103 and 101 instead, so 112/113 also fall to "otherwise" (average of channels 3 and 4). `ExprTriggerAll` does decode 112/113. The clone must keep this mismatch to stay at parity.
+
+### Observed sessions
+
+The stored type-5 logs (2026-11-04) show:
+
+- exercise 125 (worn): `ControlLog` 111 → 111 at 01:00, `ControlChange` 111 → 82 at 02:00, then 82 held;
+- exercise 126 (no sensors): 111 held throughout.
+
+### Inferred
+
+- With `valuesToCheck = 2`, no series is full at the 01:00 epoch, so 01:00 always reports the default. A change can first appear at 02:00.
+- With no sensors, floating inputs give near-equal band amplitudes and low coherence, so neither test passes and 111 holds.
+- Which path produced 82 in exercise 125 is not determined; it needs the per-epoch input values.
+- No dispatch on `style` or `evaluatorLogic` was found in `processLogic`. Whether another style changes the logic is unresolved.
 
 ## Export Completeness and Startup
 
@@ -148,15 +216,30 @@ null host backend still presents a render endpoint to Windows) made Windows enum
 `"Wave"` driver, session setup completes, and the crash is gone. A headless VM with no
 sound hardware reproduces the crash.
 
-Any valid `audiodev` backend satisfies the endpoint requirement. The offline VM is
-configured with `-audiodev wav,id=snd0,path=/storage/bst-feedback.wav`, which both
+Any valid `audiodev` backend satisfies the endpoint requirement. Through 2026-11-03 the
+offline VM used `-audiodev wav,id=snd0,path=/storage/bst-feedback.wav`, which both
 prevents the crash and records the session's feedback audio for baseline capture
 (verified: a SMART-2 Piano session produced a 44.1 kHz stereo `pcm_s16le` WAV of audible
-feedback tones). QEMU finalizes the WAV header only on a clean guest shutdown, and each
-boot overwrites the file.
+feedback tones). That backend finalizes the WAV header only on a clean guest shutdown.
+
+Since 2026-11-04 the VM uses `-audiodev alsa,id=snd0,out.dev=bstout,out.frequency=44100`
+so the operator hears the feedback live. `bstout` is an ALSA `plug` over a `file`-plugin
+tee (`/etc/asound.conf` in the container, mounted from the host) that plays to the host's
+analog output (`plughw:0,0`, front headphone jack) and writes the same stream to
+`/storage/bst-feedback.wav` (verified on the host: the tee wrote a valid 44.1 kHz stereo
+`pcm_s16le` WAV with a correct header even when the player was killed). The container needs
+`/dev/snd`, and the host's onboard audio is blacklisted by default
+(`/etc/modprobe.d/blacklist-audio.conf`), so `snd_hda_intel` must be loaded by hand before
+the VM starts. Each boot still overwrites the WAV.
+
+Observed 2026-11-04 with a live B-2 and headband: a full 4-minute SMART-2 Piano session
+played feedback tones on the front headphone jack in real time, and the operator heard the
+pitch change during the run. The tee wrote 262 s of 44.1 kHz stereo audio, with sound in 261
+of those seconds. Its RIFF data length is still 0 because the guest has not shut down yet, but
+the samples are complete.
 
 ## Limitations
 
 - The recovered design establishes parameters and graph wiring, not a clinical interpretation or efficacy claim.
-- The database contains sensitive material. This document intentionally does not reproduce names, dates, session contents, or signal values.
+- The database contains sensitive material. These documents reproduce no patient names, recovered-session contents, or signal values. They do cite the dates, exercise numbers, and Evaluator control-value traces of the operator's own 2026-11-04 test sessions, which carry no personal data.
 - The raw signal blobs are Java-serialized data and have not been semantically decoded in this record.

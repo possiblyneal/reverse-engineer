@@ -101,12 +101,13 @@ Packet layout (observed; `edi` = packet pointer from `[ebp+0xbc]`):
 - **Samples**: channel count is `[ebx+0x1e8]` (observed 4 on the live device).
   Each channel occupies a **4-byte group**; the per-channel byte offset advances
   by 4 (`add [ebp-0x18], 4` at VA `0x556cd1`). Byte `[+0]` of the group is not
-  used as sample magnitude (status/lead-off); the sample is the next three
+  read; the sample is the next three
   bytes as a **24-bit big-endian signed** integer (VA `0x556c46`:
   `movsx` high byte `[+1]`, `movzx` `[+2]`, `movzx` `[+3]`, two `shl 8`/`or`).
-- **Lead-off channel**: when the channel's type field `[ebx+0x1ec]` equals `1`
-  (constant at `0x188e204`), the value is instead `0x3fff - f(x)` (a 14-bit LOD
-  reading; VA `0x556c2c`).
+- **Placebo mode**: when `[ebx+0x1ec]` equals `1` (constant at `0x188e204`, VA
+  `0x556c2c`), the sample is replaced by `0x3fff - rand()`. `launchExercise` sets the
+  field from a compare with `"placebo"` (`0x440574`–`0x44059b`). There is no lead-off
+  decode (`sensor-status.md`).
 - Each decoded integer is converted to volts (below) via the per-channel
   processor object `[ebx+0x2c0]` (vtable `+0x18`) and forwarded to `0x5773a0`.
 
