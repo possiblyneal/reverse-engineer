@@ -13,6 +13,7 @@ use crate::acquisition::rfcomm::{RfcommStream, DEFAULT_CHANNEL};
 use crate::acquisition::session::Session;
 use crate::audio::sink::AlsaSink;
 use crate::audio::{self, import};
+use crate::capture::{self, Recording};
 use crate::live::{self, Environment, SessionProperties, INSTRUMENT_ID, OUTPUT_RATE_HZ};
 use crate::storage::{self, Store};
 
@@ -74,7 +75,13 @@ fn session(
     stream
         .set_read_timeout(READ_TIMEOUT)
         .map_err(|e| e.to_string())?;
-    let session = Session::open(stream, live::stream_config()?).map_err(|e| e.to_string())?;
+    // The raw RX bytes, handshake included, go to the data directory: the B-2
+    // emulator replays them into the original app (`capture.rs`).
+    let data_dir = storage::default_data_dir().ok_or("neither XDG_DATA_HOME nor HOME is set")?;
+    let (file, path) = capture::create(&data_dir).map_err(|e| format!("no capture file: {e}"))?;
+    eprintln!("recording the raw stream to {}", path.display());
+    let session = Session::open(Recording::new(stream, file), live::stream_config()?)
+        .map_err(|e| e.to_string())?;
     if stop.load(Ordering::Relaxed) {
         send(Event::Cancelled);
         return Ok(());

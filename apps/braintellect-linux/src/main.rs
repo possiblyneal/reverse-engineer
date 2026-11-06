@@ -1,4 +1,4 @@
-//! Three commands.
+//! Four commands.
 //!
 //! `braintellect-linux ui --mac <MAC>` opens the session window: connection and
 //! signal status, session properties, start and stop, live feedback, and the
@@ -7,17 +7,25 @@
 //! `braintellect-linux import <lib-dir>` copies the original's instrument banks
 //! (`dll<id>.BT.dll`) from its `lib` directory into the clone's data directory.
 //!
+//! `braintellect-linux emulate <capture> <socket>` plays a B-2 for the original app:
+//! it connects to the Unix socket a QEMU serial port is backed by and serves a raw
+//! capture recorded by a live session (`capture.rs`, `emulate.rs`).
+//!
 //! `braintellect-linux --mac <MAC>` runs live acquisition against a real B-2.
 //! It connects over RFCOMM, runs the handshake, starts streaming, and prints one
 //! line of microvolts per frame until the stream ends or Ctrl-C. Needs a paired
 //! adapter that is not owned by another host; CI never runs it.
 
+use std::io::{Read, Write};
+use std::os::unix::net::UnixStream;
 use std::path::Path;
 use std::process::ExitCode;
+use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use braintellect_linux::acquisition::rfcomm::{RfcommStream, DEFAULT_CHANNEL};
 use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::audio::import;
+use braintellect_linux::emulate::{self, Capture};
 use braintellect_linux::live;
 use braintellect_linux::ui;
 
@@ -47,7 +55,51 @@ fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-const USAGE: &str = "usage: braintellect-linux ui --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>";
+const USAGE: &str = "usage: braintellect-linux ui --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>\n       braintellect-linux emulate <capture file> <serial socket>";
+
+/// How long the emulator waits for the app's bytes before it checks the stream
+/// clock; a frame is due every 4 ms.
+const EMULATE_TICK: Duration = Duration::from_millis(1);
+
+/// The emulator's link, echoing what the app writes to stderr with the time it
+/// arrived, so a rig run can be lined up against the app's own log.
+struct Traced(UnixStream);
+
+impl Read for Traced {
+    fn read(&mut self, buf: &mut [u8]) -> std::io::Result<usize> {
+        let n = self.0.read(buf)?;
+        if n > 0 {
+            let at = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .map_or(0, |d| d.as_millis());
+            eprintln!("{at} app> {}", buf[..n].escape_ascii());
+        }
+        Ok(n)
+    }
+}
+
+impl Write for Traced {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.write(buf)
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        self.0.flush()
+    }
+}
+
+fn emulate_capture(capture: &str, socket: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let capture = Capture::parse(&std::fs::read(capture)?);
+    let stream = UnixStream::connect(socket)?;
+    stream.set_read_timeout(Some(EMULATE_TICK))?;
+    let mut link = Traced(stream);
+    eprintln!("emulating the B-2 on {socket}");
+    let origin = Instant::now();
+    emulate::serve(&mut link, &capture, &mut || {
+        u64::try_from(origin.elapsed().as_millis()).unwrap_or(u64::MAX)
+    })?;
+    Ok(())
+}
 
 fn import_banks(lib_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dest = import::default_dir().ok_or("neither XDG_DATA_HOME nor HOME is set")?;
@@ -68,6 +120,7 @@ fn main() -> ExitCode {
         ["ui", "--mac", mac] => ui::app::run((*mac).to_owned()).map_err(Into::into),
         ["--mac", mac] => run(mac),
         ["import", lib_dir] => import_banks(lib_dir),
+        ["emulate", capture, socket] => emulate_capture(capture, socket),
         _ => {
             eprintln!("{USAGE}");
             return ExitCode::from(2);

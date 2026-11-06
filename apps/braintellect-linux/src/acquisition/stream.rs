@@ -12,7 +12,7 @@
 use super::decode::{decode_sample_i24_be, ChannelCalibration, DeviceFamily};
 
 /// Frame marker (`AC BC CC 03`).
-const MARKER: [u8; 4] = [0xAC, 0xBC, 0xCC, 0x03];
+pub const MARKER: [u8; 4] = [0xAC, 0xBC, 0xCC, 0x03];
 /// Marker, 16-bit counter, `03 03`, then the payload; no trailer.
 pub const FRAME_LEN: usize = 32;
 const PAYLOAD_START: usize = 8;
