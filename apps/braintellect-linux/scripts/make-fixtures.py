@@ -13,20 +13,26 @@ IDs, machine/profile/user names, session/client ids and timestamps never enter
 the fixtures: only the wire bytes, a short stream window, decoded-sample
 expectations, control decisions, and a handful of record fields are kept.
 
-The run-4 stage fixtures (`smart2_design.tsv`, `smart2_eeg.tsv`,
-`smart2_stages.tsv`) carry the design properties of the upstream elements, the
-decoded no-wearer channel input aligned to the logged stage values, and those
-values: the Band 10/80 amplitudes, the Aggregator outputs and the PeakFrequency
-bins, per 4-sample block (`audio-feedback.md`, "Alignment").
+The SMART-2 stage fixtures come from the run-6 baseline under `tmp/s43/baseline/`
+(`decisions9.log`, `hook9s.log`, never committed; the last hook run in each file is
+used): `smart2_trigger_blocks.tsv`, `smart2_note_blocks.tsv` and `smart2_decisions.tsv`
+(the Expression inputs and the decisions the app made), `smart2_stages.tsv` (per
+4-sample block, the Band 10/80 amplitudes, the Aggregator outputs and the
+PeakFrequency bins), `smart2_stage_inputs.tsv` (the live Source output of the four
+channels and the per-block 16-tap-mean alignment flags) and
+`smart2_bandpass_stages.tsv` (one channel's band-pass FIR, amplitude and
+PeakFrequency stages). `smart2_design.tsv` comes from the run-4 design XML
+(`--src4`); the run-6 design is the same exercise.
 
 The Source-chain fixture (`smart2_source_stages.tsv`) carries one channel's live
 stage values from the run-5 capture under `tmp/s43/live/` (`hook6.log`, never
 committed): for each sample the 25 Hz band-stop input and the band-stop, low-pass
 and high-pass outputs, as the float32 bit patterns the app holds.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--out DIR]
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--baseline DIR] [--out DIR]
 """
 import argparse
+import collections
 import pathlib
 import re
 import struct
@@ -38,12 +44,6 @@ FEEDBACK_EEG_MS = 5000  # EEG window length, from the first threshold sample
 SMART2_TRIGGER_BLOCKS = 1500  # ExprTriggerAll inputs; the threshold window is steady well before the end
 SMART2_NOTE_BLOCKS = 15200  # past the 15000-sample note tracker window and the Evaluator's 111 -> 183 switch
 SMART2_STAGE_BLOCKS = 400  # logged stage values: 1600 samples, past the 600-sample start-up; kept under the 500 KB file limit
-# Channel sample (counting both samples of every frame, from the start command) of
-# the logged stage values' first sample: `2 * 34000 + 3659` found by sliding-DFT
-# against the logged PeakFrequency (`audio-feedback.md`, "Alignment (observed)"),
-# plus 15 samples, the offset that minimises the Band 10/80 error once the 150 Hz
-# low-pass FIR (about 11.5 samples of group delay) is in the chain.
-SMART2_FIRST_SAMPLE = 2 * 34000 + 3659 + 15
 PEAK_BIN_HZ = 500 / 512  # PeakFrequency resolution: sample rate / FFT order 512
 FRAME_LEN = 32
 MARKER = bytes.fromhex("acbccc03")
@@ -220,8 +220,8 @@ def expression_records(line):
     ]
 
 
-def smart2(src):
-    """Run-4 upstream-stage fixtures: ExprTriggerAll and ExprNoteSelection inputs
+def smart2(lines):
+    """Baseline upstream-stage fixtures: ExprTriggerAll and ExprNoteSelection inputs
     with the decisions the app produced from them.
 
     The two expression elements are told apart by their input count (9 =
@@ -232,7 +232,7 @@ def smart2(src):
     """
     amps, peaks, notes, blocks, selected = [], [], [], [], []
     passes, t0, prev, fires = [], None, 0, []
-    for line in (src / "decisions5.log").read_text(errors="replace").splitlines():
+    for line in lines:
         parts = line.split(" ", 3)
         if len(parts) < 3 or not parts[0].isdigit():
             continue
@@ -259,7 +259,7 @@ def smart2(src):
         elif kind == "SE_NOTEIDX" and t0 is not None:
             selected.append((ts - t0, int(line.split(" in=")[1].split(" ")[0])))
     if not len(amps) == len(peaks) == len(notes) == len(blocks):
-        raise SystemExit("run-4 stage logs are not aligned block for block")
+        raise SystemExit("baseline stage logs are not aligned block for block")
 
     def control(records):
         j = records[-1]
@@ -291,30 +291,6 @@ def smart2(src):
         + [(t, "Note", n) for t, n in selected if t <= end])
     decision_rows = [f"{t}\t{k}\t{v}\n" for t, k, v in decisions]
     return "".join(trigger_rows), "".join(note_rows), "".join(decision_rows)
-
-
-def stream_frames(src):
-    """Every 32-byte stream frame received after the start command, in order."""
-    data, started = bytearray(), False
-    for line in (src / "trace5.log").read_text().splitlines():
-        p = line.split(" ")
-        if len(p) < 6:
-            continue
-        if p[2] == "TX" and p[3] == "BT_Device::write" and bytes.fromhex(p[-1]).startswith(b"!*#48,1,"):
-            started = True
-        if started and p[2] == "RX" and p[3] == "win32" and p[4] == "GetOverlappedResult":
-            try:
-                data += bytes.fromhex(p[-1])
-            except ValueError:
-                continue
-    frames, off = [], data.find(MARKER)
-    while 0 <= off and off + FRAME_LEN <= len(data):
-        if data[off:off + 4] != MARKER:
-            off = data.find(MARKER, off + 1)
-            continue
-        frames.append(bytes(data[off:off + FRAME_LEN]))
-        off += FRAME_LEN
-    return frames
 
 
 def local(tag):
@@ -357,19 +333,124 @@ def design_rows(src, header):
     return rows
 
 
-def smart2_stages(src, header):
-    """Run-4 stage values per block and the decoded EEG aligned to them.
+def parse_bpf(hook_text):
+    """The live band-pass and PeakFrequency log lines of a hook9 run.
+
+    Returns `(edges, blocks, peak_out, peak_first)`: each `BandPass` object's
+    (low, high) edges in Hz; its per-block `(in, out, amp)` little-endian hex
+    (4 samples each); each PeakFrequency object's frequency and amplitude bits by
+    call index; and the PeakFrequency objects whose window opens on a given sample.
+    """
+    edges, blocks, peak_out, peak_first = {}, {}, {}, {}
+    for line in hook_text.splitlines():
+        rest = line.partition(" ")[2]
+        m = re.match(r"OBJ BPF (\S+) (\w+)$", rest)
+        if m:
+            raw = bytes.fromhex(m.group(2))
+            edges[m.group(1)] = (struct.unpack_from("<d", raw, 0x20)[0], struct.unpack_from("<d", raw, 0x28)[0])
+            continue
+        m = re.match(r"BPF 0x66ea81 this=(\S+) n=4 in=(\w{32}) out=(\w{32}) amp=(\w{32})$", rest)
+        if m:
+            blocks.setdefault(m.group(1), []).append(m.groups()[1:])
+            continue
+        m = re.match(r"PK this=(\S+) c=(\d+) N=512 last4=\w+ last8=\w+ o4=(\w{8})\w{8} o5=(\w{8})\w{8}(?: win=(\w{8}))?", rest)
+        if m:
+            peak_out.setdefault(m.group(1), {})[int(m.group(2))] = m.group(3, 4)
+            if m.group(5):
+                peak_first.setdefault(le_bits(m.group(5))[0], []).append(m.group(1))
+    return edges, blocks, peak_out, peak_first
+
+
+def le_bits(le_hex):
+    """Little-endian float32 hex words as big-endian bit-pattern hex words."""
+    return [f"{int.from_bytes(bytes.fromhex(le_hex[i:i + 8]), 'little'):08x}" for i in range(0, len(le_hex), 8)]
+
+
+def f32(x):
+    return struct.unpack("<f", struct.pack("<f", x))[0]
+
+
+def mean_simd(p):
+    """`ippsFIR_32f`'s 16-tap sum when the output buffer is 16-byte aligned (see `band_pass.rs`)."""
+    total = f32(f32(p[0] + p[1]) + f32(p[2] + p[3]))
+    for k in range(4, 16, 4):
+        total = f32(total + p[k + 3])
+        total = f32(total + p[k + 2])
+        total = f32(total + f32(p[k] + p[k + 1]))
+    return total
+
+
+def mean_sequential(p):
+    total = 0.0
+    for v in p:
+        total = f32(total + v)
+    return total
+
+
+def scalar_heads(high_hz, blocks):
+    """Per block, whether the 16-tap mean ran its scalar head (destination 8 bytes past
+    a 16-byte boundary: the first two outputs sum in order) instead of the SIMD order.
+
+    The app's choice follows heap addresses and is not logged, so it is recovered from
+    the logged amplitude: the sliding maximum of the logged FIR output, averaged under
+    both sum orders. A block both orders explain is recorded as `0`. A block neither
+    explains stops the run.
+    """
+    window = max(int(500 / (2 * high_hz)), 4)
+    maxima, means, seen, flags = collections.deque(), collections.deque(), 0, []
+    for _, out, amp in blocks:
+        ys = struct.unpack("<4f", bytes.fromhex(out))
+        want = [int.from_bytes(bytes.fromhex(amp)[i:i + 4], "little") for i in range(0, 16, 4)]
+        simd, head = [], []
+        for y in ys:
+            y = abs(y)
+            while maxima and maxima[-1][1] <= y:
+                maxima.pop()
+            maxima.append((seen, y))
+            while maxima[0][0] + window <= seen:
+                maxima.popleft()
+            seen += 1
+            means.append(maxima[0][1])
+            if len(means) > 16:
+                means.popleft()
+            p = [f32(v * 0.125) for v in [0.0] * (16 - len(means)) + list(means)]
+            simd.append(struct.unpack("<I", struct.pack("<f", mean_simd(p)))[0])
+            head.append(struct.unpack("<I", struct.pack("<f", mean_sequential(p)))[0])
+        simd_ok = simd == want
+        head_ok = head[:2] == want[:2] and simd[2:] == want[2:]
+        if not (simd_ok or head_ok):
+            raise SystemExit("a logged amplitude fits neither 16-tap sum order")
+        flags.append(0 if simd_ok else 1)
+    return flags
+
+
+# `ExprTriggerAll` input slots A..H -> (channel, band) of the BandPass behind each.
+SLOT_CHANNEL = (0, 1, 0, 1, 2, 3, 2, 3)
+SLOT_BAND = ("band10", "band10", "band80", "band80", "band10", "band10", "band80", "band80")
+# The graph's band-pass order: Band 10 of Ch1..4, then Band 80 of Ch1..4.
+DESIGN_ORDER = (0, 1, 4, 5, 2, 3, 6, 7)
+
+
+def smart2_stages(lines, hook_text):
+    """Baseline stage values per block and the live Source output that feeds them.
 
     `smart2_stages.tsv`, one row per 4-sample block: the Evaluator code, the 8
     band-pass amplitudes A..H in volts (4 samples each; A, B = Ch1, Ch2 Band 10,
     C, D = Ch1, Ch2 Band 80, E, F = Ch3, Ch4 Band 10, G, H = Ch3, Ch4 Band 80),
     the 8 Aggregator outputs in the same order, and the 4 PeakFrequency bins (hex,
-    one digit per sample). `smart2_eeg.tsv`: the first column is the sample's
-    index relative to the first logged sample (negative: Source-filter history),
-    then microvolts for channels 1..4.
+    one digit per sample).
+
+    `smart2_stage_inputs.tsv`, one row per block of SMART2_TRIGGER_BLOCKS: each
+    channel's 4 Source-output samples (float32 bits; the input of both its
+    band-passes and its PeakFrequency), then one flag per band-pass in the graph's
+    order (Band 10 of Ch1..4, Band 80 of Ch1..4): `1` when that block's 16-tap mean ran
+    its scalar head (`scalar_heads`).
+
+    The B-2 stream the app consumed is not recoverable from the serial log (the app
+    drops frames under the hooks), so the replay starts at the Source output.
     """
     amps, aggs, peaks = [], {}, []
-    for line in (src / "decisions5.log").read_text(errors="replace").splitlines():
+    for line in lines:
         parts = line.split(" ", 3)
         if len(parts) < 4 or parts[1] != "EX":
             continue
@@ -381,7 +462,7 @@ def smart2_stages(src, header):
             aggs.setdefault(parts[2], []).append(expression_records(line))
     count = SMART2_STAGE_BLOCKS
     if min(len(amps), len(peaks), *map(len, aggs.values())) < count:
-        raise SystemExit("run-4 stage logs are shorter than the stage span")
+        raise SystemExit("baseline stage logs are shorter than the stage span")
     # Each Aggregator feeds one Balance expression; the Aggregator's first output
     # equals its band-pass input's first sample, which tells the inputs apart.
     first = [amps[0][i][0] for i in range(8)]
@@ -406,14 +487,31 @@ def smart2_stages(src, header):
             "".join("%x" % round(v / PEAK_BIN_HZ) for v in rec) for rec in peaks[b][:4]]
         stage_rows.append("\t".join([str(control(amps[b])), *band, *agg, *bins]) + "\n")
 
-    uv = expected_microvolts([b"".join(stream_frames(src))], header)
-    eeg_rows = []
-    for s in range(SMART2_FIRST_SAMPLE, SMART2_FIRST_SAMPLE + 4 * SMART2_TRIGGER_BLOCKS):
-        volts = uv[s // 2][1]
-        eeg_rows.append(
-            f"{s - SMART2_FIRST_SAMPLE}\t"
-            + "\t".join("%.6f" % volts[2 * c + s % 2] for c in range(4)) + "\n")
-    return "".join(stage_rows), "".join(eeg_rows)
+    edges, blocks, _, _ = parse_bpf(hook_text)
+    objects = {}
+    for obj, hz in edges.items():
+        if obj not in blocks:
+            continue
+        for slot in range(8):
+            if len(blocks[obj]) >= 1 and all(
+                    f32(amps[0][slot][i]) == struct.unpack("<4f", bytes.fromhex(blocks[obj][0][2]))[i]
+                    for i in range(4)):
+                objects[slot] = obj
+    if sorted(objects) != list(range(8)):
+        raise SystemExit("the 8 amplitude band-passes are not all in the hook log")
+    heads = {slot: scalar_heads(edges[objects[slot]][1], blocks[objects[slot]]) for slot in range(8)}
+    input_rows = []
+    for b in range(SMART2_TRIGGER_BLOCKS):
+        samples = []
+        for ch in range(4):
+            slots = [s for s in range(8) if SLOT_CHANNEL[s] == ch]
+            ins = {le_bits(blocks[objects[s]][b][0]).__str__() for s in slots}
+            if len(ins) != 1:
+                raise SystemExit("a channel's band-passes do not share one input")
+            samples += le_bits(blocks[objects[slots[0]]][b][0])
+        flags = "".join(str(heads[s][b]) for s in DESIGN_ORDER)
+        input_rows.append("\t".join([*samples, flags]) + "\n")
+    return "".join(stage_rows), "".join(input_rows)
 
 
 def feedback_eeg(src, t0, header):
@@ -471,54 +569,44 @@ BANDPASS_SAMPLES = 6000  # live samples kept (cold start included); keeps the fi
 BAND_EDGES = {(1.0, 3.0): "band10", (23.0, 36.0): "band80"}  # Hz, from the BandPass object
 
 
-def bandpass_stages(src):
+def bandpass_stages(hook_text):
     """`smart2_bandpass_stages.tsv`: one channel's live BandPass and PeakFrequency stages.
 
     Per sample, as float32 bit patterns: the shared input (the Source output), the FIR
     output and `OutAmplitude` of Band 10 and of Band 80, then the PeakFrequency frequency
-    and amplitude. The channel is the one whose BandPass objects and PeakFrequency window
-    open with the same first sample (the first such channel in the log).
+    and amplitude; then, per Band 10 and Band 80, whether the sample's block ran the
+    16-tap mean's scalar head (`scalar_heads`). The channel is the one whose BandPass
+    objects and PeakFrequency window open with the same first sample (the first such
+    channel in the log).
     """
-    def bits(le_hex):
-        return [f"{int.from_bytes(bytes.fromhex(le_hex[i:i + 8]), 'little'):08x}" for i in range(0, len(le_hex), 8)]
-
-    edges, blocks, peak_out, peak_first = {}, {}, {}, {}
-    for line in (src / "hook7.log").read_text().splitlines():
-        rest = line.partition(" ")[2]
-        m = re.match(r"OBJ BPF (\S+) (\w+)$", rest)
-        if m:
-            raw = bytes.fromhex(m.group(2))
-            edges[m.group(1)] = (struct.unpack_from("<d", raw, 0x20)[0], struct.unpack_from("<d", raw, 0x28)[0])
-            continue
-        m = re.match(r"BPF 0x66ea81 this=(\S+) n=4 in=(\w{32}) out=(\w{32}) amp=(\w{32})$", rest)
-        if m:
-            blocks.setdefault(m.group(1), []).append(m.groups()[1:])
-            continue
-        m = re.match(r"PK this=(\S+) c=(\d+) N=512 last4=\w+ last8=\w+ o4=(\w{8})\w{8} o5=(\w{8})\w{8}(?: win=(\w{8}))?", rest)
-        if m:
-            peak_out.setdefault(m.group(1), {})[int(m.group(2))] = m.group(3, 4)
-            if m.group(5):
-                peak_first.setdefault(bits(m.group(5))[0], []).append(m.group(1))
-
+    edges, blocks, peak_out, peak_first = parse_bpf(hook_text)
     chosen = {}
     for obj, hz in edges.items():
         if obj in blocks and hz in BAND_EDGES:
-            chosen.setdefault(bits(blocks[obj][0][0])[0], {})[BAND_EDGES[hz]] = obj
+            chosen.setdefault(le_bits(blocks[obj][0][0])[0], {})[BAND_EDGES[hz]] = obj
     candidates = [
         (b, peak_first[first][0]) for first, b in chosen.items()
         if len(b) == 2 and len(set(peak_first.get(first, []))) == 1
     ]
     assert candidates, "no channel has both bands and a PeakFrequency window"
     bands, pk = candidates[0]
+    heads = {band: scalar_heads(edges[bands[band]][1], blocks[bands[band]]) for band in bands}
     rows = []
     for i in range(BANDPASS_SAMPLES):
         k, j = divmod(i, 4)
-        row = [bits(blocks[bands["band10"]][k][0])[j]]
+        row = [le_bits(blocks[bands["band10"]][k][0])[j]]
         for band in ("band10", "band80"):
-            row += [bits(blocks[bands[band]][k][1])[j], bits(blocks[bands[band]][k][2])[j]]
+            row += [le_bits(blocks[bands[band]][k][1])[j], le_bits(blocks[bands[band]][k][2])[j]]
         row += [f"{int.from_bytes(bytes.fromhex(h), 'little'):08x}" for h in peak_out[pk][i + 1]]
+        row += [str(heads["band10"][k]), str(heads["band80"][k])]
         rows.append("\t".join(row) + "\n")
     return "".join(rows)
+
+
+def new_run(path, marker):
+    """The text of the last hook run in an append-only hook log (NUL bytes dropped)."""
+    data = path.read_bytes().replace(b"\0", b"")
+    return data[data.rfind(marker):].decode(errors="replace")
 
 
 def main():
@@ -528,6 +616,7 @@ def main():
     ap.add_argument("--src3", type=pathlib.Path, default=root / "tmp/s26/run3")
     ap.add_argument("--src4", type=pathlib.Path, default=root / "tmp/s26/run4")
     ap.add_argument("--src5", type=pathlib.Path, default=root / "tmp/s43/live")
+    ap.add_argument("--baseline", type=pathlib.Path, default=root / "tmp/s43/baseline")
     ap.add_argument(
         "--out", type=pathlib.Path,
         default=root / "apps/braintellect-linux/tests/fixtures",
@@ -569,18 +658,20 @@ def main():
         f"{ms}\t{c}\t" + "\t".join(f"{v:.9f}" for v in vs) + "\n"
         for ms, c, vs in feedback_eeg(args.src3, t0, header3)))
 
-    trigger, note, decs4 = smart2(args.src4)
+    decision_lines = new_run(args.baseline / "decisions9.log", b"hook5b loaded").splitlines()
+    hook_text = new_run(args.baseline / "hook9s.log", b"hook6 loaded base")
+    trigger, note, decs4 = smart2(decision_lines)
     (args.out / "smart2_trigger_blocks.tsv").write_text(trigger)
     (args.out / "smart2_note_blocks.tsv").write_text(note)
     (args.out / "smart2_decisions.tsv").write_text(decs4)
 
     header4 = dict(re.findall(
         r"<base:(\w+)>([^<]*)</base:\1>", (args.src4 / "130-t0.xml").read_text()))
-    stages, eeg = smart2_stages(args.src4, header4)
+    stages, stage_inputs = smart2_stages(decision_lines, hook_text)
     (args.out / "smart2_stages.tsv").write_text(stages)
-    (args.out / "smart2_eeg.tsv").write_text(eeg)
+    (args.out / "smart2_stage_inputs.tsv").write_text(stage_inputs)
     (args.out / "smart2_source_stages.tsv").write_text(source_stages(args.src5))
-    (args.out / "smart2_bandpass_stages.tsv").write_text(bandpass_stages(args.src5))
+    (args.out / "smart2_bandpass_stages.tsv").write_text(bandpass_stages(hook_text))
     (args.out / "smart2_design.tsv").write_text("".join(
         "\t".join(r) + "\n" for r in design_rows(args.src4, header4)))
 

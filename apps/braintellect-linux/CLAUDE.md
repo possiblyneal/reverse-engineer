@@ -51,35 +51,33 @@ those findings, it cites them.
   fixture-fed in-memory transport that replays handshake replies and the stream.
   `tests/parity_feedback.rs` replays the threshold-stage input through
   `src/feedback/` (`Threshold` then `Counter`, via `TriggerPath`) and matches the
-  pass flags and counter triggers. The run-4 fixtures (`smart2_*`) replay
-  `ExprTriggerAll`, the smoother and the 15000-sample min/max tracker with the
-  note map (`NoteSelection`) from the logged amplitudes and PeakFrequencies,
-  matching pass flags, triggers and every block's note; notes at fires replay at
-  the baseline's fire blocks because the counter's timer is sub-block and fires
-  one block late twice in 20. `Smart2Graph` (`src/feedback/graph.rs`) runs the
-  stages upstream of those from decoded EEG: the Source chain (`source.rs`: 25 Hz
-  band-stop, 150 Hz FIR low-pass, 1.5 Hz high-pass; `iir.rs`, `fir.rs`),
-  `BandPass`, `PeakFrequency` and the `continuous` Aggregator (the `Smoother`),
-  all parameterised by `Smart2Design`, which `smart2_design.tsv` fills from the
-  design XML. `tests/parity_smart2_stages.rs` asserts the Aggregator exactly
-  from the logged bands, the Source chain bit for bit against the run-5 live
-  capture (`smart2_source_stages.tsv`: the chain input and four stage outputs, through the optional 45 Hz low-pass `Interference1::LowPass45`, a device preference, not a design field; each stage rounds to `f32` as the app does),
-  the Band 10 and Band 80 FIR outputs and the PeakFrequency frequency and
-  amplitude bit for bit against the run-5 live capture
-  (`smart2_bandpass_stages.tsv`; the FIR output and the amplitude round to `f32`),
-  and the 20 counter triggers from decoded EEG. Not asserted: the Band 10/80
-  `OutAmplitude` 16-tap mean (1 to 3 `f32` ulps off; no add order found, see
-  `audio-feedback.md`, "Run 5 live BandPass and PeakFrequency capture"; printed by
-  `band_pass_amplitude_agreement_report`) and the run-4 band amplitudes (median
-  error 1 to 5 %, printed by the ignored `stage_agreement_report`, which excludes
-  the start-up samples and Band 10 Ch2; `audio-feedback.md`, "Run 5 live BandPass
-  and PeakFrequency capture"). The graph starts the Source filters cold at the first
-  logged sample (no history rows). Notes from decoded EEG match the baseline at
-  17 of 20 fires (floor test `most_note_decisions_match_the_baseline_from_decoded_eeg`;
-  strict ignored `end_to_end_note_decisions_match_the_baseline` fails on fires 1, 2
-  and 5: start-up transient and counter timing, `audio-feedback.md`, "Note divergence";
-  the 45 Hz low-pass does not close them, run 4 has it `Off`). Still unimplemented:
-  `OutAmplitude` and the Evaluator (its code is a per-block input).
+  pass flags and counter triggers. The `smart2_*` fixtures (the run-6 baseline,
+  `tmp/s43/baseline/`) replay `ExprTriggerAll`, the smoother and the 15000-sample
+  min/max tracker with the note map (`NoteSelection`) from the logged amplitudes and
+  PeakFrequencies. `Smart2Graph` (`src/feedback/graph.rs`) runs the stages upstream of
+  those: the Source chain (`source.rs`: 25 Hz band-stop, 150 Hz FIR low-pass, optional
+  45 Hz low-pass, 1.5 Hz high-pass; `iir.rs`, `fir.rs`), `BandPass`, `PeakFrequency`
+  and the `continuous` Aggregator (the `Smoother`), all parameterised by
+  `Smart2Design`, which `smart2_design.tsv` fills from the design XML.
+  `tests/parity_smart2_stages.rs` asserts bit for bit (`f32`) the Source chain
+  (`smart2_source_stages.tsv`; the 45 Hz low-pass `Interference1::LowPass45` is a
+  device preference, not a design field), the Band 10/80 FIR output, the
+  `OutAmplitude` 16-tap mean and PeakFrequency (`smart2_bandpass_stages.tsv`), the
+  Aggregator, and, over the first 400 blocks, every band, aggregate and PeakFrequency
+  bin of the graph (`smart2_stages.tsv`), every block's note after the first 15
+  (pre-capture smoothing history), the notes at all 229 baseline fires and the
+  trigger decisions. The 16-tap mean is the IPP `ippsFIR_32f` kernel's exact `f32`
+  sum order (`BandPass::mean`): a SIMD order, or a scalar head for the first two
+  outputs of a block when the destination is 8 mod 16. The heap alignment is not
+  logged, so `make-fixtures.py` recovers it per block from the logged amplitude and
+  `smart2_stage_inputs.tsv`/`smart2_bandpass_stages.tsv` carry it as flags the replay
+  feeds (`set_scalar_head(s)`). The graph replays from the live Source output
+  (`process_filtered_block`), not from decoded EEG: the hooked app drops frames the
+  serial log still shows, so the log cannot reproduce the app's input
+  (`audio-feedback.md`, "Run 6 baseline"). The ignored
+  `end_to_end_note_decisions_match_the_baseline` fails because the app's counter
+  timer reads a clock the log does not carry, so some fires land one block early or
+  late. Still unimplemented: the Evaluator (its code is a per-block input).
   `tests/parity_storage.rs` replays the record fixture through `src/storage.rs`
   (`tests/harness/session.rs` maps the flat fixture to and from `SessionRecord`).
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
@@ -98,9 +96,10 @@ those findings, it cites them.
   MAC, host id, machine/profile/user name, or timestamp. Regenerate it only with
   `python3 -I scripts/make-fixtures.py` from the raw capture in the repo's
   `tmp/s26/run2/` (handshake, stream, record), `tmp/s26/run3/` (feedback) and
-  `tmp/s26/run4/` (`smart2_*`, via `--src4`, including `smart2_design.tsv`,
-  `smart2_eeg.tsv` and `smart2_stages.tsv`) and `tmp/s43/live/` (`--src5`,
-  `smart2_source_stages.tsv`, `smart2_bandpass_stages.tsv`); raw captures stay in `tmp/`, never in Git. Grep the fixtures
+  `tmp/s26/run4/` (`smart2_design.tsv`, via `--src4`), `tmp/s43/live/` (`--src5`,
+  `smart2_source_stages.tsv`) and `tmp/s43/baseline/` (`--baseline`: the other
+  `smart2_*` fixtures, from the last run in `decisions9.log` and `hook9s.log`); raw
+  captures stay in `tmp/`, never in Git. Grep the fixtures
   for the MAC and serial before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
   SMART-2 feedback graph → audio output → session storage → session UI.
