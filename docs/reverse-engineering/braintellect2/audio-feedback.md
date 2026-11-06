@@ -205,18 +205,17 @@ One complete SMART-2 session (guest profile, no wearer, sensors off, 240 s, 30,0
 - **Channel order:** see `b2-protocol.md`; PeakFreq Ch`n` reads payload slots `n-1` and `n+3`.
 - **PeakFrequency:** exact algorithm recovered from `0x632d90`, see "Recovered upstream stages" below. 99.7 % of 1000 samples match once the Source software filters (25 Hz notch, 1.5 Hz high-pass) are applied before the window; the earlier 97.8 % was the raw channel windowed directly.
 - **ExprNoteSelection:** input `x` is PeakFreq D when `J == 183`, else `(C + D) / 2`. Per sample `x` feeds a tracker (trailing 15000 samples, min and max) and a smoother (trailing 62-sample mean). The note is `trunc((hi - lo) * ratio) + lo` with `lo = 40`, `hi = 76`, `ratio = (mean - min) / (max - min)` (0 when the range is not positive), in float32 through the map at `0x578240`. The note is taken at each counter fire. Exact against the logged inputs.
-- **ExprTriggerAll:** `J == 111` gives `E + F + G + H`, `J == 183` gives `H`; the Threshold input is that value in volts, smoothed in microvolts by a 62-sample smoother. Exact against the logged inputs. Inputs A..D are the Band 10 (1-3 Hz) then Band 80 (23-36 Hz) BPF amplitudes of Ch1, Ch2 and E..H the same for Ch3, Ch4 (A, B = Ch1, Ch2 Band 10; C, D = Ch1, Ch2 Band 80; E, F = Ch3, Ch4 Band 10; G, H = Ch3, Ch4 Band 80).
-- **Evaluator J:** 111 until 120000 ms, 183 afterwards (first block with 183 is 14999).
+- **ExprTriggerAll:** one branch per Evaluator code, read from the design's own expression (`tmp/s26/run4/130-t1.xml`): 11 gives `A + B + C + D`, 12 `A`, 13 `B`, 81 `C + D`, 82 `C`, 83 `D`, 112 `E`, 113 `F`, 181 `G + H`, 182 `G`, 183 `H`, and any other code (111 included) `E + F + G + H`. The sums are formed in double precision and rounded to `float32` once. The Threshold input is that value in volts, smoothed in microvolts by a 62-sample smoother. Exact against the logged inputs for codes 111, 183 (run 6) and 12, 82 (run 8). Inputs A..D are the Band 10 (1-3 Hz) then Band 80 (23-36 Hz) BPF amplitudes of Ch1, Ch2 and E..H the same for Ch3, Ch4 (A, B = Ch1, Ch2 Band 10; C, D = Ch1, Ch2 Band 80; E, F = Ch3, Ch4 Band 10; G, H = Ch3, Ch4 Band 80).
+- **Evaluator J:** 111 until 120000 ms, 183 afterwards (first block with 183 is 14999) in run 6; 111 for blocks 0 to 14998, 12 for the next 7500 and 82 for the last 7502 in run 8 (a different SMART-2 setting). The Evaluator is not replicated: its code is a per-block input.
 
 ### Not resolved
 
 - The first about 600 logged samples of Band 10 and Band 80 (BandPassFilter start-up) do not match with a warm Source chain: that replay reproduces neither the size nor the timing of the early transient. The Source chain starts cold at logged sample 0 (see "Note divergence from decoded EEG"): cold, Band 10 matches within about 1 to 3 % up to block 44 (sample 176) and then diverges (the logged transient stays large until about block 80, the replay's decays by block 60). The remaining cause is not isolated (Source IIR transient details, or the start-up of the band-pass itself).
 - Band 10 on Ch2 (correlation 0.73 at a median error of about 1 %): a few late-held maxima in the 83-sample max window differ, cause not isolated. The Rust replay (`apps/braintellect-linux/tests/parity_smart2_stages.rs`) leaves it out of its stage figures, as it does the start-up span above.
-- Replaying run 4's decoded EEG through the clone never matched the run-4 band amplitudes (1 to 5 % off) or all notes; the run 6 baseline replays from the live Source output and matches exactly (see "Run 6 baseline").
+- Replaying run 4's decoded EEG through the clone never matched the run-4 band amplitudes (1 to 5 % off) or all notes. The run 6 baseline replays from the live Source output and matches exactly (see "Run 6 baseline"); run 8 replays from decoded EEG and matches the triggers and nearly all notes (see "Run 8 whole-exercise capture").
 - The exact IIR design behind the Source notch and high-pass (IPP generator internals) and whether the 150 Hz low-pass FIR is applied: the replay cannot tell it from a 4-sample change of alignment.
 - Why the log records `dataAlreadyFiltered: 1` while the software filters demonstrably act (`+0x10c` flag; see "Source-side software filters").
 - The Aggregator numeric replay against logged output (the code reading is below).
-- The graph is replayed end to end from the live Source output, not from recorded EEG (see "Run 6 baseline").
 
 ## Recovered upstream stages (static decompile, checked offline against run 4)
 
@@ -326,9 +325,35 @@ Ticket 43. Notes at the 20 counter fires from decoded EEG matched 9 of 20 with w
 Ticket 43h. One SMART-2 session (no wearer, sensors off) after a hard restart, with serial RX, the Source output, every band-pass call (`0x66ea81`: input, FIR output and amplitude of four samples, plus each object's edges), PeakFrequency and every Expression/Threshold/Counter stage hooked. Raw logs stay in `tmp/s43/baseline/`; `make-fixtures.py` builds the `smart2_*` fixtures from the last run in them.
 
 - **The 16-tap mean is exact.** `OutAmplitude` is the `float32` FIR of the last 16 sliding maxima with taps 0.125, each product rounded to `float32`. The kernel (`0x67a000`, thunk `0x66ffc0`) sums in a fixed order that depends on the output buffer's alignment (`dst % 16`). Aligned to 16: SIMD order for all four outputs: `(p0+p1)+(p2+p3)`, then for each further group of four `s+=p3; s+=p2; s+=(p0+p1)`. Aligned to 8: the first two outputs of the block sum sequentially from 0 (scalar head), the last two use the SIMD order. This explains the earlier "hidden state at block positions 0 and 1". The alignment follows the heap and is not logged, so each block's order is recovered from the logged amplitude (a block both orders explain is read as SIMD): every one of about 13.8k blocks times 8 bands is explained. The clone takes the order per block as input (`BandPass::set_scalar_head`).
-- **The hooked app drops frames.** It runs about 27 samples per second under the hooks. The serial RX trace holds more frames than the app consumed (counter jumps, truncated reads), so decoding EEG from the log does not reproduce the app's input. The fixtures therefore start at the live Source output (`smart2_stage_inputs.tsv`, `float32` volts), and the Source chain stays verified against its own live capture (run 5).
+- **Input is the live Source output.** The run 6 fixtures start at the live Source output (`smart2_stage_inputs.tsv`, `float32` volts), and the Source chain is verified against its own live capture (run 5). Run 8 supplies the serial stream and the consumed samples on one clock (below).
 - **Everything downstream is exact** from that input: Band 10/80 amplitudes, Aggregators, PeakFrequency bins (except sample 1, the flat spectrum), every block's note after the first 15, the notes at all 229 counter fires and the trigger decisions (count and kind exact, times within the harness window).
-- **Counter timer: not exact.** Under the hooks the counter fires on wall-clock block times, with many fires. A fire is one block early or late in some stretches (blocks 110 to 210, 1119 to 1163 of the first 1500). The app's timer reads a clock the log does not carry: its reading trails the block's log time by up to about 15 ms (fire gaps in the log reach 475 ms against a 500 ms epoch); a tick-quantised clock did not fit. A shifted fire reads a different note, so the full note-decision list is not asserted.
+- **Counter timer: not exact in run 6.** The counter fires on wall-clock block times. A fire is one block early or late in some stretches (blocks 110 to 210, 1119 to 1163 of the first 1500) and a shifted fire reads a different note, so the full note-decision list is not asserted. Run 6 did not log the timer reads; run 8 did, and explains the shift (next section).
+
+### Run 8 whole-exercise capture (observed, with inferences marked)
+
+Ticket 43. One SMART-2 exercise (no wearer, sensors off, about four minutes past the 120000 ms switch, 30001 graph blocks) with serial RX, the consumed per-sample volts, every band-pass call's destination, the counter timer's clock reads, the Evaluator code and the Expression, Threshold, Counter and note stages hooked into one binary log. The Source settings were the 45 Hz interference low-pass, the 25 Hz band-stop, the 150 Hz low-pass and the 1.5 Hz high-pass. Raw logs stay in `tmp/s43/run7/` and `tmp/s43/run8/`; `make-fixtures.py --src8` builds the `run8_*` fixtures (consumed EEG as 24-bit counts, the per-block table, the baseline decisions, a span of logged E..H amplitudes) with the raw serial bytes left out.
+
+Observed:
+
+- **Received versus consumed.** The serial trace holds 149,122 frames and the app consumed 148,896 of them: 76 counter jumps drop whole frames. Matching each consumed ch0 volt forward into the received stream finds a counterpart for every consumed sample, so the consumed stream is a subsequence of the received frames. Earlier wording that decoded EEG cannot reproduce the app's input was a limit of the older logs, not of the app.
+- **Conversion.** The app converts each sample as `raw / DIV` in `f64` with `DIV = 12 * (2^23 - 1) * 10 / 2.4`, then rounds to `float32` when the graph takes it. This is exact for all 272,793 logged ch0 samples. Channel `c` reads payload slots `c` and `4 + c` (`b2-protocol.md`).
+- **Graph start.** The graph's first block takes the consumed sample at index 25600 and block `b` takes the four samples from `25600 + 4b`. The Source chain starts cold there.
+- **Band-pass to object mapping.** The eight band-pass objects map to bands A..H by matching each object's logged amplitudes to the clone's (exact, 3200 of 3200 blocks per band); the 16-tap-mean sum order is taken from the logged destination alignment of each object's call (scalar head when `dst % 16 == 8`).
+- **Counter timer.** The counter tests `now - start >= 500` with `now` the GetLocalTime time of day in ms read at evaluation. On a fire the app takes a second read as the new start, which differs from the evaluation read by 1 to 6 ms in 17 of 415 fires. The clone models both reads as inputs (`BlockClock`) and that removes the one-block fire shifts of run 6.
+- **Evaluator code.** 111 for blocks 0 to 14998, 12 for the next 7500, 82 for the last 7502 (`ExprTriggerAll` branches above).
+
+Replay from the consumed EEG, cold start, with the logged codes, clocks and sum orders (`apps/braintellect-linux/tests/parity_smart2_exercise.rs`):
+
+- All 415 baseline fires are reproduced in count and kind; each lands within the harness window (the largest offset is about 330 ms, in the start-up and a few borderline blocks).
+- Notes at the fires: 409 of 415 are exact. The six differing fires are 0, 1, 3, 4 and 7 (the app's start-up transient) and 89.
+- E..H band amplitudes are bit exact in the logged span asserted (blocks 1000 to 2999). Across the whole exercise they are bit exact in the blocks beyond 1000 except 93 blocks at the last `float32` bit (blocks 6409 to 6477 and 12082 to 12175).
+- After block 700 the per-block pass count differs in 36 of about 29,300 blocks; these sparse borderline passes are why fire 89 differs.
+
+Not resolved:
+
+- The app's start-up state for the first about 300 blocks. The logged amplitudes ramp up from a level far above a cold clone's, so a cold-started clone differs there; the cause (filter memory the app holds before the graph's first sample) is inferred, not isolated.
+- The cause of the two bursts of last-bit differences and of the sparse borderline pass differences.
+- Strict equality of the full Note decision stream. The tolerance-checked Trigger stream and all but six Note decisions match; the strict note test stays ignored (`note_decisions_match_the_baseline_exactly`).
 
 ## Export Completeness and Startup
 

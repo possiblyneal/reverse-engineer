@@ -6,7 +6,9 @@
 
 mod harness;
 
-use braintellect_linux::feedback::{BandAmplitudes, NoteSelection, PeakFrequencies, TriggerPath};
+use braintellect_linux::feedback::{
+    trigger_all, BandAmplitudes, NoteSelection, PeakFrequencies, TriggerPath,
+};
 use harness::assertions;
 use harness::fixtures::{self, Decision, NoteBlock, TriggerBlock};
 
@@ -66,6 +68,10 @@ fn counter_triggers_match_the_baseline() {
 fn amplitudes(block: &TriggerBlock) -> Vec<BandAmplitudes> {
     (0..4)
         .map(|n| BandAmplitudes {
+            a: 0.0,
+            b: 0.0,
+            c: 0.0,
+            d: 0.0,
             e: block.amplitudes[0][n],
             f: block.amplitudes[1][n],
             g: block.amplitudes[2][n],
@@ -86,9 +92,7 @@ fn replay_amplitudes() -> (Vec<bool>, Vec<bool>) {
     let mut path = TriggerPath::smart2(-TIMER_BEFORE_FIRST_BLOCK_MS);
     let (mut passes, mut fired) = (Vec::new(), Vec::new());
     for block in fixtures::smart2_trigger_blocks() {
-        let out = path
-            .process_amplitudes(block.time_ms as i64, block.control, &amplitudes(&block))
-            .expect("observed Evaluator codes");
+        let out = path.process_amplitudes(block.time_ms as i64, block.control, &amplitudes(&block));
         passes.extend(out.passes);
         fired.push(out.trigger);
     }
@@ -170,4 +174,39 @@ fn notes_at_the_baseline_fires_reproduce_the_baseline_note_decisions() {
         .collect();
     assert!(expected.len() > 15, "baseline holds many notes");
     assertions::decisions(&expected, &actual).expect("note decision parity");
+}
+
+/// The design's `ExprTriggerAll` expression, one branch per Evaluator code
+/// (`audio-feedback.md`, "SMART-2 Evaluator"): the Ch1/Ch2 codes read A..D, the
+/// Ch3/Ch4 codes E..H, and any other code sums E..H.
+#[test]
+fn trigger_all_decodes_every_evaluator_code_of_the_design() {
+    let amp = BandAmplitudes {
+        a: 1.0,
+        b: 2.0,
+        c: 4.0,
+        d: 8.0,
+        e: 16.0,
+        f: 32.0,
+        g: 64.0,
+        h: 128.0,
+    };
+    let want = [
+        (11, 15.0),
+        (12, 1.0),
+        (13, 2.0),
+        (81, 12.0),
+        (82, 4.0),
+        (83, 8.0),
+        (111, 240.0),
+        (112, 16.0),
+        (113, 32.0),
+        (181, 192.0),
+        (182, 64.0),
+        (183, 128.0),
+        (999, 240.0),
+    ];
+    for (code, value) in want {
+        assert_eq!(trigger_all(code, amp), value, "code {code}");
+    }
 }

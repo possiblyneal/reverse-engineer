@@ -289,7 +289,7 @@ covered matched the hooked bytes, none differed.
   194250 frames) and wraps at 65536. The rate is 250.0 frames/s; the 240 s
   exercise window held exactly 60000 frames.
 - **Payload (observed)**: 8 samples of 24-bit big-endian signed, 3 bytes each.
-  Channel-interleaved with 2 samples x 4 channels (inferred, see Unresolved). This
+  Channel-interleaved with 2 samples x 4 channels (see "Channel and sample order"). This
   is 500 Hz per channel, matching `sampleRate: 500`.
 - **Low bits (observed)**: the low 2 bits of every sample's third byte are always
   `11`. They are marker bits, so the usable resolution is 22 bits plus sign
@@ -311,19 +311,25 @@ symmetry, not confirmed), and decodes the samples at `0x55a8a2`-`0x55a8bb`.
   is not previous+1 increments it. The trace showed no counter gaps, matching the
   logged `packetCounterErrors: 0, sampleValidationErrors: 0`.
 
+## Channel and sample order (observed)
+
+In the 24-byte payload (observed, run 4), for
+channel `c` (0..3) the two samples of a frame are payload slots `c` and
+`4 + c`, oldest first; channel `c` is Ch`c+1`, so PeakFreq Ch1..Ch4 read slots
+0..3 and 4..7. Evidence: the app's logged per-channel `DSPPkFreq` peaks
+(`tmp/s26/run4/decisions5.log`) match a Hann/512 FFT peak search over exactly
+that deinterleave for 98-99 % of samples per channel in steady state, and
+match no other slot permutation. Confirmed in run 8: the app's logged
+per-sample ch0 volts equal `raw / DIV` of slot 0 then slot 4 of the received
+frames exactly for all 272,793 logged samples (`audio-feedback.md`, "Run 8
+whole-exercise capture"), and the replay reproduces the Ch3 and Ch4 band amplitudes (E..H)
+bit for bit. Not verified against a known test signal, since the session ran with sensors off.
+
 ## Unresolved
 
 - 110 pairs 1-2 and the 112 payload meaning.
 - Whether the device reports family itself or the app derives it from the
   model/firmware fields.
-- Channel and sample order inside the 24-byte payload (observed, run 4): for
-  channel `c` (0..3) the two samples of a frame are payload slots `c` and
-  `4 + c`, oldest first; channel `c` is Ch`c+1`, so PeakFreq Ch1..Ch4 read slots
-  0..3 and 4..7. Evidence: the app's logged per-channel `DSPPkFreq` peaks
-  (`tmp/s26/run4/decisions5.log`) match a Hann/512 FFT peak search over exactly
-  that deinterleave for 98-99 % of samples per channel in steady state, and
-  match no other slot permutation. Still inferred: nothing about a known test
-  signal, since the session ran with sensors off.
 - Why the DataCapture header reports `samplesPerPacket 4` while `DataBuffer` logs 2.
 - How `processData_v5` (`0x556560`) and `processData` (about `0x556ff0`) relate to
   the ring-buffer parser at `0x55a280`; neither ran on the observed path.
