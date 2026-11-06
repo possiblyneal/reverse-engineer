@@ -18,3 +18,5 @@ pub mod acquisition;
 pub mod feedback;
 
 pub mod storage;
+
+pub mod audio;

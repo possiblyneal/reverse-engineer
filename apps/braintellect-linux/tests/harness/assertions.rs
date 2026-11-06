@@ -1,6 +1,8 @@
 //! One assertion per layer. Each compares observable behavior only and returns
 //! a [`Mismatch`] describing the first difference.
 
+use braintellect_linux::audio::player::AudioEvent;
+
 use super::fixtures::{Decision, StoredRecord};
 use super::tolerance::{RECORD_EPSILON, SAMPLE_EPSILON_UV, TIMING_WINDOW_MS};
 
@@ -65,6 +67,32 @@ pub fn decisions(expected: &[Decision], actual: &[Decision]) -> Parity {
         if e.time_ms.abs_diff(a.time_ms) > TIMING_WINDOW_MS {
             return mismatch(format!(
                 "decision {i} time: expected {} ms, got {} ms",
+                e.time_ms, a.time_ms
+            ));
+        }
+    }
+    Ok(())
+}
+
+/// Audio events match one for one: note, start sample index and length
+/// exactly (integers: no tolerance applies), the start time within
+/// [`TIMING_WINDOW_MS`]. The block index is not compared: several blocks share
+/// one logged clock read, so the baseline fixes the time, not the block.
+pub fn audio_events(expected: &[AudioEvent], actual: &[AudioEvent]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "audio event count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    for (i, (e, a)) in expected.iter().zip(actual).enumerate() {
+        if (e.note, e.sample_index, e.len) != (a.note, a.sample_index, a.len) {
+            return mismatch(format!("audio event {i}: expected {e:?}, got {a:?}"));
+        }
+        if e.time_ms.abs_diff(a.time_ms) > TIMING_WINDOW_MS {
+            return mismatch(format!(
+                "audio event {i} time: expected {} ms, got {} ms",
                 e.time_ms, a.time_ms
             ));
         }
