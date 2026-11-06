@@ -7,7 +7,8 @@
 
 use std::fs::File;
 use std::io::{self, Read, Write};
-use std::os::fd::{FromRawFd, OwnedFd};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+use std::time::Duration;
 
 /// The SPP serial channel the app's COM port maps to is not recovered; SPP
 /// devices commonly use channel 1.
@@ -75,6 +76,34 @@ impl RfcommStream {
             return Err(io::Error::last_os_error());
         }
         Ok(Self(File::from(owned)))
+    }
+}
+
+impl RfcommStream {
+    /// Make a read that finds no data wait at most `timeout`, then fail with
+    /// `WouldBlock`, so a caller can notice a quiet link and a stop request.
+    ///
+    /// # Errors
+    /// Fails if the socket option cannot be set.
+    pub fn set_read_timeout(&self, timeout: Duration) -> io::Result<()> {
+        let tv = libc::timeval {
+            tv_sec: libc::time_t::try_from(timeout.as_secs()).unwrap_or(libc::time_t::MAX),
+            tv_usec: libc::suseconds_t::from(timeout.subsec_micros()),
+        };
+        // SAFETY: `tv` is a valid timeval and the length matches its size.
+        let rc = unsafe {
+            libc::setsockopt(
+                self.0.as_raw_fd(),
+                libc::SOL_SOCKET,
+                libc::SO_RCVTIMEO,
+                std::ptr::from_ref(&tv).cast(),
+                u32::try_from(std::mem::size_of::<libc::timeval>()).expect("small struct"),
+            )
+        };
+        if rc < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        Ok(())
     }
 }
 

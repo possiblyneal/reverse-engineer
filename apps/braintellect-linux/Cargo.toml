@@ -10,5 +10,6 @@ name = "braintellect_linux"
 path = "src/lib.rs"
 
 [dependencies]
+eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "wayland", "default_fonts"] }
 libc = "0.2"
 rusqlite = { version = "0.41.1", features = ["bundled"] }

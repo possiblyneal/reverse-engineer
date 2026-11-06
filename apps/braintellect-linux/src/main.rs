@@ -1,4 +1,8 @@
-//! Two commands.
+//! Three commands.
+//!
+//! `braintellect-linux ui --mac <MAC>` opens the session window: connection and
+//! signal status, session properties, start and stop, live feedback, and the
+//! one-time instrument import. This is the clinician's entry point.
 //!
 //! `braintellect-linux import <lib-dir>` copies the original's instrument banks
 //! (`dll<id>.BT.dll`) from its `lib` directory into the clone's data directory.
@@ -11,26 +15,19 @@
 use std::path::Path;
 use std::process::ExitCode;
 
-use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::acquisition::rfcomm::{RfcommStream, DEFAULT_CHANNEL};
 use braintellect_linux::acquisition::session::Session;
-use braintellect_linux::acquisition::stream::StreamConfig;
 use braintellect_linux::audio::import;
+use braintellect_linux::live;
+use braintellect_linux::ui;
 
-/// Baseline calibration (`b2-protocol.md`, "Calibration confirmed"): device
-/// family 12, channelGain 12, sensorGain 10. Not read from the device.
-const FAMILY: DeviceFamily = DeviceFamily::F12;
-const CHANNEL_GAIN: f64 = 12.0;
-const SENSOR_GAIN: f64 = 10.0;
 const ACTIVE_CHANNELS: u8 = 4;
 
 fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let config = StreamConfig {
-        calibration: ChannelCalibration::new(CHANNEL_GAIN, SENSOR_GAIN)
-            .map_err(|e| format!("{e:?}"))?,
-        family: FAMILY,
-    };
-    let mut session = Session::open(RfcommStream::connect(mac, DEFAULT_CHANNEL)?, config)?;
+    let mut session = Session::open(
+        RfcommStream::connect(mac, DEFAULT_CHANNEL)?,
+        live::stream_config()?,
+    )?;
     eprintln!(
         "connected, serial {}",
         String::from_utf8_lossy(session.serial())
@@ -50,7 +47,7 @@ fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-const USAGE: &str = "usage: braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>";
+const USAGE: &str = "usage: braintellect-linux ui --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>";
 
 fn import_banks(lib_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     let dest = import::default_dir().ok_or("neither XDG_DATA_HOME nor HOME is set")?;
@@ -68,6 +65,7 @@ fn main() -> ExitCode {
         .collect::<Vec<_>>()
         .as_slice()
     {
+        ["ui", "--mac", mac] => ui::app::run((*mac).to_owned()).map_err(Into::into),
         ["--mac", mac] => run(mac),
         ["import", lib_dir] => import_banks(lib_dir),
         _ => {

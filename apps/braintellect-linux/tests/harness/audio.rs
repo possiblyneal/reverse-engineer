@@ -3,6 +3,8 @@
 
 use braintellect_linux::audio::bank::Bank;
 use braintellect_linux::audio::player::AudioEvent;
+use braintellect_linux::audio::sink::SinkError;
+use braintellect_linux::live::AudioSink;
 
 use super::fixtures::{self, Decision};
 use super::synthetic_bank;
@@ -57,4 +59,31 @@ pub fn run8_events() -> Vec<AudioEvent> {
             }
         })
         .collect()
+}
+
+/// A short-note bank (notes 40..=84, 10 ms at [`RATE_HZ`], note `n` a constant
+/// `n * 100`) so a live run mixes cheaply.
+pub fn small_bank() -> Bank {
+    let notes: Vec<(u8, Vec<u8>)> = (40u8..=84)
+        .map(|n| {
+            (
+                n,
+                synthetic_bank::wav(RATE_HZ, &vec![i16::from(n) * 100; 960]),
+            )
+        })
+        .collect();
+    Bank::parse(&synthetic_bank::bank(&notes)).expect("synthetic bank")
+}
+
+/// Stands in for the audio device: keeps every frame it is given.
+#[derive(Default)]
+pub struct RecordingSink {
+    pub frames: Vec<i16>,
+}
+
+impl AudioSink for RecordingSink {
+    fn write(&mut self, frames: &[i16]) -> Result<(), SinkError> {
+        self.frames.extend_from_slice(frames);
+        Ok(())
+    }
 }
