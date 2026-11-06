@@ -3,7 +3,9 @@
 //! Window and pass test are from the static analysis (`0x62e850`, `0x62ed70`);
 //! the quantile index is from the run-3 hook log, which the static reading left
 //! open: the threshold is the sorted window's element at `trunc(n * lower)`,
-//! zero-based, clamped to `n - 1`.
+//! zero-based, clamped to `n - 1`. The window is a ring plus a sorted multiset
+//! whose erase-by-value drops every equal element (`0x62e850`, `0x62e520`), so
+//! `n` is the multiset's size, which can fall below the ring's.
 
 use std::collections::VecDeque;
 
@@ -33,15 +35,20 @@ impl Threshold {
     /// Add one smoothed value to the window and test it against the current
     /// threshold: `decrease` passes when the value is strictly below it.
     pub fn push(&mut self, value: f64) -> bool {
-        if self.ring.len() == self.capacity {
-            let old = self.ring.pop_front().expect("full ring is not empty");
-            let at = self.sorted.partition_point(|x| x.total_cmp(&old).is_lt());
-            self.sorted.remove(at);
-        }
+        let passed = value < self.threshold;
+        let old = (self.ring.len() == self.capacity)
+            .then(|| self.ring.pop_front().expect("full ring is not empty"));
         self.ring.push_back(value);
         let at = self.sorted.partition_point(|x| x.total_cmp(&value).is_lt());
         self.sorted.insert(at, value);
-        value < self.threshold
+        if let (Some(old), true) = (old, self.sorted.len() > self.capacity) {
+            // `multiset::erase(key)` (`0x62e520`): every element equal to the
+            // value leaving the ring goes, so the set can fall short of the ring.
+            let from = self.sorted.partition_point(|x| x.total_cmp(&old).is_lt());
+            let to = self.sorted.partition_point(|x| x.total_cmp(&old).is_le());
+            self.sorted.drain(from..to);
+        }
+        passed
     }
 
     /// Recompute the threshold from the window, after every input block.
@@ -53,5 +60,26 @@ impl Threshold {
         }
         let k = ((n as f64 * f64::from(LOWER)) as usize).min(n - 1);
         self.threshold = self.sorted[k];
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_repeated_value_leaving_the_ring_erases_every_copy_from_the_window() {
+        let mut t = Threshold {
+            capacity: 3,
+            ring: VecDeque::new(),
+            sorted: Vec::new(),
+            threshold: 0.0,
+        };
+        for v in [5.0, 1.0, 5.0] {
+            t.push(v);
+        }
+        // The fourth value leaves 5.0 (first in); both copies of 5.0 go.
+        t.push(2.0);
+        assert_eq!(t.sorted, [1.0, 2.0]);
     }
 }

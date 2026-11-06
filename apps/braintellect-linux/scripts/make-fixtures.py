@@ -34,8 +34,8 @@ The whole-exercise fixtures (`run8_*`) come from the run-8 binary hook log
 with the serial RX stream and every graph stage logged on one clock): the consumed
 EEG as 24-bit hex frames (`run8_eeg_N.txt`), the per-block table (`run8_blocks_N.tsv`:
 A..H flags, Evaluator code, eval clock, lap clock), the baseline Trigger and Note
-decisions (`run8_decisions.tsv`) and the logged E..H band amplitudes of a stable span
-(`run8_amplitudes.tsv`). Clocks are milliseconds from block 0.
+decisions (`run8_decisions.tsv`) and the logged E..H band amplitudes of blocks 0..6599
+(`run8_amplitudes_N.tsv`). Clocks are milliseconds from block 0.
 
 Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--baseline DIR] [--out DIR]
 """
@@ -622,7 +622,8 @@ RUN8_DIV = 12 * (2**23 - 1) * 10 / 2.4  # raw counts per volt, as the app conver
 RUN8_GRAPH_START = 25600  # consumed-sample index the graph started at (found by replay)
 RUN8_PREROLL = 4000  # consumed samples kept before the graph start, to warm the Source chain
 RUN8_BLOCKS = 30001
-RUN8_AMP_FIRST, RUN8_AMP_BLOCKS = 0, 3000  # logged E..H amplitudes kept: blocks 0..2999
+RUN8_AMP_BLOCKS = 6600  # = RUN8_AMPLITUDE_BLOCKS in tests/harness/fixtures.rs; logged E..H amplitudes kept: blocks 0..6599, past the 6409..6477 burst
+RUN8_AMP_FILE_BLOCKS = 3300  # amplitude blocks per file (144 bytes each); keeps every file under 500 KB
 RUN8_FILE_LIMIT = 9000  # EEG frames or block rows per file; keeps every file under 500 KB
 # Band A..H -> rank of the band-pass object's address among the 18 graph-call
 # objects (ascending). A..H: Ch1 B10, Ch2 B10, Ch1 B80, Ch2 B80, Ch3 B10, Ch4 B10, Ch3 B80, Ch4 B80.
@@ -763,9 +764,10 @@ def run8(path):
     for part, lo in enumerate(range(0, len(rows), RUN8_FILE_LIMIT * 2)):
         out[f"run8_blocks_{part}.tsv"] = "".join(rows[lo:lo + RUN8_FILE_LIMIT * 2])
     out["run8_decisions.tsv"] = "".join(decs)
-    out["run8_amplitudes.tsv"] = "".join(
-        " ".join("%08x" % struct.unpack("<I", struct.pack("<f", x))[0] for x in blk["amps"]) + "\n"
-        for blk in blocks[RUN8_AMP_FIRST:RUN8_AMP_FIRST + RUN8_AMP_BLOCKS])
+    amps = [" ".join("%08x" % struct.unpack("<I", struct.pack("<f", x))[0] for x in blk["amps"]) + "\n"
+            for blk in blocks[:RUN8_AMP_BLOCKS]]
+    for part, lo in enumerate(range(0, len(amps), RUN8_AMP_FILE_BLOCKS)):
+        out[f"run8_amplitudes_{part}.tsv"] = "".join(amps[lo:lo + RUN8_AMP_FILE_BLOCKS])
     return out
 
 

@@ -5,7 +5,9 @@
 //! low-pass (150 Hz FIR), high-pass (1.5 Hz IIR).
 
 use super::fir::{lowpass_taps, Fir};
-use super::iir::{Iir, NOTCH_25_HZ_EDGES};
+use super::graph::DesignError;
+use super::iir::{Iir, Notch};
+use super::RATE_HZ;
 
 /// Taps of the low-pass FIR (`setLPFilter` `0x554ae0`).
 const LOW_PASS_TAPS: usize = 24;
@@ -58,27 +60,32 @@ fn interference_filter(setting: Interference1, rate: f64) -> Option<Fir> {
 /// One channel's filter chain.
 pub struct SourceFilters {
     interference_low_pass: Option<Fir>,
-    notch: Option<Iir>,
+    notch: Option<Notch>,
     low_pass: Fir,
     high_pass: Iir,
 }
 
 impl SourceFilters {
-    pub fn new(design: &SourceDesign, rate_hz: usize) -> Self {
+    /// # Errors
+    /// Fails for the 25 Hz band-stop at a rate other than `RATE_HZ`: its taps are the
+    /// ones the app designs for 500 Hz ([`Notch::hz25`]).
+    pub fn new(design: &SourceDesign, rate_hz: usize) -> Result<Self, DesignError> {
         let rate = rate_hz as f64;
-        Self {
+        let notch = match design.interference2 {
+            Interference2::Off => None,
+            Interference2::Hz25 if rate_hz == RATE_HZ => Some(Notch::hz25()),
+            Interference2::Hz25 => {
+                return Err(DesignError(format!(
+                    "25 Hz band-stop at {rate_hz} Hz, its taps are for {RATE_HZ} Hz"
+                )))
+            }
+        };
+        Ok(Self {
             interference_low_pass: interference_filter(design.interference1, rate),
-            notch: match design.interference2 {
-                Interference2::Off => None,
-                Interference2::Hz25 => Some(Iir::bandstop(
-                    NOTCH_25_HZ_EDGES.0,
-                    NOTCH_25_HZ_EDGES.1,
-                    rate,
-                )),
-            },
+            notch,
             low_pass: Fir::new(lowpass_taps(design.low_pass_hz / rate, LOW_PASS_TAPS)),
             high_pass: Iir::highpass(design.high_pass_hz, rate),
-        }
+        })
     }
 
     /// Change the interference filter mid-stream, as `setInterferenceFilter`
@@ -123,8 +130,8 @@ mod tests {
     #[test]
     fn switching_in_the_interference_filter_starts_it_cold_and_keeps_the_rest_warm() {
         let input = |i: usize| (i as f64 * 0.37).sin() * 1e-4;
-        let mut switched = SourceFilters::new(&smart2(), 500);
-        let mut tail = SourceFilters::new(&smart2(), 500);
+        let mut switched = SourceFilters::new(&smart2(), 500).unwrap();
+        let mut tail = SourceFilters::new(&smart2(), 500).unwrap();
         let mut cold = Fir::new(lowpass_taps(
             INTERFERENCE_LOW_PASS_HZ / 500.0,
             INTERFERENCE_LOW_PASS_TAPS,
@@ -140,8 +147,18 @@ mod tests {
     }
 
     #[test]
+    fn the_25_hz_band_stop_is_refused_at_a_rate_its_taps_were_not_designed_for() {
+        assert!(SourceFilters::new(&smart2(), 250).is_err());
+        let off = SourceDesign {
+            interference2: Interference2::Off,
+            ..smart2()
+        };
+        assert!(SourceFilters::new(&off, 250).is_ok());
+    }
+
+    #[test]
     fn a_constant_offset_settles_to_zero() {
-        let mut chain = SourceFilters::new(&smart2(), 500);
+        let mut chain = SourceFilters::new(&smart2(), 500).unwrap();
         let settled = (0..5000).map(|_| chain.push(1e-3)).last().unwrap();
         assert!(settled.abs() < 1e-9, "{settled}");
     }
@@ -149,7 +166,7 @@ mod tests {
     #[test]
     fn the_chain_removes_25_hz_and_keeps_10_hz() {
         let amplitude = |f_hz: f64| {
-            let mut chain = SourceFilters::new(&smart2(), 500);
+            let mut chain = SourceFilters::new(&smart2(), 500).unwrap();
             let w = 2.0 * std::f64::consts::PI * f_hz / 500.0;
             (0..10_000)
                 .map(|i| chain.push((w * i as f64).sin()))
