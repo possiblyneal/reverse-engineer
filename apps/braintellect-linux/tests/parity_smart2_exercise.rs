@@ -30,8 +30,6 @@ const INTERFERENCE_SWITCH: usize = GRAPH_START + 1;
 /// The counter timer started one counter interval (500 ms) before the first
 /// logged read.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
-/// Fires whose note differs from the app's: one borderline selection (fire 89).
-const KNOWN_NOTE_DEVIATIONS: [usize; 1] = [89];
 
 struct Replay {
     blocks: Vec<Run8Block>,
@@ -148,27 +146,8 @@ fn trigger_decisions_match_the_baseline_over_the_whole_exercise() {
     assertions::decisions(&expected, &actual).expect("trigger parity from the decoded EEG");
 }
 
+/// Every Note decision exact, as the harness compares them.
 #[test]
-fn notes_match_the_baseline_apart_from_the_known_deviations() {
-    let run = replay();
-    let actual: Vec<i32> = run
-        .decisions
-        .iter()
-        .filter_map(|d| d.note_at_trigger)
-        .collect();
-    let expected = expected("Note");
-    assert_eq!(actual.len(), expected.len());
-    let differing: Vec<usize> = (0..actual.len())
-        .filter(|&i| i64::from(actual[i]) != i64::from(expected[i].new))
-        .collect();
-    assert_eq!(differing, KNOWN_NOTE_DEVIATIONS);
-}
-
-/// The strict check: every Note decision exact, as the harness compares them. It
-/// fails at fire 89: at block 6343 the clone's smoothed sample 3 passes the
-/// Threshold, from bit-exact inputs, and the app's does not.
-#[test]
-#[ignore = "fire 89: the clone passes the Threshold at block 6343 sample 3 and the app does not"]
 fn note_decisions_match_the_baseline_exactly() {
     let run = replay();
     let actual: Vec<Decision> = run

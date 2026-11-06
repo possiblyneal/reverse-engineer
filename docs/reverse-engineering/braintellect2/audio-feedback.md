@@ -88,7 +88,7 @@ The threshold's pass/fail output feeds the counter, and the counter's output tri
 Static disassembly of `braintellect.exe` (SHA-256 `af7ff5430ee10c2d548450819f54a3f939af474953a42b959fd99739519c2560`) with Ghidra headless. The property map is at `0x13e7eda`–`0x13e80f8` and setup is at `0x6300e0`.
 
 - **Smoothing:** `averageEpoch` (ms) sets a boxcar mean over the last `rate·averageEpoch/1000` samples (`0x6543f0` → `0x654fe0`). During warm-up it divides by the number of samples seen. The smoothed value `v` is `OutSignal`.
-- **Window:** the last `rate·thresholdEpoch/1000` values of `v`, kept as a ring and a sorted multiset (`0x62e850`). `thresholdEpoch` must be at least 50 ms.
+- **Window:** the last `rate·thresholdEpoch/1000` values of `v`, kept as a ring and a sorted multiset (`0x62e850`); the multiset drops every entry equal to the one leaving the ring, so `n` can fall below the ring size (see "Run 8 whole-exercise capture"). `thresholdEpoch` must be at least 50 ms.
 - **Auto threshold** (`0x62e6e0`, after every input block in auto mode, gated at `0x62fd2f`). With `n` values in the window:
   - single, goal `increase`: `k = round(n·(1 − lower))`;
   - single, goal `decrease`: `k = round(n·lower)`;
@@ -345,15 +345,13 @@ Observed:
 Replay from the consumed EEG, Source warm from the 4000-sample pre-roll, with the logged codes, clocks and sum orders (`apps/braintellect-linux/tests/parity_smart2_exercise.rs`):
 
 - All 415 baseline fires are reproduced in count and kind; each lands within the harness window.
-- Notes at the fires: 414 of 415 are exact; only fire 89 differs (note 46 at 50209 ms against 45 at 50251 ms).
+- Notes at the fires: all 415 are exact (`note_decisions_match_the_baseline_exactly`).
 - All eight band amplitudes (A..H) are bit exact in blocks 0 to 6408; the asserted span is E..H over blocks 0 to 2999. Across the whole exercise 93 blocks differ at the last `float32` bit, all in bands F and H (channel 4), in two bursts (blocks 6409 to 6477 and 12082 to 12175). Each burst starts at one band-stop output on channel 4 (consumed samples 51209 and 73886) that lies 1579 and 79 `f64` ulps from the `float32` rounding midpoint; rounding that one value the other way removes the burst. Inferred: the app's band-stop IIR orders its `f64` arithmetic differently from the clone's direct form I. A direct form II replay leaves 5 differing blocks (first 29509, again one band-stop rounding, on channel 0), transposed direct form II 31; no tried structure is exact.
-- The counter count after each block (logged) differs in 37 blocks when resynced per block. The first is block 6343 sample 3: the clone's smoothed value 6.4189105 µV (`0x40cd67b7`) is below its threshold 6.4203076 µV (`0x40cd7329`) and passes, and the app does not pass; that pass moves fire 89 one block early. The Threshold inputs there are bit exact and the margin is about 2930 `float32` ulps, so it is not a rounding flip. Excluded: seven smoother sum orders (all identical), smoother windows of 61 and 63, Threshold windows 2492 to 2508, quantile index `k ± 1`, a one-block threshold lag, and recomputing before the test.
+- **Threshold window erases by value (observed in code, confirmed by the log).** The window is a ring of `thresholdEpoch` entries plus a `multiset<float>` (`0x62e850`). After inserting the new value, when the multiset holds more entries than the ring (`this+0xe4` above the ring size), `0x62e520` removes the value leaving the ring with `multiset::erase(key)`: equal range (`0x62df60`), then erase of the whole range (`0x62e2e0`). Every element equal to that value goes, not one. A repeated smoothed value therefore shrinks the set below the ring size, and the quantile count `n` (`0x62e6e0`, `0x62e3c0` read `this+0xe4`) is the set's size, not the ring's. The pass test `0x62ed70` runs before the insert, with the threshold from the end of the previous block. The earlier report of 37 blocks whose counter count differed (first at block 6343 sample 3, the cause of fire 89's early note) came from the clone erasing one entry; with erase-by-value the counter count after every block equals the logged one (45 blocks differed when resynced per block, 0 now) and every one of the 415 Note decisions is exact. Earlier exclusions (smoother orders and windows, fixed Threshold windows, quantile index `k +- 1`, threshold lag, recompute order) stand: none of them was the cause.
 
 Not resolved:
 
 - The band-stop's exact `f64` structure (the two last-bit bursts).
-- Why the app does not pass at block 6343 sample 3 (the 37 count-differing blocks, fire 89).
-- Strict equality of the full Note decision stream: all but fire 89 match; the strict note test stays ignored (`note_decisions_match_the_baseline_exactly`).
 
 ## Export Completeness and Startup
 

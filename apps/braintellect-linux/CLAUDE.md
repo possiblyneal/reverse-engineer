@@ -49,11 +49,9 @@ those findings, it cites them.
   `TIMING_WINDOW_MS`, `RECORD_EPSILON`) are defined once in
   `tests/harness/tolerance.rs`; never restate them, and add no relative or correlation
   tolerance. A stage is asserted only once it matches, and stays a reported figure
-  until then. `notes_match_the_baseline_apart_from_the_known_deviations`
-  (`tests/parity_smart2_exercise.rs`) is a regression guard over the notes that already
-  match exactly, not a tolerance; each deviation it names is documented in
-  `docs/reverse-engineering/braintellect2/audio-feedback.md`. The strict
-  `note_decisions_match_the_baseline_exactly` stays `#[ignore]` until it passes.
+  until then. `note_decisions_match_the_baseline_exactly`
+  (`tests/parity_smart2_exercise.rs`) holds every Note decision of the run-8 exercise to
+  the baseline exactly.
 - **Acquisition behavior** (`src/acquisition/`): the frame parser checks the header,
   then the counter, then the sample bits, in the original's order; `Session` skips
   stream frames still arriving before a handshake reply; a clean end of stream sends
