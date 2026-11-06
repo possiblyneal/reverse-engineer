@@ -17,6 +17,9 @@ pub enum ImportError {
     Io(std::io::Error),
     /// The source directory holds no `dll<id>.BT.dll`.
     NoBanks,
+    /// The source and destination are the same directory; copying would
+    /// truncate each bank onto itself.
+    SameDirectory,
 }
 
 impl fmt::Display for ImportError {
@@ -24,6 +27,9 @@ impl fmt::Display for ImportError {
         match self {
             ImportError::Io(e) => write!(f, "{e}"),
             ImportError::NoBanks => write!(f, "no dll<id>.BT.dll instrument files found"),
+            ImportError::SameDirectory => {
+                write!(f, "the source is the instruments directory itself; give the original install's lib directory")
+            }
         }
     }
 }
@@ -38,11 +44,6 @@ impl From<std::io::Error> for ImportError {
 
 /// The instruments directory by the storage layer's XDG rule:
 /// `<data dir>/instruments`.
-pub fn resolve_dir(xdg_data_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    Some(storage::resolve_data_dir(xdg_data_home, home)?.join("instruments"))
-}
-
-/// [`resolve_dir`] over the process environment.
 pub fn default_dir() -> Option<PathBuf> {
     Some(storage::default_data_dir()?.join("instruments"))
 }
@@ -73,6 +74,9 @@ pub fn import_banks(lib_dir: &Path, dest: &Path) -> Result<Vec<PathBuf>, ImportE
     }
     names.sort();
     fs::create_dir_all(dest)?;
+    if fs::canonicalize(lib_dir)? == fs::canonicalize(dest)? {
+        return Err(ImportError::SameDirectory);
+    }
     names
         .into_iter()
         .map(|name| {

@@ -5,6 +5,7 @@
 mod harness;
 
 use braintellect_linux::audio::bank::{Bank, BankError};
+use braintellect_linux::audio::{load_instrument, InstrumentError};
 use harness::synthetic_bank;
 
 /// Three notes with distinct, recognizable samples (rate 8 kHz, 4 frames).
@@ -65,6 +66,38 @@ fn a_sample_that_is_not_16_bit_mono_pcm_is_refused() {
 fn a_missing_bank_file_is_an_error() {
     let path = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-such-bank.dll");
     assert!(matches!(Bank::load(&path), Err(BankError::Io(_))));
+}
+
+#[test]
+fn a_sample_rate_of_zero_is_refused() {
+    let mut file = synthetic_bank::wav(8000, &[1, 2]);
+    file[24..28].copy_from_slice(&0u32.to_le_bytes());
+    let bytes = synthetic_bank::bank(&[(40, file)]);
+    assert!(matches!(Bank::parse(&bytes), Err(BankError::Wave("rate"))));
+}
+
+#[test]
+fn a_missing_instrument_names_its_path_and_the_import_command() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("no-instruments");
+    let err = load_instrument(&dir, 1002).expect_err("missing");
+    assert!(matches!(err, InstrumentError::Missing(_)));
+    let text = err.to_string();
+    assert!(text.contains("dll1002.BT.dll"), "{text}");
+    assert!(text.contains(&*dir.to_string_lossy()), "{text}");
+    assert!(
+        text.contains("braintellect-linux import <original lib dir>"),
+        "{text}"
+    );
+}
+
+#[test]
+fn an_imported_instrument_loads() {
+    let dir = std::path::Path::new(env!("CARGO_TARGET_TMPDIR")).join("with-instruments");
+    std::fs::create_dir_all(&dir).expect("dir");
+    let bytes = synthetic_bank::bank(&three_notes());
+    std::fs::write(dir.join("dll1002.BT.dll"), bytes).expect("write");
+    let bank = load_instrument(&dir, 1002).expect("bank");
+    assert_eq!(bank.notes().count(), 3);
 }
 
 /// Local only: the original's bank 1002, named by `BT_BANK_1002_DLL` (the

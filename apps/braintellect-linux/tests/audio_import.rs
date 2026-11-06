@@ -4,8 +4,9 @@
 use std::fs;
 use std::path::PathBuf;
 
-use braintellect_linux::audio::import::{bank_path, import_banks, resolve_dir, ImportError};
+use braintellect_linux::audio::import::{bank_path, import_banks, ImportError};
 use braintellect_linux::audio::sink::{AlsaSink, SinkError};
+use braintellect_linux::storage;
 
 /// A fresh, empty directory under cargo's per-run scratch directory.
 fn scratch(name: &str) -> PathBuf {
@@ -68,20 +69,32 @@ fn a_directory_without_banks_or_a_missing_one_is_an_error() {
 }
 
 #[test]
-fn the_instruments_directory_follows_the_xdg_data_home_rule() {
+fn the_instruments_directory_sits_in_the_storage_data_directory() {
+    let data = storage::resolve_data_dir(Some("/x/data".into()), Some("/home/u".into()));
     assert_eq!(
-        resolve_dir(Some("/x/data".into()), Some("/home/u".into())),
+        data.map(|d| d.join("instruments")),
         Some("/x/data/braintellect-linux/instruments".into())
     );
+}
+
+#[test]
+fn importing_a_directory_onto_itself_is_refused_and_leaves_the_banks_intact() {
+    let dir = scratch("same");
+    fs::write(dir.join("dll1002.BT.dll"), b"bank bytes").expect("write");
+    assert!(matches!(
+        import_banks(&dir, &dir),
+        Err(ImportError::SameDirectory)
+    ));
+    // Also through a different spelling of the same directory.
+    let alias = dir.join(".").join("..").join("audio-import-same");
+    assert!(matches!(
+        import_banks(&dir, &alias),
+        Err(ImportError::SameDirectory)
+    ));
     assert_eq!(
-        resolve_dir(None, Some("/home/u".into())),
-        Some("/home/u/.local/share/braintellect-linux/instruments".into())
+        fs::read(bank_path(&dir, 1002)).expect("read"),
+        b"bank bytes"
     );
-    assert_eq!(
-        resolve_dir(Some("rel/data".into()), Some("/home/u".into())),
-        Some("/home/u/.local/share/braintellect-linux/instruments".into())
-    );
-    assert_eq!(resolve_dir(None, None), None);
 }
 
 #[test]

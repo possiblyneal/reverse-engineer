@@ -88,3 +88,18 @@ fn a_sample_is_resampled_to_the_output_rate() {
     assert_eq!(event.len, 8);
     assert_eq!(player.mix(0, 9), [10, 15, 20, 25, 30, 35, 40, 40, 0]);
 }
+
+/// The original's `+0x2cf` check is the design's `playOnChange` (false in
+/// SMART-2), so a note equal to the last one sounds again
+/// (`audio-feedback.md`, "Playback gating").
+#[test]
+fn a_repeated_note_plays_again() {
+    let bank = bank();
+    let mut player = Player::new(&bank, 8000, 0);
+    player.feed(0, 0, Some(40)).expect("feed").expect("first");
+    player
+        .feed(1, 500, Some(40))
+        .expect("feed")
+        .expect("repeat");
+    assert_eq!(player.events().len(), 2);
+}

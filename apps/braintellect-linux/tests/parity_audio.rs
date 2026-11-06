@@ -28,6 +28,12 @@ fn the_player_starts_the_notes_the_baseline_sounded() {
     let expected = audio::run8_events();
     assert_eq!(expected.len(), 415);
     assertions::audio_events(&expected, player.events()).expect("audio parity");
+    // 22 notes repeat the previous one; the baseline sounded them too.
+    let repeats = expected
+        .windows(2)
+        .filter(|w| w[0].note == w[1].note)
+        .count();
+    assert_eq!(repeats, 22);
 }
 
 /// The baseline's own gate: notes are at least 500 ms apart (the counter's
