@@ -372,6 +372,21 @@ The retry archive's database and application-state copies contain 130 matching f
 
 The controller advertises as classic Bluetooth device `B-2` and pairs without a PIN (yes/no confirmation only). Pairing it in the offline guest, through a passed-through Broadcom BCM20702 adapter (`0a5c:21e8`), created no Bluetooth COM port. The executable imports Windows Bluetooth and socket libraries, so it may connect to the controller directly over Bluetooth rather than through a COM port; that is untested.
 
+## Wave device and instrument 1002 (static, Ghidra headless)
+
+Observed in the binary (image base `0x400000`) and in the install's `lib` directory:
+
+- `WaveDevice` (`media\WaveDevice.cpp`) vtable is `0x18a3570`. The `SoundElement` play path (`0x5a04e0`) calls slot `+0x1c` (`0x598060`, instrument open: reads the instrument plugin's rate, channel count, bit depth and volume, builds the `WAVEFORMATEX`), slot `+0x20` (`0x598f10`, note on: `sendNoteOnMsg`), and slot `+0x24` (`0x661f50`, returns 1).
+- Note on takes a free `waveOut` handle (`0x597930`, `waveOutOpen` with `CALLBACK_FUNCTION`), `waveOutPrepareHeader` (`0x5969b0`) over the plugin's per-note buffer (plugin vtable `+0x2c` size, `+0x30` data pointer, indexed by the note), sets the volume with `waveOutSetVolume` (`0x596830`, left, right or both from the pan string) and `waveOutWrite`s the buffer. The device does not synthesise or resample: it plays the plugin's stored buffer as is, at the plugin's rate, and the host mixer converts to the output format.
+- Wave instrument 1002 is a plugin DLL, `lib\dll1002.BT.dll` (exports `create`, `data`, `destroy`, plus zlib). It embeds 45 RIFF/WAVE blocks, each mono, 96000 Hz, 16-bit PCM, 153600 bytes of data (0.8 s). `dll1001.BT.dll` and `dll1003.BT.dll` are sibling banks. The recorded timbre is therefore sampled audio held in the original DLL; no waveform, envelope or table exists in `braintellect.exe` to recover. `braintellect-smart2-piano-feedback-20s.wav` (stereo, left differs from right) shows overlapping decaying notes consistent with sampled piano.
+- `SoundElement` play (`0x5a04e0`): returns if the output device pointer (`+0x1f8`) is null; takes the note (`+0x194`, or the pipe value at `+0x334`), clamps it to `+0x2d4`/`+0x2d8` (and returns without playing when the matching drop flag `+0x2cd`/`+0x2ce` is set), maps it through the step lookup `0x5a0030` (12-step pattern relative to `+0x2c8`, a scale table at `+0x2f4`), and plays only when the forced-note flag `+0x2cf` is clear or the step differs from the last played step (`+0x32c`).
+
+### Not resolved
+
+- The plugin's note-to-buffer index (which of the 45 samples a MIDI note selects) lives in `dll1002.BT.dll` (`create`/`data`), not yet analysed.
+- Where the play interval (400 ms) and maximum sound length (500 ms) are enforced: the 0x5a04e0 path shows no timer, and a 0.8 s buffer is not cut by the device code read so far.
+- Whether the sample bytes may be carried by the clone: they are third-party recorded content inside the original binary, so the clone's source of the instrument is an open decision.
+
 ## SoundManager requires a host audio output device (session-setup crash)
 
 Entering session setup ("Set up session" → "Select session properties") constructs
