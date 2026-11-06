@@ -76,14 +76,15 @@ those findings, it cites them.
   `end_to_end_note_decisions_match_the_baseline` fails because run 6 did not log the
   counter's lap read (`BlockClock::lap_ms`). `tests/parity_smart2_exercise.rs` replays
   the whole run-8 exercise from the decoded EEG the app consumed (`run8_*` fixtures),
-  cold at the graph's first sample, with the logged Evaluator code, `BlockClock` (the
+  with the Source chain warmed over a 4000-sample pre-roll with the interference
+  filter off and the 45 Hz low-pass switched in cold one sample after the graph start
+  (`SourceFilters::set_interference1`), and the logged Evaluator code, `BlockClock` (the
   counter's evaluation and lap reads) and sum-order flags as inputs (the counter
   clock is an input, never read from the host). It asserts the 415 Trigger decisions
-  within the harness window, the Note decisions apart from the six known deviations
-  (fires 0, 1, 3, 4, 7 and 89: the app's start-up transient and one borderline
-  pass), and bit-exact E..H band amplitudes over blocks 1000 to 2999. The strict
-  `note_decisions_match_the_baseline_exactly` stays ignored until the app's start-up
-  state is reproduced. `ExprTriggerAll` is total over the design's Evaluator codes
+  within the harness window, the Note decisions apart from the one known deviation
+  (fire 89: a borderline Threshold pass), and bit-exact E..H band amplitudes over
+  blocks 0 to 2999. The strict `note_decisions_match_the_baseline_exactly` stays
+  ignored until fire 89 is reproduced. `ExprTriggerAll` is total over the design's Evaluator codes
   (`trigger_all`). Still unimplemented: the Evaluator (its code is a per-block input).
   `tests/parity_storage.rs` replays the record fixture through `src/storage.rs`
   (`tests/harness/session.rs` maps the flat fixture to and from `SessionRecord`).
@@ -107,7 +108,7 @@ those findings, it cites them.
   `smart2_source_stages.tsv`) and `tmp/s43/baseline/` (`--baseline`: the other
   `smart2_*` fixtures, from the last run in `decisions9.log` and `hook9s.log`) and
   `tmp/s43/run8/run8.bin` (`--src8`: the `run8_*` fixtures, consumed EEG as 24-bit
-  counts with no serial bytes, clocks as ms from block 0); raw captures stay in `tmp/`,
+  counts from 4000 samples before the graph start, with no serial bytes, clocks as ms from block 0); raw captures stay in `tmp/`,
   never in Git, and every fixture file stays under 500 KB. Grep the fixtures
   for the MAC and serial before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →

@@ -44,6 +44,17 @@ fn to_f32(x: f64) -> f64 {
     f64::from(x as f32)
 }
 
+/// A fresh (zero-history) interference filter for `setting`.
+fn interference_filter(setting: Interference1, rate: f64) -> Option<Fir> {
+    match setting {
+        Interference1::Off => None,
+        Interference1::LowPass45 => Some(Fir::new(lowpass_taps(
+            INTERFERENCE_LOW_PASS_HZ / rate,
+            INTERFERENCE_LOW_PASS_TAPS,
+        ))),
+    }
+}
+
 /// One channel's filter chain.
 pub struct SourceFilters {
     interference_low_pass: Option<Fir>,
@@ -56,13 +67,7 @@ impl SourceFilters {
     pub fn new(design: &SourceDesign, rate_hz: usize) -> Self {
         let rate = rate_hz as f64;
         Self {
-            interference_low_pass: match design.interference1 {
-                Interference1::Off => None,
-                Interference1::LowPass45 => Some(Fir::new(lowpass_taps(
-                    INTERFERENCE_LOW_PASS_HZ / rate,
-                    INTERFERENCE_LOW_PASS_TAPS,
-                ))),
-            },
+            interference_low_pass: interference_filter(design.interference1, rate),
             notch: match design.interference2 {
                 Interference2::Off => None,
                 Interference2::Hz25 => Some(Iir::bandstop(
@@ -74,6 +79,13 @@ impl SourceFilters {
             low_pass: Fir::new(lowpass_taps(design.low_pass_hz / rate, LOW_PASS_TAPS)),
             high_pass: Iir::highpass(design.high_pass_hz, rate),
         }
+    }
+
+    /// Change the interference filter mid-stream, as `setInterferenceFilter`
+    /// (`0x554fe0`) does: the new filter starts with zero history while the
+    /// band-stop, low-pass and high-pass keep theirs.
+    pub fn set_interference1(&mut self, setting: Interference1, rate_hz: usize) {
+        self.interference_low_pass = interference_filter(setting, rate_hz as f64);
     }
 
     pub fn push(&mut self, x: f64) -> f64 {
@@ -105,6 +117,25 @@ mod tests {
             interference2: Interference2::Hz25,
             low_pass_hz: 150.0,
             high_pass_hz: 1.5,
+        }
+    }
+
+    #[test]
+    fn switching_in_the_interference_filter_starts_it_cold_and_keeps_the_rest_warm() {
+        let input = |i: usize| (i as f64 * 0.37).sin() * 1e-4;
+        let mut switched = SourceFilters::new(&smart2(), 500);
+        let mut tail = SourceFilters::new(&smart2(), 500);
+        let mut cold = Fir::new(lowpass_taps(
+            INTERFERENCE_LOW_PASS_HZ / 500.0,
+            INTERFERENCE_LOW_PASS_TAPS,
+        ));
+        for i in 0..1000 {
+            assert_eq!(switched.push(input(i)), tail.push(input(i)));
+        }
+        switched.set_interference1(Interference1::LowPass45, 500);
+        for i in 1000..2000 {
+            let x = to_f32(input(i));
+            assert_eq!(switched.push(x), tail.push(to_f32(cold.push(x))));
         }
     }
 

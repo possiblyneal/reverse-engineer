@@ -620,8 +620,9 @@ def new_run(path, marker):
 
 RUN8_DIV = 12 * (2**23 - 1) * 10 / 2.4  # raw counts per volt, as the app converts them
 RUN8_GRAPH_START = 25600  # consumed-sample index the graph started at (found by replay)
+RUN8_PREROLL = 4000  # consumed samples kept before the graph start, to warm the Source chain
 RUN8_BLOCKS = 30001
-RUN8_AMP_FIRST, RUN8_AMP_BLOCKS = 1000, 2000  # logged E..H amplitudes kept: blocks 1000..2999
+RUN8_AMP_FIRST, RUN8_AMP_BLOCKS = 0, 3000  # logged E..H amplitudes kept: blocks 0..2999
 RUN8_FILE_LIMIT = 9000  # EEG frames or block rows per file; keeps every file under 500 KB
 # Band A..H -> rank of the band-pass object's address among the 18 graph-call
 # objects (ascending). A..H: Ch1 B10, Ch2 B10, Ch1 B80, Ch2 B80, Ch3 B10, Ch4 B10, Ch3 B80, Ch4 B80.
@@ -744,8 +745,8 @@ def run8(path):
     if len(keys) != 18:
         raise SystemExit("expected 18 graph-call objects")
     out = {}
-    first = RUN8_GRAPH_START // 2
-    eeg = consumed[first:first + (RUN8_BLOCKS * 4 + 1) // 2 + 1]
+    first = (RUN8_GRAPH_START - RUN8_PREROLL) // 2
+    eeg = consumed[first:RUN8_GRAPH_START // 2 + (RUN8_BLOCKS * 4 + 1) // 2 + 1]
     for part, lo in enumerate(range(0, len(eeg), RUN8_FILE_LIMIT)):
         out[f"run8_eeg_{part}.txt"] = "".join(
             "".join("%06x" % (x & 0xFFFFFF) for x in f) + "\n"

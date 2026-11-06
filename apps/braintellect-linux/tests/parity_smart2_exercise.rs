@@ -1,17 +1,19 @@
 //! Parity of the whole SMART-2 exercise (run 8): the decoded EEG the app consumed,
-//! replayed from a cold start through the Source chain, band-passes, PeakFrequency,
-//! Aggregators, thresholds, counter and note selection, against the Trigger and Note
-//! decisions the app made over about four minutes.
+//! replayed through the Source chain, band-passes, PeakFrequency, Aggregators,
+//! thresholds, counter and note selection, against the Trigger and Note decisions
+//! the app made over about four minutes.
+//!
+//! The Source chain starts warm: it runs the earlier stream with the interference
+//! filter off, and the 45 Hz low-pass is switched in cold at the graph's second
+//! sample, which reproduces the app's logged Source output bit for bit.
 //!
 //! Inputs the clone does not derive are the logged ones: the Evaluator code, the
 //! counter timer's clock reads and the 16-tap-mean sum order of each band-pass call.
-//! The app's own start-up state is not modelled: it ramps up from filter memory the
-//! clone does not have, which is why the first notes differ (see the tests).
 
 mod harness;
 
 use braintellect_linux::feedback::{
-    BlockClock, Interference1, Interference2, Smart2Graph, BLOCK_LEN,
+    BlockClock, Interference1, Interference2, Smart2Graph, SourceFilters, BLOCK_LEN,
 };
 use std::sync::OnceLock;
 
@@ -20,6 +22,11 @@ use harness::fixtures::{self, Decision, Run8Block};
 
 /// Consumed-sample index the app's graph started at.
 const GRAPH_START: usize = 25600;
+/// Consumed samples of the EEG fixture before the graph start.
+const PREROLL: usize = 4000;
+/// Consumed-sample index the app switched the 45 Hz low-pass in at.
+const INTERFERENCE_SWITCH: usize = GRAPH_START + 1;
+const RATE_HZ: usize = 500;
 /// The counter timer started one block-time before the first logged read.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
 /// Raw counts per volt: 12 x full scale x 10 over the 2.4 V reference.
@@ -35,9 +42,8 @@ const BANDS: [(usize, &str); 8] = [
     (2, "Band 80"),
     (3, "Band 80"),
 ];
-/// Fires whose note differs from the app's: the app's start-up transient (fires 0 to
-/// 7) and one later borderline selection (fire 89).
-const KNOWN_NOTE_DEVIATIONS: [usize; 6] = [0, 1, 3, 4, 7, 89];
+/// Fires whose note differs from the app's: one borderline selection (fire 89).
+const KNOWN_NOTE_DEVIATIONS: [usize; 1] = [89];
 
 struct Replay {
     blocks: Vec<Run8Block>,
@@ -68,13 +74,27 @@ fn build() -> Replay {
         })
         .collect();
     let eeg = fixtures::run8_eeg();
-    let sample = |s: usize| -> [f64; 4] {
-        let frame = &eeg[s / 2 - GRAPH_START / 2];
-        std::array::from_fn(|ch| {
-            let volts = f64::from(frame[ch + 4 * (s % 2)]) / COUNTS_PER_VOLT;
-            f64::from(volts as f32) * 1e6
-        })
+    let first = GRAPH_START - PREROLL;
+    let volts = |s: usize| -> [f64; 4] {
+        let frame = &eeg[(s - first) / 2];
+        std::array::from_fn(|ch| f64::from(frame[ch + 4 * (s % 2)]) / COUNTS_PER_VOLT)
     };
+    let mut warm = design.source.clone();
+    warm.interference1 = Interference1::Off;
+    let mut source: [SourceFilters; 4] =
+        std::array::from_fn(|_| SourceFilters::new(&warm, RATE_HZ));
+    let mut filtered = |s: usize| -> [f64; 4] {
+        if s == INTERFERENCE_SWITCH {
+            for chain in &mut source {
+                chain.set_interference1(design.source.interference1, RATE_HZ);
+            }
+        }
+        let x = volts(s);
+        std::array::from_fn(|ch| source[ch].push(x[ch]))
+    };
+    for s in first..GRAPH_START {
+        filtered(s);
+    }
     let blocks = fixtures::run8_blocks();
     let mut graph = Smart2Graph::new(
         design.clone(),
@@ -91,13 +111,13 @@ fn build() -> Replay {
             }
             graph.set_scalar_heads(&heads);
             let samples: Vec<[f64; 4]> = (0..BLOCK_LEN)
-                .map(|n| sample(GRAPH_START + b * BLOCK_LEN + n))
+                .map(|n| filtered(GRAPH_START + b * BLOCK_LEN + n))
                 .collect();
             let clock = BlockClock {
                 read_ms: block.read_ms,
                 lap_ms: block.lap_ms.unwrap_or(block.read_ms),
             };
-            graph.process_block(clock, block.control, &samples)
+            graph.process_filtered_block(clock, block.control, &samples)
         })
         .collect();
     Replay {
@@ -151,10 +171,10 @@ fn notes_match_the_baseline_apart_from_the_known_deviations() {
 }
 
 /// The strict check: every Note decision exact, as the harness compares them. It
-/// fails until the app's start-up state (fires 0 to 7) and the borderline pass at
-/// fire 89 are reproduced.
+/// fails at fire 89: at block 6343 the clone's smoothed sample 3 passes the
+/// Threshold, from bit-exact inputs, and the app's does not.
 #[test]
-#[ignore = "the app's start-up transient and one borderline note (fire 89) are not reproduced"]
+#[ignore = "fire 89: the clone passes the Threshold at block 6343 sample 3 and the app does not"]
 fn note_decisions_match_the_baseline_exactly() {
     let run = replay();
     let actual: Vec<Decision> = run
@@ -174,10 +194,10 @@ fn note_decisions_match_the_baseline_exactly() {
 }
 
 #[test]
-fn band_amplitudes_match_the_logged_values_bit_for_bit_in_a_stable_span() {
+fn band_amplitudes_match_the_logged_values_bit_for_bit_from_the_first_block() {
     let run = replay();
     let logged = fixtures::run8_amplitudes();
-    assert_eq!(logged.len(), 2000);
+    assert_eq!(logged.len(), 3000);
     for (i, row) in logged.iter().enumerate() {
         let b = fixtures::RUN8_AMPLITUDES_FIRST_BLOCK + i;
         for n in 0..BLOCK_LEN {
