@@ -5,7 +5,7 @@
 //! low-pass (150 Hz FIR), high-pass (1.5 Hz IIR).
 
 use super::fir::{lowpass_taps, Fir};
-use super::iir::{Iir, NOTCH_25_HZ_EDGES};
+use super::iir::{Iir, Notch};
 
 /// Taps of the low-pass FIR (`setLPFilter` `0x554ae0`).
 const LOW_PASS_TAPS: usize = 24;
@@ -58,7 +58,7 @@ fn interference_filter(setting: Interference1, rate: f64) -> Option<Fir> {
 /// One channel's filter chain.
 pub struct SourceFilters {
     interference_low_pass: Option<Fir>,
-    notch: Option<Iir>,
+    notch: Option<Notch>,
     low_pass: Fir,
     high_pass: Iir,
 }
@@ -70,11 +70,7 @@ impl SourceFilters {
             interference_low_pass: interference_filter(design.interference1, rate),
             notch: match design.interference2 {
                 Interference2::Off => None,
-                Interference2::Hz25 => Some(Iir::bandstop(
-                    NOTCH_25_HZ_EDGES.0,
-                    NOTCH_25_HZ_EDGES.1,
-                    rate,
-                )),
+                Interference2::Hz25 => Some(Notch::hz25()),
             },
             low_pass: Fir::new(lowpass_taps(design.low_pass_hz / rate, LOW_PASS_TAPS)),
             high_pass: Iir::highpass(design.high_pass_hz, rate),

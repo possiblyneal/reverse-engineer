@@ -67,7 +67,10 @@ those findings, it cites them.
   from the host. `tests/parity_smart2_exercise.rs` overrides the design's
   interference1/2, low-pass and high-pass Source fields to the run-8 device settings,
   warms the Source chain over the 4000-sample pre-roll, and switches the 45 Hz
-  low-pass in cold one sample after the graph start. The ignored
+  low-pass in cold one sample after the graph start. The 25 Hz band-stop (`Notch`,
+  `iir.rs`) runs the app's own two-biquad taps (transposed direct form II), not a
+  designed filter, so it serves only the 23.5/25.75 Hz setting at 500 Hz; its run-8
+  amplitudes are asserted bit for bit over blocks 0 to 6599. The ignored
   `end_to_end_note_decisions_match_the_baseline` (`tests/parity_smart2_stages.rs`)
   fails because run 6 did not log the counter lap read. Still unimplemented: the
   Evaluator (its code is a per-block input).

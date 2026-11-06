@@ -557,14 +557,12 @@ pub fn run8_decisions() -> Vec<Decision> {
     time_kind_value_decisions("run8_decisions.tsv")
 }
 
-/// First block of [`run8_amplitudes`].
-pub const RUN8_AMPLITUDES_FIRST_BLOCK: usize = 0;
-
 /// Logged amplitudes of bands E..H, four samples each (E0..E3, F0.., G0.., H0..),
-/// for a span of blocks starting at [`RUN8_AMPLITUDES_FIRST_BLOCK`].
+/// for the first blocks of the run.
 pub fn run8_amplitudes() -> Vec<[f32; 16]> {
-    read("run8_amplitudes.tsv")
-        .lines()
+    ["run8_amplitudes_0.tsv", "run8_amplitudes_1.tsv"]
+        .iter()
+        .flat_map(|name| read(name).lines().map(String::from).collect::<Vec<_>>())
         .map(|line| {
             let words: Vec<&str> = line.split(' ').collect();
             std::array::from_fn(|k| bits(words[k]))

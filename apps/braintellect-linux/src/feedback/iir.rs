@@ -1,15 +1,9 @@
 //! The Source's IIR filters: the 1.5 Hz first-order high-pass (`setHPFilter`
-//! `0x554d60`, kind 1, type 5, order 1) and the 25 Hz band-stop
-//! (`setInterferenceFilter2` `0x555370`, kind 3, type 5, order 2, 23.5/25.75 Hz).
-//!
-//! Type 5 is read as Butterworth designed by prewarped bilinear transform
-//! (`audio-feedback.md`, "Source-side software filters", Inferred); the IPP
-//! generator internals are not recovered.
+//! `0x554d60`, kind 1, type 5, order 1), read as Butterworth by prewarped bilinear
+//! transform (`audio-feedback.md`, "Source-side software filters", Inferred), and
+//! the 25 Hz band-stop ([`Notch`]).
 
-use std::f64::consts::{PI, SQRT_2};
-
-/// Edges of the `"25 Hz"` interference filter 2 (`0x555370`), in Hz.
-pub const NOTCH_25_HZ_EDGES: (f64, f64) = (23.5, 25.75);
+use std::f64::consts::PI;
 
 /// A direct form I filter, `a[0]` taken as 1.
 pub struct Iir {
@@ -37,30 +31,6 @@ impl Iir {
         Self::new(vec![b0, -b0], vec![1.0, (w - 1.0) / (w + 1.0)])
     }
 
-    /// Fourth-order digital band-stop from an order-2 Butterworth analogue
-    /// prototype, between `low_hz` and `high_hz`.
-    pub fn bandstop(low_hz: f64, high_hz: f64, rate_hz: f64) -> Self {
-        let prewarp = |f: f64| (PI * f / rate_hz).tan();
-        let (w1, w2) = (prewarp(low_hz), prewarp(high_hz));
-        let (w0sq, bw) = (w1 * w2, w2 - w1);
-        // s -> BW s / (s^2 + w0^2) on 1 / (s^2 + sqrt(2) s + 1), as polynomials in
-        // s (highest power first): numerator (s^2 + w0^2)^2, denominator
-        // (s^2 + w0^2)^2 + sqrt(2) BW s (s^2 + w0^2) + BW^2 s^2.
-        let num_s = [1.0, 0.0, 2.0 * w0sq, 0.0, w0sq * w0sq];
-        let den_s = [
-            1.0,
-            SQRT_2 * bw,
-            2.0 * w0sq + bw * bw,
-            SQRT_2 * bw * w0sq,
-            w0sq * w0sq,
-        ];
-        let (num, den) = (bilinear(&num_s), bilinear(&den_s));
-        Self::new(
-            num.iter().map(|v| v / den[0]).collect(),
-            den.iter().map(|v| v / den[0]).collect(),
-        )
-    }
-
     pub fn push(&mut self, x: f64) -> f64 {
         self.x.rotate_right(1);
         self.x[0] = x;
@@ -73,34 +43,66 @@ impl Iir {
     }
 }
 
-/// A degree-4 polynomial in `s` (highest power first) after `s = (z - 1) / (z + 1)`,
-/// scaled by `(z + 1)^4`: `s^k (z + 1)^4 = (z - 1)^k (z + 1)^(4 - k)`.
-fn bilinear(p: &[f64; 5]) -> [f64; 5] {
-    let mut z = [0.0; 5];
-    for (i, coeff) in p.iter().enumerate() {
-        let k = 4 - i;
-        let mut term = vec![1.0];
-        for _ in 0..k {
-            term = poly_mul(&term, &[1.0, -1.0]);
-        }
-        for _ in 0..4 - k {
-            term = poly_mul(&term, &[1.0, 1.0]);
-        }
-        for (zj, t) in z.iter_mut().zip(&term) {
-            *zj += coeff * t;
-        }
-    }
-    z
+/// One IPP biquad section in transposed direct form II, as the `ippsIIR` kernel at
+/// `0x68f350` evaluates it. The tap layout is `b0 b1 b2 a0 a1 a2` and `a0` is 1.
+struct Biquad {
+    taps: [f64; 6],
+    delay: [f64; 2],
 }
 
-fn poly_mul(p: &[f64], q: &[f64]) -> Vec<f64> {
-    let mut out = vec![0.0; p.len() + q.len() - 1];
-    for (i, a) in p.iter().enumerate() {
-        for (j, b) in q.iter().enumerate() {
-            out[i + j] += a * b;
+impl Biquad {
+    fn push(&mut self, x: f64) -> f64 {
+        let [b0, b1, b2, _, a1, a2] = self.taps;
+        let y = b0 * x + self.delay[0];
+        self.delay[0] = b1 * x + self.delay[1] - a1 * y;
+        self.delay[1] = b2 * x - a2 * y;
+        y
+    }
+}
+
+/// The 25 Hz band-stop (`setInterferenceFilter2` `0x555370`) at 500 Hz: two cascaded
+/// biquads whose taps the app designs itself in `0x653460` (`audio-feedback.md`,
+/// "Source-side software filters").
+pub struct Notch {
+    sections: [Biquad; 2],
+}
+
+impl Notch {
+    /// The taps `0x653460` produces for 23.5 to 25.75 Hz at 500 Hz, from running that
+    /// code (Smith complex division, 53-bit x87 precision). The gain is folded into the
+    /// first section only. The last-bit variant of the first section's `a2` (`...2514`)
+    /// gives the same output over the whole run-8 exercise.
+    const TAPS: [[f64; 6]; 2] = [
+        [
+            0.9802055417010919,
+            -1.86748240405372,
+            0.9802055417010919,
+            1.0,
+            -1.8927648988910217,
+            0.9808192344572515,
+        ],
+        [
+            1.0,
+            -1.9051947011162667,
+            1.0,
+            1.0,
+            -1.879538922464532,
+            0.9795922720679167,
+        ],
+    ];
+
+    pub fn hz25() -> Self {
+        Self {
+            sections: Self::TAPS.map(|taps| Biquad {
+                taps,
+                delay: [0.0; 2],
+            }),
         }
     }
-    out
+
+    pub fn push(&mut self, x: f64) -> f64 {
+        self.sections.iter_mut().fold(x, |x, s| s.push(x))
+    }
 }
 
 #[cfg(test)]
@@ -109,11 +111,11 @@ mod tests {
     use std::f64::consts::FRAC_1_SQRT_2;
 
     /// Steady-state gain at `f_hz`: the RMS of a driven sine's tail, times sqrt(2).
-    fn measured_gain(mut filter: Iir, f_hz: f64) -> f64 {
+    fn measured_gain(mut push: impl FnMut(f64) -> f64, f_hz: f64) -> f64 {
         let w = 2.0 * PI * f_hz / 500.0;
         let (n, tail) = (20_000, 5000);
         let power: f64 = (0..n)
-            .map(|i| filter.push((w * i as f64).sin()))
+            .map(|i| push((w * i as f64).sin()))
             .skip(n - tail)
             .map(|y| y * y)
             .sum();
@@ -122,26 +124,36 @@ mod tests {
 
     #[test]
     fn highpass_is_half_power_at_the_cutoff_and_blocks_dc() {
-        let at_cutoff = measured_gain(Iir::highpass(1.5, 500.0), 1.5);
+        let gain = |f: f64| {
+            let mut hp = Iir::highpass(1.5, 500.0);
+            measured_gain(|x| hp.push(x), f)
+        };
+        let at_cutoff = gain(1.5);
         assert!((at_cutoff - FRAC_1_SQRT_2).abs() < 1e-3, "{at_cutoff}");
         let mut hp = Iir::highpass(1.5, 500.0);
         let settled = (0..5000).map(|_| hp.push(1.0)).last().unwrap();
         assert!(settled.abs() < 1e-6);
-        assert!((measured_gain(Iir::highpass(1.5, 500.0), 100.0) - 1.0).abs() < 0.01);
+        assert!((gain(100.0) - 1.0).abs() < 0.01);
     }
 
     #[test]
-    fn bandstop_is_half_power_at_both_edges_and_deep_at_the_centre() {
-        let (lo, hi) = NOTCH_25_HZ_EDGES;
+    fn notch_is_half_power_at_both_edges_and_deep_at_the_centre() {
+        let (lo, hi) = (23.5_f64, 25.75_f64);
+        let gain = |f: f64| {
+            let mut notch = Notch::hz25();
+            measured_gain(|x| notch.push(x), f)
+        };
         for f in [lo, hi] {
-            let g = measured_gain(Iir::bandstop(lo, hi, 500.0), f);
-            assert!((g - FRAC_1_SQRT_2).abs() < 2e-3, "{f} Hz: {g}");
+            assert!(
+                (gain(f) - FRAC_1_SQRT_2).abs() < 2e-3,
+                "{f} Hz: {}",
+                gain(f)
+            );
         }
-        let centre = measured_gain(Iir::bandstop(lo, hi, 500.0), (lo * hi).sqrt());
+        let centre = gain((lo * hi).sqrt());
         assert!(centre < 1e-3, "{centre}");
         for f in [2.0, 100.0] {
-            let g = measured_gain(Iir::bandstop(lo, hi, 500.0), f);
-            assert!((g - 1.0).abs() < 0.01, "{f} Hz: {g}");
+            assert!((gain(f) - 1.0).abs() < 0.01, "{f} Hz: {}", gain(f));
         }
     }
 }
