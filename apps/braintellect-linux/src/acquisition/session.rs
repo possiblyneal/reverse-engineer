@@ -165,7 +165,7 @@ impl<T: Read + Write> Session<T> {
     /// and channel-information payloads are not fully understood.
     fn query_pass(&mut self) -> Result<(), Error> {
         let reply = self.request(REQUEST_SERIAL)?;
-        for (i, pair) in self.serial.chunks_exact_mut(2).enumerate() {
+        for (i, pair) in self.serial.as_chunks_mut::<2>().0.iter_mut().enumerate() {
             let at = SERIAL_START + i * 3;
             pair.copy_from_slice(&reply[at..at + 2]);
         }

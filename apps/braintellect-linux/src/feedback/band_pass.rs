@@ -131,7 +131,7 @@ fn mean(window: &[f32; MEAN_TAPS], scalar: bool) -> f32 {
 /// `+ (p[4k] + p[4k + 1])`.
 fn mean_simd(p: &[f32; MEAN_TAPS]) -> f32 {
     let mut sum = (p[0] + p[1]) + (p[2] + p[3]);
-    for group in p[4..].chunks_exact(4) {
+    for group in p[4..].as_chunks::<4>().0 {
         sum = sum + group[3] + group[2] + (group[0] + group[1]);
     }
     sum

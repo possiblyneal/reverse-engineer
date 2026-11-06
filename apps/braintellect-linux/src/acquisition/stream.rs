@@ -103,7 +103,7 @@ impl FrameParser {
             }
             self.last_counter = Some(counter);
             let payload: [u8; 24] = frame[PAYLOAD_START..].try_into().expect("24-byte payload");
-            if !payload.chunks_exact(3).all(|s| s[2] & 3 == 3) {
+            if !payload.as_chunks::<3>().0.iter().all(|s| s[2] & 3 == 3) {
                 self.stats.sample_validation_errors += 1;
                 self.buf.drain(..FRAME_LEN);
                 continue;
