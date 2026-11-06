@@ -11,14 +11,18 @@ use braintellect_linux::acquisition::rfcomm::{RfcommStream, DEFAULT_CHANNEL};
 use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::acquisition::stream::StreamConfig;
 
-/// Baseline calibration: family 12, channelGain 12, sensorGain 10
-/// (`b2-protocol.md`, "Calibration confirmed"). Not read from the device.
+/// Baseline calibration (`b2-protocol.md`, "Calibration confirmed"): device
+/// family 12, channelGain 12, sensorGain 10. Not read from the device.
+const FAMILY: DeviceFamily = DeviceFamily::F12;
+const CHANNEL_GAIN: f64 = 12.0;
+const SENSOR_GAIN: f64 = 10.0;
 const ACTIVE_CHANNELS: u8 = 4;
 
 fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     let config = StreamConfig {
-        calibration: ChannelCalibration::new(12.0, 10.0).map_err(|e| format!("{e:?}"))?,
-        family: DeviceFamily::F12,
+        calibration: ChannelCalibration::new(CHANNEL_GAIN, SENSOR_GAIN)
+            .map_err(|e| format!("{e:?}"))?,
+        family: FAMILY,
     };
     let mut session = Session::open(RfcommStream::connect(mac, DEFAULT_CHANNEL)?, config)?;
     eprintln!(
@@ -35,8 +39,8 @@ fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
             .collect();
         println!("{}\t{}", frame.counter, uv.join("\t"));
     }
+    // The device closed the stream: there is no link left to send Stop on.
     eprintln!("stream ended, {:?}", session.stats());
-    session.disconnect()?;
     Ok(())
 }
 

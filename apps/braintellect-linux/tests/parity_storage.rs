@@ -86,4 +86,11 @@ fn location_follows_xdg_with_home_fallback() {
         ))
     );
     assert_eq!(resolve_path(None, None), None);
+    // The XDG spec says a relative path in `XDG_DATA_HOME` is invalid and ignored.
+    assert_eq!(
+        resolve_path(Some("rel/data".into()), Some("/home/u".into())),
+        Some(PathBuf::from(
+            "/home/u/.local/share/braintellect-linux/sessions.db"
+        ))
+    );
 }

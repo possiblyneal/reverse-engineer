@@ -110,11 +110,31 @@ fn bad_sample_marker_bits_count_a_validation_error_and_drop_the_frame() {
     bytes[32 * 3 + 10] &= !3; // third byte of the first sample in frame 3
     let (frames, stats) = replay(vec![bytes]);
     assert_eq!(stats.sample_validation_errors, 1);
+    assert_eq!(
+        stats.packet_counter_errors, 0,
+        "counter taken before the sample check"
+    );
     assert!(
         frames.iter().all(|f| f.counter != 3),
         "invalid frame dropped"
     );
     assert_eq!(frames.len(), fixtures::expected_microvolts().len() - 1);
+}
+
+#[test]
+fn stream_frames_still_arriving_before_the_first_reply_are_skipped() {
+    // A B-2 left streaming (the previous client never sent Stop) keeps sending
+    // frames until the initial Stop lands; the 101 reply follows them.
+    let mut wire = fixtures::wire();
+    let first_rx = wire
+        .iter()
+        .position(|e| matches!(e.dir, fixtures::Dir::Rx))
+        .expect("a reply");
+    let frames = stream_bytes()[..3 * 32].to_vec();
+    wire[first_rx].bytes.splice(0..0, frames);
+    let session = Session::open(ReplayTransport::new(wire, Vec::new()), config())
+        .expect("handshake after leftover stream frames");
+    assert_eq!(session.serial(), b"SCRUBBEDSN00");
 }
 
 #[test]

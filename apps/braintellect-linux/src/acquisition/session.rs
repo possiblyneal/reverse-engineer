@@ -11,7 +11,9 @@ use std::io::{self, Read, Write};
 use super::command::{
     Command, REQUEST_CHANNEL_INFO, REQUEST_SERIAL, REQUEST_SYSTEM_INFO_1, REQUEST_SYSTEM_INFO_2,
 };
-use super::stream::{decode_payload, FrameParser, SampleFrame, StreamConfig, StreamStats};
+use super::stream::{
+    decode_payload, FrameParser, SampleFrame, StreamConfig, StreamStats, FRAME_LEN,
+};
 
 /// Handshake replies are exactly 56 bytes (`b2-protocol.md`, reply layout).
 const REPLY_LEN: usize = 56;
@@ -138,10 +140,21 @@ impl<T: Read + Write> Session<T> {
         Ok(())
     }
 
+    /// Send request `code` and read its 56-byte reply. Stream frames still
+    /// arriving from a B-2 left streaming (a 32-byte frame with `03 03` at `[6]`
+    /// and the next marker right after it) are skipped first.
     fn request(&mut self, code: u8) -> Result<[u8; REPLY_LEN], Error> {
         self.send(Command::Request(code))?;
         let mut reply = [0u8; REPLY_LEN];
         self.transport.read_exact(&mut reply)?;
+        while reply[..4] == REPLY_MARKER
+            && reply[6..8] == [3, 3]
+            && reply[FRAME_LEN..FRAME_LEN + 4] == REPLY_MARKER
+        {
+            reply.copy_within(FRAME_LEN.., 0);
+            self.transport
+                .read_exact(&mut reply[REPLY_LEN - FRAME_LEN..])?;
+        }
         if reply[..4] != REPLY_MARKER || reply[8] != code {
             return Err(Error::BadReply { code });
         }

@@ -3,9 +3,10 @@
 //! selection (`ExprNoteSelection`).
 //!
 //! Evidence and open items: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
-//! [`Smart2Graph`] runs the whole graph from decoded EEG: the `Source` software
-//! filters, band-pass `OutAmplitude`, Aggregator and `PeakFrequency`, then the
-//! two paths, which also take those stages' logged values directly.
+//! [`SourceFilters`] is the `Source` software filter chain the caller runs on the
+//! decoded EEG; [`Smart2Graph`] runs the rest from its output: band-pass
+//! `OutAmplitude`, Aggregator and `PeakFrequency`, then the two paths, which also
+//! take those stages' logged values directly.
 //! Not implemented: the Evaluator (its control code is an input), `OutAmplitude`
 //! of the sound element and the `SoundElement` note playback.
 
@@ -35,8 +36,9 @@ pub use trigger_all::{trigger_all, BandAmplitudes};
 
 pub use smoother::Smoother;
 
-/// Sample rate of the stream the graph runs at.
-const RATE_HZ: usize = 500;
+/// Sample rate of the stream the graph runs at; the trigger and note windows
+/// are sized for it.
+pub const RATE_HZ: usize = 500;
 /// `averageEpoch` of `Threshold 20`, in milliseconds.
 const AVERAGE_EPOCH_MS: usize = 125;
 /// `ExprTriggerAll` yields volts; the threshold stage works in microvolts.

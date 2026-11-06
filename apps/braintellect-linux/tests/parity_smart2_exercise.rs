@@ -12,8 +12,9 @@
 
 mod harness;
 
+use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::feedback::{
-    BlockClock, Interference1, Interference2, Smart2Graph, SourceFilters, BLOCK_LEN,
+    BlockClock, Interference1, Interference2, Smart2Graph, SourceFilters, BLOCK_LEN, RATE_HZ,
 };
 use std::sync::OnceLock;
 
@@ -26,22 +27,9 @@ const GRAPH_START: usize = 25600;
 const PREROLL: usize = 4000;
 /// Consumed-sample index the app switched the 45 Hz low-pass in at.
 const INTERFERENCE_SWITCH: usize = GRAPH_START + 1;
-const RATE_HZ: usize = 500;
-/// The counter timer started one block-time before the first logged read.
+/// The counter timer started one counter interval (500 ms) before the first
+/// logged read.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
-/// Raw counts per volt: 12 x full scale x 10 over the 2.4 V reference.
-const COUNTS_PER_VOLT: f64 = 12.0 * 8_388_607.0 * 10.0 / 2.4;
-/// Bands A..H as (channel, label), the order of the block table's flags.
-const BANDS: [(usize, &str); 8] = [
-    (0, "Band 10"),
-    (1, "Band 10"),
-    (0, "Band 80"),
-    (1, "Band 80"),
-    (2, "Band 10"),
-    (3, "Band 10"),
-    (2, "Band 80"),
-    (3, "Band 80"),
-];
 /// Fires whose note differs from the app's: one borderline selection (fire 89).
 const KNOWN_NOTE_DEVIATIONS: [usize; 1] = [89];
 
@@ -63,9 +51,10 @@ fn build() -> Replay {
     design.source.interference2 = Interference2::Hz25;
     design.source.low_pass_hz = 150.0;
     design.source.high_pass_hz = 1.5;
-    let band_index: Vec<usize> = BANDS
+    // Bands A..H (`fixtures::STAGES`), the order of the block table's flags.
+    let band_index: Vec<usize> = fixtures::STAGES
         .iter()
-        .map(|&(channel, label)| {
+        .map(|&(label, channel)| {
             design
                 .band_passes
                 .iter()
@@ -73,11 +62,16 @@ fn build() -> Replay {
                 .expect("band-pass in design")
         })
         .collect();
+    // Raw counts per volt at the baseline calibration (`b2-protocol.md`,
+    // "Calibration confirmed"): family 12, channelGain 12, sensorGain 10.
+    let counts_per_volt = ChannelCalibration::new(12.0, 10.0)
+        .expect("baseline calibration")
+        .divisor(DeviceFamily::F12);
     let eeg = fixtures::run8_eeg();
     let first = GRAPH_START - PREROLL;
     let volts = |s: usize| -> [f64; 4] {
         let frame = &eeg[(s - first) / 2];
-        std::array::from_fn(|ch| f64::from(frame[ch + 4 * (s % 2)]) / COUNTS_PER_VOLT)
+        std::array::from_fn(|ch| f64::from(frame[ch + 4 * (s % 2)]) / counts_per_volt)
     };
     let mut warm = design.source.clone();
     warm.interference1 = Interference1::Off;

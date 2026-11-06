@@ -151,11 +151,15 @@ impl From<std::io::Error> for Error {
 
 /// The session database location by XDG convention:
 /// `$XDG_DATA_HOME/braintellect-linux/sessions.db`, else
-/// `$HOME/.local/share/braintellect-linux/sessions.db`. `None` when neither is
+/// `$HOME/.local/share/braintellect-linux/sessions.db`. A relative
+/// `XDG_DATA_HOME` is ignored, as the XDG spec requires. `None` when neither is
 /// set. Pass an explicit path to [`Store::open`] to override it.
 pub fn resolve_path(xdg_data_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
-    let base = match xdg_data_home.filter(|v| !v.is_empty()) {
-        Some(dir) => PathBuf::from(dir),
+    let base = match xdg_data_home
+        .map(PathBuf::from)
+        .filter(|dir| dir.is_absolute())
+    {
+        Some(dir) => dir,
         None => PathBuf::from(home.filter(|v| !v.is_empty())?).join(".local/share"),
     };
     Some(base.join("braintellect-linux/sessions.db"))

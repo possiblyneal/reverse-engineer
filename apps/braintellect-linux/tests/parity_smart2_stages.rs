@@ -12,15 +12,16 @@ mod harness;
 
 use braintellect_linux::feedback::{
     BandPass, BandPassDesign, BlockDecision, Interference1, Interference2, PeakDesign,
-    PeakFrequency, Smart2Graph, Smoother, SourceDesign, SourceFilters, BLOCK_LEN,
+    PeakFrequency, Smart2Graph, Smoother, SourceDesign, SourceFilters, BLOCK_LEN, RATE_HZ,
 };
 use harness::assertions;
 use harness::fixtures::{self, Decision};
 
 /// Same counter timer start as `parity_feedback.rs`.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
-/// Window of the `continuous` Aggregators: 500 Hz times the 60 s `averageEpoch`.
-const AGGREGATOR_WINDOW: usize = 500 * 60;
+/// Window of the `continuous` Aggregators: the sample rate times the 60 s
+/// `averageEpoch`.
+const AGGREGATOR_WINDOW: usize = RATE_HZ * 60;
 
 /// Run the graph over the live Source output, block by block, under the logged
 /// Evaluator codes, block times and 16-tap-mean sum orders.
@@ -53,7 +54,7 @@ fn source_chain_reproduces_the_live_stage_outputs_bit_for_bit() {
         low_pass_hz: 150.0,
         high_pass_hz: 1.5,
     };
-    let mut chain = SourceFilters::new(&design, 500);
+    let mut chain = SourceFilters::new(&design, RATE_HZ);
     let rows = fixtures::smart2_source_stages();
     assert!(rows.len() > SOURCE_CONVERGENCE_SAMPLES + 1000);
     for (n, row) in rows.iter().enumerate() {
@@ -82,7 +83,7 @@ fn captured_band(low_hz: f64, high_hz: f64) -> BandPass {
         high_hz,
         order: 128,
     };
-    BandPass::new(&design, 500, 4)
+    BandPass::new(&design, RATE_HZ, BLOCK_LEN)
 }
 
 #[test]
@@ -123,7 +124,7 @@ fn peak_frequency_reproduces_the_live_frequency_and_amplitude_bit_for_bit() {
         low_hz: 6.0,
         high_hz: 14.0,
     };
-    let mut peak = PeakFrequency::new(&design, 500);
+    let mut peak = PeakFrequency::new(&design, RATE_HZ);
     for (n, row) in rows.iter().enumerate() {
         let got = peak.push(f64::from(row.values[0]));
         if n == 1 {
@@ -291,4 +292,19 @@ fn graph_stages_reproduce_the_logged_values_bit_for_bit() {
             }
         }
     }
+}
+
+#[test]
+fn a_design_at_another_sample_rate_is_refused() {
+    // The trigger and note windows are sized for 500 Hz.
+    let mut design = fixtures::smart2_design();
+    design.rate_hz = 250;
+    assert!(Smart2Graph::new(design, 0).is_err());
+}
+
+#[test]
+fn a_design_with_a_zero_aggregator_epoch_is_refused() {
+    let mut design = fixtures::smart2_design();
+    design.aggregator_epoch_s = 0;
+    assert!(Smart2Graph::new(design, 0).is_err());
 }

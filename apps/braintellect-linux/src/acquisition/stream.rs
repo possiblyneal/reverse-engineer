@@ -69,10 +69,13 @@ impl FrameParser {
         self.stats
     }
 
-    /// The next valid frame, or `None` when more bytes are needed. A frame
-    /// failing validation is counted and skipped (its counter is not adopted);
-    /// a valid frame whose counter is off is counted and still delivered, and
-    /// its counter becomes the new reference.
+    /// The next valid frame, or `None` when more bytes are needed. Checks run in
+    /// the original's order (`b2-protocol.md`, "sampleValidation and counter
+    /// errors"): a frame with a wrong `03 03` header is counted and skipped; otherwise
+    /// its counter is checked and adopted (`0x55a549`) before the sample bits
+    /// (`0x55a69c`), so a frame failing only the sample check is counted and
+    /// dropped but its counter still becomes the reference. A frame whose counter
+    /// is off is counted and still delivered.
     pub fn next_frame(&mut self) -> Option<(u16, [u8; 24])> {
         loop {
             let Some(start) = self.buf.windows(MARKER.len()).position(|w| w == MARKER) else {
@@ -86,10 +89,7 @@ impl FrameParser {
                 return None;
             }
             let frame = &self.buf[..FRAME_LEN];
-            let payload: [u8; 24] = frame[PAYLOAD_START..].try_into().expect("24-byte payload");
-            let valid =
-                frame[6] == 3 && frame[7] == 3 && payload.chunks_exact(3).all(|s| s[2] & 3 == 3);
-            if !valid {
+            if frame[6] != 3 || frame[7] != 3 {
                 self.stats.sample_validation_errors += 1;
                 self.buf.drain(..MARKER.len());
                 continue;
@@ -102,6 +102,12 @@ impl FrameParser {
                 self.stats.packet_counter_errors += 1;
             }
             self.last_counter = Some(counter);
+            let payload: [u8; 24] = frame[PAYLOAD_START..].try_into().expect("24-byte payload");
+            if !payload.chunks_exact(3).all(|s| s[2] & 3 == 3) {
+                self.stats.sample_validation_errors += 1;
+                self.buf.drain(..FRAME_LEN);
+                continue;
+            }
             self.buf.drain(..FRAME_LEN);
             return Some((counter, payload));
         }
