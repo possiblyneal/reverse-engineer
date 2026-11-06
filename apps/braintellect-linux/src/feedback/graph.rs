@@ -12,8 +12,7 @@ use std::fmt;
 use super::band_pass::{BandPass, BandPassDesign};
 use super::peak_frequency::{Peak, PeakDesign, PeakFrequency};
 use super::source::{SourceDesign, SourceFilters};
-use super::UnsupportedControl;
-use super::{BandAmplitudes, NoteSelection, PeakFrequencies, Smoother, TriggerPath};
+use super::{BandAmplitudes, BlockClock, NoteSelection, PeakFrequencies, Smoother, TriggerPath};
 
 /// Channels the graph carries (the B-2's four, in resolved order).
 pub const CHANNELS: usize = 4;
@@ -204,48 +203,46 @@ impl Smart2Graph {
         }
     }
 
-    /// One block of samples under the Evaluator code `control`, read at clock
-    /// time `now_ms`. Within a block the trigger path runs before the note path.
-    ///
-    /// # Errors
-    /// Fails on an Evaluator code `ExprTriggerAll` has no recovered result for.
+    /// One block of samples under the Evaluator code `control`, read at `clock`.
+    /// Within a block the trigger path runs before the note path.
     pub fn process_block(
         &mut self,
-        now_ms: i64,
+        clock: impl Into<BlockClock>,
         control: u32,
         block: &[[f64; CHANNELS]],
-    ) -> Result<BlockDecision, UnsupportedControl> {
+    ) -> BlockDecision {
         let samples = block.iter().map(|&s| self.push_sample(s)).collect();
-        self.decide(now_ms, control, samples)
+        self.decide(clock.into(), control, samples)
     }
 
     /// [`Self::process_block`] for samples in volts that have already left the
     /// Source filters (see [`Self::push_filtered`]).
-    ///
-    /// # Errors
-    /// Fails on an Evaluator code `ExprTriggerAll` has no recovered result for.
     pub fn process_filtered_block(
         &mut self,
-        now_ms: i64,
+        clock: impl Into<BlockClock>,
         control: u32,
         block: &[[f64; CHANNELS]],
-    ) -> Result<BlockDecision, UnsupportedControl> {
+    ) -> BlockDecision {
         let samples = block.iter().map(|&s| self.push_filtered(s)).collect();
-        self.decide(now_ms, control, samples)
+        self.decide(clock.into(), control, samples)
     }
 
     fn decide(
         &mut self,
-        now_ms: i64,
+        clock: BlockClock,
         control: u32,
         samples: Vec<SampleOutput>,
-    ) -> Result<BlockDecision, UnsupportedControl> {
+    ) -> BlockDecision {
         let amplitudes: Vec<BandAmplitudes> = samples
             .iter()
             .map(|s| {
                 let at =
                     |channel, label| s.bands[band_index(&self.design, channel, label).unwrap()];
                 BandAmplitudes {
+                    a: at(0, BAND_LOW),
+                    b: at(1, BAND_LOW),
+                    c: at(0, BAND_HIGH),
+                    d: at(1, BAND_HIGH),
                     e: at(2, BAND_LOW),
                     f: at(3, BAND_LOW),
                     g: at(2, BAND_HIGH),
@@ -253,22 +250,20 @@ impl Smart2Graph {
                 }
             })
             .collect();
-        let out = self
-            .trigger
-            .process_amplitudes(now_ms, control, &amplitudes)?;
+        let out = self.trigger.process_amplitudes(clock, control, &amplitudes);
         let note_at_trigger = out.trigger.then(|| self.notes.latest());
         let peaks: Vec<PeakFrequencies> = samples
             .iter()
             .map(|s| PeakFrequencies(s.peaks.map(|p| p.frequency_hz as f32)))
             .collect();
         let note = self.notes.process_block(control, &peaks);
-        Ok(BlockDecision {
+        BlockDecision {
             samples,
             passes: out.passes,
             trigger: out.trigger,
             note,
             note_at_trigger,
-        })
+        }
     }
 }
 

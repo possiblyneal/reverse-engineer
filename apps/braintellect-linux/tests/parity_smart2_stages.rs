@@ -5,9 +5,8 @@
 //! Everything is asserted bit for bit: the Source chain, the band-pass FIR and
 //! `OutAmplitude` (the 16-tap mean in the IPP kernel's per-block sum order),
 //! `PeakFrequency`, the Aggregators, and every graph stage, Trigger and Note decision
-//! of the baseline. The serial log is not replayed through the Source chain: the
-//! hooked app drops frames the log still shows, so the replay starts at the Source
-//! output.
+//! of the baseline. The replay starts at the logged Source output; the decoded
+//! serial stream replayed from a cold start is `parity_smart2_exercise.rs`.
 
 mod harness;
 
@@ -36,9 +35,7 @@ fn replay() -> Vec<BlockDecision> {
             let samples: Vec<[f64; 4]> = (0..BLOCK_LEN)
                 .map(|n| std::array::from_fn(|ch| f64::from(input.volts[ch][n])))
                 .collect();
-            graph
-                .process_filtered_block(block.time_ms as i64, block.control, &samples)
-                .expect("observed Evaluator codes")
+            graph.process_filtered_block(block.time_ms as i64, block.control, &samples)
         })
         .collect()
 }
@@ -241,12 +238,13 @@ fn notes_at_the_baseline_fires_match_the_baseline() {
     }
 }
 
-/// Known gap: the app's counter timer reads a clock the log does not carry (its
-/// reading trails the block's log time by up to about 15 ms), so some fires land
-/// one block early or late and read a different note.
-/// Run with `--ignored`; it fails until the timer clock is recovered.
+/// Known gap: run 6 logged only the counter timer's evaluation read, not the lap read
+/// the app takes when it fires (it differs by a few ms in some fires), so a fire can
+/// land one block off and read a different note. Run 8 logs both, see
+/// `parity_smart2_exercise.rs`. Run with `--ignored`; it fails until run 6's lap
+/// reads are recovered.
 #[test]
-#[ignore = "counter fires drift from the app's unlogged timer clock"]
+#[ignore = "run 6 did not log the counter lap read"]
 fn end_to_end_note_decisions_match_the_baseline() {
     let (expected, actual) = note_decisions();
     assertions::decisions(&expected, &actual).expect("note parity from the Source output");

@@ -29,10 +29,19 @@ stage values from the run-5 capture under `tmp/s43/live/` (`hook6.log`, never
 committed): for each sample the 25 Hz band-stop input and the band-stop, low-pass
 and high-pass outputs, as the float32 bit patterns the app holds.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--baseline DIR] [--out DIR]
+The whole-exercise fixtures (`run8_*`) come from the run-8 binary hook log
+`tmp/s43/run8/run8.bin` (`--src8`, never committed; about four minutes of SMART-2
+with the serial RX stream and every graph stage logged on one clock): the consumed
+EEG as 24-bit hex frames (`run8_eeg_N.txt`), the per-block table (`run8_blocks_N.tsv`:
+A..H flags, Evaluator code, eval clock, lap clock), the baseline Trigger and Note
+decisions (`run8_decisions.tsv`) and the logged E..H band amplitudes of a stable span
+(`run8_amplitudes.tsv`). Clocks are milliseconds from block 0.
+
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--baseline DIR] [--out DIR]
 """
 import argparse
 import collections
+import mmap
 import pathlib
 import re
 import struct
@@ -609,13 +618,164 @@ def new_run(path, marker):
     return data[data.rfind(marker):].decode(errors="replace")
 
 
+RUN8_DIV = 12 * (2**23 - 1) * 10 / 2.4  # raw counts per volt, as the app converts them
+RUN8_GRAPH_START = 25600  # consumed-sample index the graph started at (found by replay)
+RUN8_BLOCKS = 30001
+RUN8_AMP_FIRST, RUN8_AMP_BLOCKS = 1000, 2000  # logged E..H amplitudes kept: blocks 1000..2999
+RUN8_FILE_LIMIT = 9000  # EEG frames or block rows per file; keeps every file under 500 KB
+# Band A..H -> rank of the band-pass object's address among the 18 graph-call
+# objects (ascending). A..H: Ch1 B10, Ch2 B10, Ch1 B80, Ch2 B80, Ch3 B10, Ch4 B10, Ch3 B80, Ch4 B80.
+RUN8_BAND_RANKS = (14, 3, 2, 8, 9, 16, 12, 0)
+
+
+RUN8_TAGS = frozenset((1, 2, 3, 4, 5, 7, 11, 12))  # serial RX, block, clocks, graph calls, note, amplitudes, volts
+
+
+def run8_records(path):
+    """Yield (tag, doubles) for each RUN8_TAGS record of the run-8 binary hook log."""
+    with open(path, "rb") as f, mmap.mmap(f.fileno(), 0, access=mmap.ACCESS_READ) as m:
+        i, n = 0, len(m) // 8
+        while i + 3 <= n:
+            tag, length = (int(x) for x in struct.unpack_from("<2d", m, 8 * i))
+            if tag in RUN8_TAGS:
+                yield tag, struct.unpack_from("<%dd" % length, m, 8 * i)
+            i += length
+
+
+def run8_frames(records):
+    """Received frames and the volts the app consumed, from the serial RX records.
+
+    A frame is `AC BC CC 03`, a 16-bit counter and 8 x 24-bit samples; `03 03` in
+    the counter position is accepted only when it continues the counter.
+    Returns (frames as 8 raw ints, consumed ch0 volts in order).
+    """
+    buf, frames, volts = bytearray(), [], []
+    prev = None
+    for tag, v in records:
+        if tag == 12:
+            volts.append(v[4])
+        elif tag == 1:
+            buf += bytes(int(x) for x in v[4:4 + int(v[3])])
+            while True:
+                j = buf.find(MARKER)
+                if j < 0:
+                    del buf[:-3]
+                    break
+                del buf[:j]
+                if len(buf) < FRAME_LEN:
+                    break
+                counter = (buf[4] << 8) | buf[5]
+                if buf[4:6] == b"\x03\x03" and counter != ((prev or 0) + 1) & 0xFFFF:
+                    del buf[:FRAME_LEN]
+                    continue
+                prev = counter
+                frames.append([i24(buf[8 + 3 * k:11 + 3 * k]) for k in range(8)])
+                del buf[:FRAME_LEN]
+    return frames, volts
+
+
+def run8_consumed_frames(frames, volts):
+    """The received frames holding the samples the app consumed, in order.
+
+    Each consumed ch0 volt is matched forward (within 400 samples) to the received
+    ch0 slot 0 / slot 4 sequence; frames the app never consumed (counter jumps) drop out.
+    """
+    cand = [raw for f in frames for raw in (f[0], f[4])]
+    pos, used = 0, set()
+    for v in volts:
+        raw = round(v * RUN8_DIV)
+        q = pos
+        while q < min(len(cand), pos + 400) and cand[q] != raw:
+            q += 1
+        if q >= min(len(cand), pos + 400):
+            raise SystemExit("consumed sample has no received counterpart")
+        used.add(q // 2)
+        pos = q + 1
+    return [frames[k] for k in sorted(used)]
+
+
+def run8_blocks(records):
+    """Per graph block: the 16-tap-mean flags, Evaluator code, clocks, note and amplitudes.
+
+    A block is closed by its tag-2 record. Flags come from the logged `dst` of the
+    4-sample band-pass calls (tag 5), the Evaluator code from the last tag-11
+    record, the clock from the tag-3 timer read and the lap read from tag 4.
+    """
+    blocks, cur = [], {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None}
+    for tag, v in records:
+        if tag == 5 and int(v[6]) == 4:
+            cur["calls"][int(v[3])] = int(v[5]) % 16 == 8
+        elif tag == 3:
+            cur["clock"] = int(v[4]) + int(v[5])
+        elif tag == 4:
+            cur["lap"] = int(v[4])
+        elif tag == 7:
+            cur["note"] = cur["note"] if cur["note"] is not None else int(v[4])
+        elif tag == 11:
+            p, recs = 4, []
+            for _ in range(int(v[3])):
+                c = int(v[p])
+                recs.append(v[p + 1:p + 1 + c])
+                p += 1 + c
+            cur["code"] = int(recs[-1][0])
+            if len(recs) == 9 and cur["amps"] is None:
+                cur["amps"] = [x for r in recs[4:8] for x in r]
+        elif tag == 2:
+            blocks.append(cur)
+            cur = {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None}
+    return blocks
+
+
+def run8(path):
+    """Run-8 fixtures: the consumed EEG, the block table, decisions, logged amplitudes.
+
+    Returns a dict of file name to text. Clocks are milliseconds from block 0's
+    timer read, so no wall-clock time enters the fixtures. Raw serial bytes stay
+    out: only the consumed 24-bit samples are kept, which carry no identifiers.
+    """
+    records = list(run8_records(path))
+    frames, volts = run8_frames(records)
+    consumed = run8_consumed_frames(frames, volts)
+    blocks = run8_blocks(records)
+    if len(blocks) < RUN8_BLOCKS or any(b["clock"] is None for b in blocks[:RUN8_BLOCKS]):
+        raise SystemExit("run 8 block log is incomplete")
+    blocks = blocks[:RUN8_BLOCKS]
+    keys = sorted({k for blk in blocks for k in blk["calls"]})
+    if len(keys) != 18:
+        raise SystemExit("expected 18 graph-call objects")
+    out = {}
+    first = RUN8_GRAPH_START // 2
+    eeg = consumed[first:first + (RUN8_BLOCKS * 4 + 1) // 2 + 1]
+    for part, lo in enumerate(range(0, len(eeg), RUN8_FILE_LIMIT)):
+        out[f"run8_eeg_{part}.txt"] = "".join(
+            "".join("%06x" % (x & 0xFFFFFF) for x in f) + "\n"
+            for f in eeg[lo:lo + RUN8_FILE_LIMIT])
+    t0 = blocks[0]["clock"]
+    rows, decs = [], []
+    for b, blk in enumerate(blocks):
+        flags = "".join("1" if blk["calls"].get(keys[r]) else "0" for r in RUN8_BAND_RANKS)
+        now = blk["clock"] - t0
+        lap = blk["lap"] - t0 if blk["lap"] is not None else -1
+        rows.append(f"{flags}\t{blk['code']}\t{now}\t{lap}\n")
+        if blk["lap"] is not None:
+            decs += [f"{now}\tTrigger\t{b}\n", f"{now}\tNote\t{blk['note']}\n"]
+    for part, lo in enumerate(range(0, len(rows), RUN8_FILE_LIMIT * 2)):
+        out[f"run8_blocks_{part}.tsv"] = "".join(rows[lo:lo + RUN8_FILE_LIMIT * 2])
+    out["run8_decisions.tsv"] = "".join(decs)
+    out["run8_amplitudes.tsv"] = "".join(
+        " ".join("%08x" % struct.unpack("<I", struct.pack("<f", x))[0] for x in blk["amps"]) + "\n"
+        for blk in blocks[RUN8_AMP_FIRST:RUN8_AMP_FIRST + RUN8_AMP_BLOCKS])
+    return out
+
+
 def main():
-    root = pathlib.Path(__file__).resolve().parents[3]
+    root =pathlib.Path(__file__).resolve().parents[3]
     ap = argparse.ArgumentParser()
     ap.add_argument("--src", type=pathlib.Path, default=root / "tmp/s26/run2")
     ap.add_argument("--src3", type=pathlib.Path, default=root / "tmp/s26/run3")
     ap.add_argument("--src4", type=pathlib.Path, default=root / "tmp/s26/run4")
     ap.add_argument("--src5", type=pathlib.Path, default=root / "tmp/s43/live")
+    ap.add_argument("--src8", type=pathlib.Path, default=root / "tmp/s43/run8/run8.bin")
     ap.add_argument("--baseline", type=pathlib.Path, default=root / "tmp/s43/baseline")
     ap.add_argument(
         "--out", type=pathlib.Path,
@@ -674,6 +834,9 @@ def main():
     (args.out / "smart2_bandpass_stages.tsv").write_text(bandpass_stages(hook_text))
     (args.out / "smart2_design.tsv").write_text("".join(
         "\t".join(r) + "\n" for r in design_rows(args.src4, header4)))
+
+    for name, text in run8(args.src8).items():
+        (args.out / name).write_text(text)
 
 
 if __name__ == "__main__":

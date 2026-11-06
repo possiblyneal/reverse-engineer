@@ -22,7 +22,7 @@ mod threshold;
 mod trigger_all;
 
 pub use band_pass::{BandPass, BandPassDesign};
-pub use counter::Counter;
+pub use counter::{BlockClock, Counter};
 pub use graph::{
     BandPassSpec, BlockDecision, DesignError, PeakSpec, SampleOutput, Smart2Design, Smart2Graph,
     BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,
@@ -31,7 +31,7 @@ pub use note::{NoteSelection, PeakFrequencies};
 pub use peak_frequency::{Peak, PeakDesign, PeakFrequency};
 pub use source::{Interference1, Interference2, SourceDesign, SourceFilters};
 pub use threshold::Threshold;
-pub use trigger_all::{trigger_all, BandAmplitudes, UnsupportedControl};
+pub use trigger_all::{trigger_all, BandAmplitudes};
 
 pub use smoother::Smoother;
 
@@ -61,7 +61,7 @@ pub struct TriggerPath {
 impl TriggerPath {
     /// The SMART-2 configuration at the 500 Hz sample rate. `timer_start_ms` is
     /// the counter timer's reading at construction, on the same clock as the
-    /// `now_ms` passed to [`TriggerPath::process_block`].
+    /// clock passed to [`TriggerPath::process_block`].
     pub fn smart2(timer_start_ms: i64) -> Self {
         Self {
             smoother: Smoother::new(RATE_HZ * AVERAGE_EPOCH_MS / 1000),
@@ -71,31 +71,28 @@ impl TriggerPath {
     }
 
     /// Process one block of band amplitudes under the Evaluator code `control`,
-    /// read at clock time `now_ms`: `ExprTriggerAll`, microvolt scaling, the
-    /// `averageEpoch` smoothing, then [`TriggerPath::process_block`].
-    ///
-    /// # Errors
-    /// Fails on an Evaluator code `ExprTriggerAll` has no recovered result for.
+    /// read at `clock`: `ExprTriggerAll`, microvolt scaling, the `averageEpoch`
+    /// smoothing, then [`TriggerPath::process_block`].
     pub fn process_amplitudes(
         &mut self,
-        now_ms: i64,
+        clock: impl Into<BlockClock>,
         control: u32,
         block: &[BandAmplitudes],
-    ) -> Result<BlockOutput, UnsupportedControl> {
+    ) -> BlockOutput {
         let mut smoothed = Vec::with_capacity(block.len());
         for &amplitudes in block {
             let microvolts =
-                (f64::from(trigger_all(control, amplitudes)?) * VOLTS_TO_MICROVOLTS) as f32;
+                (f64::from(trigger_all(control, amplitudes)) * VOLTS_TO_MICROVOLTS) as f32;
             smoothed.push(f64::from(self.smoother.push(microvolts)));
         }
-        Ok(self.process_block(now_ms, &smoothed))
+        self.process_block(clock, &smoothed)
     }
 
-    /// Process one block of smoothed inputs read at clock time `now_ms`.
-    pub fn process_block(&mut self, now_ms: i64, values: &[f64]) -> BlockOutput {
+    /// Process one block of smoothed inputs read at `clock`.
+    pub fn process_block(&mut self, clock: impl Into<BlockClock>, values: &[f64]) -> BlockOutput {
         let passes: Vec<bool> = values.iter().map(|&v| self.threshold.push(v)).collect();
         self.threshold.end_block();
-        let trigger = self.counter.process_block(now_ms, &passes);
+        let trigger = self.counter.process_block(clock.into(), &passes);
         BlockOutput { passes, trigger }
     }
 }

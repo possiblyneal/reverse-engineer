@@ -497,3 +497,76 @@ pub fn smart2_source_stages() -> Vec<[f32; 5]> {
         })
         .collect()
 }
+
+/// One block of the run-8 whole-exercise baseline.
+#[derive(Clone, Debug)]
+pub struct Run8Block {
+    /// The 16-tap-mean head flags of bands A..H (`true` = scalar head).
+    pub scalar_heads: [bool; 8],
+    /// The Evaluator code the block ran under.
+    pub control: u32,
+    /// The counter timer's evaluation read, ms from block 0.
+    pub read_ms: i64,
+    /// The lap read taken when the counter fired, ms from block 0.
+    pub lap_ms: Option<i64>,
+}
+
+/// The consumed EEG of run 8 from the graph's first sample: raw 24-bit counts,
+/// eight per frame (slots 0..4 then 4..8 are two consecutive samples of the
+/// four channels).
+pub fn run8_eeg() -> Vec<[i32; 8]> {
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("tests/fixtures");
+    (0..)
+        .map(|part| format!("run8_eeg_{part}.txt"))
+        .take_while(|name| dir.join(name).exists())
+        .flat_map(|name| {
+            read(&name)
+                .lines()
+                .map(|line| {
+                    std::array::from_fn(|k| {
+                        let v = i32::from_str_radix(&line[6 * k..6 * k + 6], 16).expect("hex");
+                        (v << 8) >> 8
+                    })
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// The per-block table of run 8, in block order.
+pub fn run8_blocks() -> Vec<Run8Block> {
+    ["run8_blocks_0.tsv", "run8_blocks_1.tsv"]
+        .iter()
+        .flat_map(|name| read(name).lines().map(String::from).collect::<Vec<_>>())
+        .map(|line| {
+            let c: Vec<&str> = line.split('\t').collect();
+            let lap: i64 = c[3].parse().expect("lap");
+            Run8Block {
+                scalar_heads: std::array::from_fn(|k| c[0].as_bytes()[k] == b'1'),
+                control: c[1].parse().expect("code"),
+                read_ms: c[2].parse().expect("read"),
+                lap_ms: (lap >= 0).then_some(lap),
+            }
+        })
+        .collect()
+}
+
+/// The Trigger (value = block) and Note decisions the app made over run 8.
+pub fn run8_decisions() -> Vec<Decision> {
+    time_kind_value_decisions("run8_decisions.tsv")
+}
+
+/// First block of [`run8_amplitudes`].
+pub const RUN8_AMPLITUDES_FIRST_BLOCK: usize = 1000;
+
+/// Logged amplitudes of bands E..H, four samples each (E0..E3, F0.., G0.., H0..),
+/// for a span of blocks starting at [`RUN8_AMPLITUDES_FIRST_BLOCK`].
+pub fn run8_amplitudes() -> Vec<[f32; 16]> {
+    read("run8_amplitudes.tsv")
+        .lines()
+        .map(|line| {
+            let words: Vec<&str> = line.split(' ').collect();
+            std::array::from_fn(|k| bits(words[k]))
+        })
+        .collect()
+}
