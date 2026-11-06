@@ -32,7 +32,7 @@ mf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mf)
 
 BLOCKS = mf.RUN8_BLOCKS
-EEG_BASE = 20000
+EEG_BASE = 0
 
 
 def consumed_samples(frames, volts):

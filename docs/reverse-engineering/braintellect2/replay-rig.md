@@ -95,12 +95,14 @@ fire on. Nothing was tuned.
 
 The target is the clone's decisions on this replay, not run 8's: the original's graph started
 at a different sample, so it saw different EEG. `tests/replay_s48.rs` (ignored; inputs outside
-Git) feeds the clone the replayed consumed EEG from the graph start with the original's
+Git) feeds the clone the replayed consumed EEG from its first sample (Source warm-up over the
+whole stream before the graph start, 25640 samples, the low-pass 45 Hz switched in cold at
+graph start + 1) with the original's
 logged Evaluator codes, counter clock reads and 16-tap-mean flags, as
 `tests/parity_smart2_exercise.rs` does for run 8, and diffs the Trigger/Note decisions.
 `scripts/replay-extract.py <run8.bin>` reduces the replay hook log to the files the test
 reads (default `tmp/s48/replay/`). Run
-`cargo test --release --test replay_s48 -- --ignored --nocapture` (about 30 s).
+`cargo test --release --test replay_s48 -- --ignored --nocapture` (about 1 min).
 
 - Logged consumed volts before block 0: 25952. As run 8's 25600 was (count 25912), the graph
   start is located from the original's own logged E..H amplitudes: 25640 is the best start in
@@ -111,8 +113,9 @@ reads (default `tmp/s48/replay/`). Run
 - First divergence by stage: the Source/band amplitudes. Block 0 sample 1 band E is
   4.4359053e-10 in the clone against 4.4354126e-10 logged (about 1e-4 relative); only 4 of
   128 logged E..H values in blocks 0..7 are bit exact. The first Note is the first place
-  that perturbation changes a decision. Nothing was tuned; the cause (the Source chain's warm
-  state or the interference switch at the replay's start) is not pinned down. The band-rank
+  that perturbation changes a decision. A 4000-sample warm-up gave the identical result, so the
+  warm-up depth is not the cause. Nothing was tuned; the cause (the interference switch
+  or something else in Source at the replay's start) is not pinned down. The band-rank
   flag mapping (`RUN8_BAND_RANKS`) is assumed to carry over to the replay process and is
   unverified.
 

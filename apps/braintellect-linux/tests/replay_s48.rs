@@ -158,13 +158,15 @@ fn replay_at(
     graph_start: usize,
     limit: usize,
 ) -> Replay {
-    let from = graph_start - harness::run8::PREROLL - eeg_base;
-    let frames: Vec<[i32; 8]> = eeg[from..]
+    // The original ran Source from its first streamed sample, so the warm-up is everything
+    // before the graph start.
+    let frames: Vec<[i32; 8]> = eeg
         .chunks_exact(2)
         .map(|pair| std::array::from_fn(|k| pair[k / 4][k % 4]))
         .collect();
     replay_from(
         &frames,
+        eeg_base,
         graph_start,
         blocks.iter().take(limit).cloned().collect(),
     )

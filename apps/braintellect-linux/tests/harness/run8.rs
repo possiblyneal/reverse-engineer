@@ -21,7 +21,7 @@ use super::fixtures::{self, Run8Block};
 /// Consumed-sample index the app's graph started at.
 const GRAPH_START: usize = 25600;
 /// Consumed samples of the EEG fixture before the graph start.
-pub const PREROLL: usize = 4000;
+const PREROLL: usize = 4000;
 /// The counter timer started one counter interval (500 ms) before the first
 /// logged read.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
@@ -39,13 +39,23 @@ pub fn replay() -> &'static Replay {
 }
 
 fn build() -> Replay {
-    replay_from(&fixtures::run8_eeg(), GRAPH_START, fixtures::run8_blocks())
+    replay_from(
+        &fixtures::run8_eeg(),
+        GRAPH_START - PREROLL,
+        GRAPH_START,
+        fixtures::run8_blocks(),
+    )
 }
 
-/// The replay of an exercise whose consumed EEG starts [`PREROLL`] samples before
+/// The replay of an exercise whose consumed EEG starts at consumed sample `first`, before
 /// `graph_start`, under the app's logged per-block inputs. The 45 Hz low-pass is
 /// switched in at consumed sample `graph_start + 1`.
-pub fn replay_from(eeg: &[[i32; 8]], graph_start: usize, blocks: Vec<Run8Block>) -> Replay {
+pub fn replay_from(
+    eeg: &[[i32; 8]],
+    first: usize,
+    graph_start: usize,
+    blocks: Vec<Run8Block>,
+) -> Replay {
     let interference_switch = graph_start + 1;
     let mut design = fixtures::smart2_design();
     design.source.interference1 = Interference1::LowPass45;
@@ -68,7 +78,6 @@ pub fn replay_from(eeg: &[[i32; 8]], graph_start: usize, blocks: Vec<Run8Block>)
     let counts_per_volt = ChannelCalibration::new(12.0, 10.0)
         .expect("baseline calibration")
         .divisor(DeviceFamily::F12);
-    let first = graph_start - PREROLL;
     let volts = |s: usize| -> [f64; 4] {
         let frame = &eeg[(s - first) / 2];
         std::array::from_fn(|ch| f64::from(frame[ch + 4 * ((s - first) % 2)]) / counts_per_volt)
