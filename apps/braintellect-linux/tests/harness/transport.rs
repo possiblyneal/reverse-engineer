@@ -17,6 +17,8 @@ pub struct ReplayTransport {
     /// Stream chunks delivered once the last scripted write has happened.
     stream: Vec<Vec<u8>>,
     readable: VecDeque<Vec<u8>>,
+    /// Report a read timeout instead of end of stream once nothing is left.
+    stall: bool,
     pub written: Vec<Vec<u8>>,
 }
 
@@ -33,9 +35,34 @@ impl ReplayTransport {
             replies,
             stream,
             readable: VecDeque::new(),
+            stall: false,
             written: Vec::new(),
         }
     }
+}
+
+impl ReplayTransport {
+    /// Once the stream is used up, reads time out (a quiet link) instead of
+    /// reporting end of stream.
+    pub fn stalling(mut self) -> Self {
+        self.stall = true;
+        self
+    }
+}
+
+/// Wire frames (`stream.txt` layout: marker, counter, `03 03`, eight 24-bit
+/// samples) carrying raw ADC counts, one frame per row, counters from 0.
+pub fn frames_from_counts(rows: &[[i32; 8]]) -> Vec<Vec<u8>> {
+    rows.iter()
+        .enumerate()
+        .map(|(n, row)| {
+            let mut frame = vec![0xAC, 0xBC, 0xCC, 0x03];
+            frame.extend(u16::try_from(n % 65536).expect("counter").to_be_bytes());
+            frame.extend([3, 3]);
+            frame.extend(row.iter().flat_map(|v| v.to_be_bytes()[1..].to_vec()));
+            frame
+        })
+        .collect()
 }
 
 impl Write for ReplayTransport {
@@ -59,7 +86,11 @@ impl Read for ReplayTransport {
     /// One scripted chunk per call (or part of it); `Ok(0)` once nothing is left.
     fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
         let Some(mut chunk) = self.readable.pop_front() else {
-            return Ok(0);
+            return if self.stall {
+                Err(io::ErrorKind::TimedOut.into())
+            } else {
+                Ok(0)
+            };
         };
         let n = chunk.len().min(buf.len());
         buf[..n].copy_from_slice(&chunk[..n]);
