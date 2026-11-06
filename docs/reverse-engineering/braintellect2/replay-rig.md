@@ -97,7 +97,7 @@ The target is the clone's decisions on this replay, not run 8's: the original's 
 at a different sample, so it saw different EEG. `tests/replay_s48.rs` (ignored; inputs outside
 Git) feeds the clone the replayed consumed EEG from its first sample (Source warm-up over the
 whole stream before the graph start, 25640 samples, the low-pass 45 Hz switched in cold at
-graph start + 1) with the original's
+graph start + 4) with the original's
 logged Evaluator codes, counter clock reads and 16-tap-mean flags, as
 `tests/parity_smart2_exercise.rs` does for run 8, and diffs the Trigger/Note decisions.
 `scripts/replay-extract.py <run8.bin>` reduces the replay hook log to the files the test
@@ -107,17 +107,14 @@ reads (default `tmp/s48/replay/`). Run
 - Logged consumed volts before block 0: 25952. As run 8's 25600 was (count 25912), the graph
   start is located from the original's own logged E..H amplitudes: 25640 is the best start in
   count-1900..count+400.
-- Decisions: 874 original (Trigger/Note) against 874 clone; 873 match in kind, value and clock
-  time. The one difference is decision 1, the first Note, at block 67 (clock 67 ms):
-  original 40, clone 42. The Trigger before it matches.
-- First divergence by stage: the Source/band amplitudes. Block 0 sample 1 band E is
-  4.4359053e-10 in the clone against 4.4354126e-10 logged (about 1e-4 relative); only 4 of
-  128 logged E..H values in blocks 0..7 are bit exact. The first Note is the first place
-  that perturbation changes a decision. A 4000-sample warm-up gave the identical result, so the
-  warm-up depth is not the cause. Nothing was tuned; the cause (the interference switch
-  or something else in Source at the replay's start) is not pinned down. The band-rank
-  flag mapping (`RUN8_BAND_RANKS`) is assumed to carry over to the replay process and is
-  unverified.
+- Decisions: 874 original (Trigger/Note) against 874 clone; all 874 match in kind, value and
+  clock time, and all 30001 blocks of logged E..H amplitudes are bit exact. Two inputs the
+  clone could not derive caused the earlier single difference (first Note, block 67: original
+  40, clone 42); both are recorded in `audio-feedback.md` ("Replay start-up"): the 45 Hz
+  low-pass switch landed at graph start + 4 (run 8: + 1), and the band to band-pass object
+  mapping of run 8 does not carry over to another process.
+- `replay_s48` locates the start (25640) and the switch (25644) from the logged E..H
+  amplitudes, the same way; both are unlogged inputs.
 
 ## Why rx8.raw holds 639k frames and `audio-feedback.md` says 149k
 

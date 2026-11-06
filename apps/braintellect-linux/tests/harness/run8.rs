@@ -43,6 +43,7 @@ fn build() -> Replay {
         &fixtures::run8_eeg(),
         GRAPH_START - PREROLL,
         GRAPH_START,
+        GRAPH_START + 1,
         fixtures::run8_blocks(),
     )
 }
@@ -54,9 +55,9 @@ pub fn replay_from(
     eeg: &[[i32; 8]],
     first: usize,
     graph_start: usize,
+    interference_switch: usize,
     blocks: Vec<Run8Block>,
 ) -> Replay {
-    let interference_switch = graph_start + 1;
     let mut design = fixtures::smart2_design();
     design.source.interference1 = Interference1::LowPass45;
     design.source.interference2 = Interference2::Hz25;

@@ -138,7 +138,10 @@ those findings, it cites them.
   `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
   `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/`, and the ignored
   `tests/replay_s48.rs` diffs the clone's decisions on that stream against the original's
-  (via `harness::run8::replay_from`); inputs are vendor-derived and stay outside Git.
+  (via `harness::run8::replay_from`) and asserts the logged E..H amplitudes bit for bit; it locates
+  the unlogged graph start and 45 Hz low-pass switch sample from those amplitudes, and
+  `replay-extract.py` carries the replay's own band to band-pass object ranks (`audio-feedback.md`,
+  "Replay start-up"); inputs are vendor-derived and stay outside Git.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and
