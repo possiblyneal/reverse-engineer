@@ -74,7 +74,7 @@ fn build() -> Replay {
     let mut warm = design.source.clone();
     warm.interference1 = Interference1::Off;
     let mut source: [SourceFilters; 4] =
-        std::array::from_fn(|_| SourceFilters::new(&warm, RATE_HZ));
+        std::array::from_fn(|_| SourceFilters::new(&warm, RATE_HZ).unwrap());
     let mut filtered = |s: usize| -> [f64; 4] {
         if s == INTERFERENCE_SWITCH {
             for chain in &mut source {
@@ -170,7 +170,7 @@ fn note_decisions_match_the_baseline_exactly() {
 fn band_amplitudes_match_the_logged_values_bit_for_bit_from_the_first_block() {
     let run = replay();
     let logged = fixtures::run8_amplitudes();
-    assert_eq!(logged.len(), 6600);
+    assert_eq!(logged.len(), fixtures::RUN8_AMPLITUDE_BLOCKS);
     for (b, row) in logged.iter().enumerate() {
         for n in 0..BLOCK_LEN {
             for band in 0..4 {

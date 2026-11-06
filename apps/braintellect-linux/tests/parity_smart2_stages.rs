@@ -54,7 +54,7 @@ fn source_chain_reproduces_the_live_stage_outputs_bit_for_bit() {
         low_pass_hz: 150.0,
         high_pass_hz: 1.5,
     };
-    let mut chain = SourceFilters::new(&design, RATE_HZ);
+    let mut chain = SourceFilters::new(&design, RATE_HZ).unwrap();
     let rows = fixtures::smart2_source_stages();
     assert!(rows.len() > SOURCE_CONVERGENCE_SAMPLES + 1000);
     for (n, row) in rows.iter().enumerate() {

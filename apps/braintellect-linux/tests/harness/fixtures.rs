@@ -557,8 +557,12 @@ pub fn run8_decisions() -> Vec<Decision> {
     time_kind_value_decisions("run8_decisions.tsv")
 }
 
+/// Blocks of logged E..H amplitudes the run 8 fixtures keep (`RUN8_AMP_BLOCKS` in
+/// `scripts/make-fixtures.py`).
+pub const RUN8_AMPLITUDE_BLOCKS: usize = 6600;
+
 /// Logged amplitudes of bands E..H, four samples each (E0..E3, F0.., G0.., H0..),
-/// for the first blocks of the run.
+/// for the first [`RUN8_AMPLITUDE_BLOCKS`] blocks of the run.
 pub fn run8_amplitudes() -> Vec<[f32; 16]> {
     ["run8_amplitudes_0.tsv", "run8_amplitudes_1.tsv"]
         .iter()

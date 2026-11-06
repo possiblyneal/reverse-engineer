@@ -622,7 +622,7 @@ RUN8_DIV = 12 * (2**23 - 1) * 10 / 2.4  # raw counts per volt, as the app conver
 RUN8_GRAPH_START = 25600  # consumed-sample index the graph started at (found by replay)
 RUN8_PREROLL = 4000  # consumed samples kept before the graph start, to warm the Source chain
 RUN8_BLOCKS = 30001
-RUN8_AMP_BLOCKS = 6600  # logged E..H amplitudes kept: blocks 0..6599, past the 6409..6477 burst
+RUN8_AMP_BLOCKS = 6600  # = RUN8_AMPLITUDE_BLOCKS in tests/harness/fixtures.rs; logged E..H amplitudes kept: blocks 0..6599, past the 6409..6477 burst
 RUN8_AMP_FILE_BLOCKS = 3300  # amplitude blocks per file (144 bytes each); keeps every file under 500 KB
 RUN8_FILE_LIMIT = 9000  # EEG frames or block rows per file; keeps every file under 500 KB
 # Band A..H -> rank of the band-pass object's address among the 18 graph-call
