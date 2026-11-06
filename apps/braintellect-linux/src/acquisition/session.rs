@@ -16,7 +16,7 @@ use super::stream::{
 };
 
 /// Handshake replies are exactly 56 bytes (`b2-protocol.md`, reply layout).
-const REPLY_LEN: usize = 56;
+pub const REPLY_LEN: usize = 56;
 const REPLY_MARKER: [u8; 4] = [0xAC, 0xBC, 0xCC, 0x03];
 /// Serial reply: `[8]` echoes the code, then six 2-byte pairs each followed by a
 /// `03` separator from `[10]` (12-byte id).

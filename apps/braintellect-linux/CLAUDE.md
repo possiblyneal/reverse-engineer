@@ -128,6 +128,17 @@ those findings, it cites them.
   X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages).
   `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG framed by
   `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank.
+- **B-2 emulator and capture** (`src/emulate.rs`, `src/capture.rs`). The live session tees its raw
+  RX to `<data dir>/captures/b2-<secs>.rx` (`capture::Recording`). `braintellect-linux emulate
+  <capture> <socket>` plays a B-2 over a Unix socket (the QEMU serial chardev): `Command::decode`
+  recognises the app's requests and `PowerOff`, replies are replayed byte for byte, frames stream
+  from Start at 250/s and stop on Stop, and nothing is sent on power-off. It is tested over
+  `Read + Write` with `tests/harness/peer.rs` (`tests/emulator.rs`); the VM rig and the run-8
+  replay result are in `docs/reverse-engineering/braintellect2/replay-rig.md`.
+  `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
+  `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/`, and the ignored
+  `tests/replay_s48.rs` diffs the clone's decisions on that stream against the original's
+  (via `harness::run8::replay_from`); inputs are vendor-derived and stay outside Git.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and

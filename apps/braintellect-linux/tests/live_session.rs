@@ -12,6 +12,7 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::acquisition::stream::StreamConfig;
+use braintellect_linux::capture::Recording;
 use braintellect_linux::feedback::Interference1;
 use braintellect_linux::live::{self, Environment, Health, Phase, SessionProperties, Snapshot};
 use braintellect_linux::storage::Store;
@@ -27,6 +28,8 @@ struct Outcome {
     reports: Vec<Snapshot>,
     sink: RecordingSink,
     store: Store,
+    /// The raw RX bytes the recording transport tee'd off the link.
+    captured: Vec<u8>,
 }
 
 fn scratch_store(name: &str) -> Store {
@@ -54,7 +57,9 @@ fn exercise(
         calibration: ChannelCalibration::new(12.0, 10.0).expect("calibration"),
         family: DeviceFamily::F12,
     };
-    let session = Session::open(transport, config).expect("handshake");
+    let mut captured = Vec::new();
+    let session =
+        Session::open(Recording::new(transport, &mut captured), config).expect("handshake");
     let bank = small_bank();
     let store = scratch_store(name);
     let mut sink = RecordingSink::default();
@@ -88,6 +93,7 @@ fn exercise(
         reports,
         sink,
         store,
+        captured,
     }
 }
 
@@ -222,4 +228,39 @@ fn a_quiet_link_reads_as_no_data_and_stores_nothing() {
     assert!(run.reports.iter().any(|s| s.health == Health::NoData));
     assert!(matches!(run.last.phase, Phase::Failed(_)));
     assert!(run.store.list().expect("list").is_empty());
+}
+
+#[test]
+fn a_session_records_every_byte_the_device_sent_handshake_included() {
+    let run = exercise(
+        "capture",
+        THIRTY_SECONDS,
+        false,
+        &SessionProperties::default(),
+        None,
+    );
+
+    let replies = fixtures::wire()
+        .into_iter()
+        .filter(|e| e.dir == fixtures::Dir::Rx)
+        .flat_map(|e| e.bytes);
+    let rows: Vec<[i32; 8]> = fixtures::run8_eeg()
+        .into_iter()
+        .take(THIRTY_SECONDS)
+        .collect();
+    let stream = frames_from_counts(&rows).concat();
+    let expected: Vec<u8> = replies.chain(stream).collect();
+    assert_eq!(run.captured, expected);
+}
+
+#[test]
+fn a_capture_file_is_new_and_under_the_data_directory() {
+    let data = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("capture-data");
+    let _ = std::fs::remove_dir_all(&data);
+
+    let (mut file, path) = braintellect_linux::capture::create(&data).expect("capture file");
+    std::io::Write::write_all(&mut file, b"raw").expect("write");
+
+    assert_eq!(path.parent(), Some(data.join("captures").as_path()));
+    assert_eq!(std::fs::read(&path).expect("read back"), b"raw");
 }

@@ -1,0 +1,134 @@
+# Replaying a recorded B-2 stream into the original
+
+Ticket #48. The clone's `braintellect-linux emulate <capture> <socket>` plays a B-2 over a
+QEMU virtual serial port so the original `braintellect.exe` (in the `braintellect-offline`
+VM) consumes a recorded stream with no real B-2, no Bluetooth and no wearer. This page holds
+the rig, the run steps and the result of replaying run 8.
+
+## What the emulator does
+
+- Reads a raw RX capture (the bytes the app received: reply blocks and stream frames).
+- Answers `!*#101` with the capture's serial reply and `!*#110/112/131` with the captured
+  replies byte for byte (each reply is the 56-byte block, marker `AC BC CC 03`, echoed code at
+  `[8]`); `!*#132..138` get the capture's replies for the same codes.
+- Streams the capture's frames from Start (`!*#48,1,...`) at 250 frames/s (500 Hz, two
+  samples per channel per frame), and stops on Stop (`!*#48,0,...`).
+- Sends nothing for power-off (`!*#48,0,1,0,0,0,0,0`), as the B-2 sleeps.
+- The clone's live session now records its raw RX to `<data dir>/captures/b2-<secs>.rx`
+  (`src/capture.rs`), the same format the emulator reads.
+- Each command read from the app is logged to stderr as `<epoch ms> app> <bytes>` (the
+  stream reader splits lines, so a command may appear in fragments).
+
+## VM wiring (before and after)
+
+Changed only in the host quadlet `~/.config/containers/systemd/braintellect-offline.container`
+(on `neal@10.10.10.10`). Backup before editing: `braintellect-offline.container.bak-20261106`;
+the rig version is kept as `braintellect-offline.container.rig-s48`. The restored file is the
+live quadlet; the running container still has the rig arguments until its next restart.
+
+```
+-PublishPort=127.0.0.1:8007:8006          (8007 was bound by another service)
++PublishPort=127.0.0.1:8017:8006
+-AddDevice=/dev/bus/usb                   (no adapter passthrough while the rig runs)
+-Environment="ARGUMENTS=-device usb-host,vendorid=0x0a5c,productid=0x21e8 -audiodev alsa,id=snd0,out.dev=bstout,out.frequency=44100 -device ich9-intel-hda -device hda-output,audiodev=snd0"
++Environment="ARGUMENTS=-audiodev none,id=snd0 -device ich9-intel-hda -device hda-output,audiodev=snd0 -chardev socket,id=b2,path=/b2/b2.sock,server=on,wait=off -device isa-serial,chardev=b2,iobase=0x2f8,irq=3"
++Volume=/srv/local/windows/braintellect-offline/b2:/b2
+```
+
+The rig run has no `usb-host` device and no `AddDevice`, so the physical adapter and the B-2
+bond (`device-connection.md`) are never touched. Restoring the original adds the adapter back;
+do that only when the VM is free to own it. The serial port is guest COM2 (16550 at 0x2f8).
+Guest side: `C:\ProgramData\BST\BRAINtellect2\preferences\braintellect.ini` has
+`B-2-BTCOMPort=COM2`; the prior file is `braintellect.ini.bak-s48` beside it
+(`scripts/s48-prep.cmd`). The original is not patched beyond the existing host-registration
+bypass.
+
+Files reach the guest with hot-added `usb-storage` raw images (the NETWORK=N guest has no
+share): partitioned MBR, FAT32 (`mkfs.fat -F 32 --offset 2048`), loop-mounted on the host at
+`offset=1048576`. An image labelled CAP holds `frida-inject.exe` and `hook11.js`.
+
+## Run steps
+
+1. Forward the serial socket to where the emulator runs:
+   `ssh -fN -L <local>.sock:/srv/local/windows/braintellect-offline/b2/b2.sock neal@10.10.10.10`.
+2. Start the emulator first: `braintellect-linux emulate <rx capture> <local>.sock 2> emu.log`.
+3. In the guest run `scripts/s48-run.cmd` (the app under `frida-inject -f` with the run-8 hook
+   set `hook11.js`, which writes `C:\cap\run8.bin`; `C:\bsttest\lib` must be on `PATH`). Choose
+   user "guest", accept the two EULA pages.
+4. The app connects and sends Start immediately; note the Start time in `emu.log`.
+5. Optimize tab: gear, OK (fixes the 4-minute Piano session and enables Play), then Play at
+   Start + 51.2 s (run 8 pressed Play 12800 frames after Start).
+6. After 240 s the app prints "You have completed all exercises". Kill the app and injector
+   with `taskkill /F`; never exit it gracefully (that sends power-off).
+7. Copy `C:\cap\run8.bin` out through the CAP image and parse it with the run-8 parsers in
+   `apps/braintellect-linux/scripts/make-fixtures.py` (`run8_records`, `run8_blocks`).
+
+## Result: run 8 replayed into the original (2026-11-06)
+
+Not a reproduction. The original's decisions differ from the run-8 baseline from the first
+fire on. Nothing was tuned.
+
+| Quantity | Run 8 baseline | Replay |
+|---|---|---|
+| Consumed ch0 samples before block 0 (graph start) | 25600 | 25952 (352 samples, 0.70 s later) |
+| Graph blocks logged | 30001 | 30001 |
+| Counter fires (Trigger/Note pairs) | 415 | 437 |
+| First fire (clock ms, block, note) | 79, 52, 41 | 67, 53, 40 |
+| Second fire | 579, 145, 60 | 576, 149, 43 |
+| Evaluator code (last record) | 111 from block 0, 12 from 14999, 82 from 22499 | 111 from block 0, 183 from 14999, no later change |
+| Clock at block 30000 (ms) | 240001 | 239371 |
+| 16-tap-mean flag rows differing | | 29882 of 30001 |
+
+- Fire spacing is the same ~500 ms cadence early on, but block, note and time already differ
+  at fire 0; the note sequences do not match.
+- The graph started 352 consumed samples later than run 8 although Play was pressed at
+  Start + 51.202 s (run 8's offset): the original takes about 0.7 s from Play to the first graph
+  block. A different start index shifts the Source chain's warm-up (the Source chain is warm at
+  the graph start, see `audio-feedback.md`), so an exact match is not expected from a shifted
+  start; this run cannot separate that effect from the original being non-deterministic against
+  the recorded stream (wall-clock counter reads). It was not retried at other offsets.
+- At block 14999 the Evaluator code switches in both runs, but to 12 in the baseline and to 183
+  in the replay. The parsers reproduce the baseline when run on the original `run8.bin`
+  (same transitions, 415 fires), so the difference comes from the replayed run.
+
+## Result: the clone's decisions on the replayed stream (2026-11-06)
+
+The target is the clone's decisions on this replay, not run 8's: the original's graph started
+at a different sample, so it saw different EEG. `tests/replay_s48.rs` (ignored; inputs outside
+Git) feeds the clone the replayed consumed EEG from its first sample (Source warm-up over the
+whole stream before the graph start, 25640 samples, the low-pass 45 Hz switched in cold at
+graph start + 1) with the original's
+logged Evaluator codes, counter clock reads and 16-tap-mean flags, as
+`tests/parity_smart2_exercise.rs` does for run 8, and diffs the Trigger/Note decisions.
+`scripts/replay-extract.py <run8.bin>` reduces the replay hook log to the files the test
+reads (default `tmp/s48/replay/`). Run
+`cargo test --release --test replay_s48 -- --ignored --nocapture` (about 1 min).
+
+- Logged consumed volts before block 0: 25952. As run 8's 25600 was (count 25912), the graph
+  start is located from the original's own logged E..H amplitudes: 25640 is the best start in
+  count-1900..count+400.
+- Decisions: 874 original (Trigger/Note) against 874 clone; 873 match in kind, value and clock
+  time. The one difference is decision 1, the first Note, at block 67 (clock 67 ms):
+  original 40, clone 42. The Trigger before it matches.
+- First divergence by stage: the Source/band amplitudes. Block 0 sample 1 band E is
+  4.4359053e-10 in the clone against 4.4354126e-10 logged (about 1e-4 relative); only 4 of
+  128 logged E..H values in blocks 0..7 are bit exact. The first Note is the first place
+  that perturbation changes a decision. A 4000-sample warm-up gave the identical result, so the
+  warm-up depth is not the cause. Nothing was tuned; the cause (the interference switch
+  or something else in Source at the replay's start) is not pinned down. The band-rank
+  flag mapping (`RUN8_BAND_RANKS`) is assumed to carry over to the replay process and is
+  unverified.
+
+## Why rx8.raw holds 639k frames and `audio-feedback.md` says 149k
+
+`rx8.raw` was extracted from the whole `run8.bin` hook log: 639,284 frames parsed, 639,306
+markers, no duplicate frames and no counter breaks, so the emulator does not serve duplicates
+or wrong frames. The 149,122 frames (272,793 consumed samples) in `audio-feedback.md` come
+from an earlier or shorter log of the same run. The file spans about 42.6 min, of which about
+37 min is streaming after the exercise. The replay received 95,676 frames in about 380 s, so
+the emulator streams at the right rate (250 frames/s).
+
+## Not run
+
+The clone's live-session capture from a real B-2 needs the physical B-2 and adapter and was not run; it is covered by the fixture
+transport tests (`tests/live_session.rs`).
