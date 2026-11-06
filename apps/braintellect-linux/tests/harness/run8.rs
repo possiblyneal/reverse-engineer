@@ -21,9 +21,7 @@ use super::fixtures::{self, Run8Block};
 /// Consumed-sample index the app's graph started at.
 const GRAPH_START: usize = 25600;
 /// Consumed samples of the EEG fixture before the graph start.
-const PREROLL: usize = 4000;
-/// Consumed-sample index the app switched the 45 Hz low-pass in at.
-const INTERFERENCE_SWITCH: usize = GRAPH_START + 1;
+pub const PREROLL: usize = 4000;
 /// The counter timer started one counter interval (500 ms) before the first
 /// logged read.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
@@ -41,6 +39,14 @@ pub fn replay() -> &'static Replay {
 }
 
 fn build() -> Replay {
+    replay_from(&fixtures::run8_eeg(), GRAPH_START, fixtures::run8_blocks())
+}
+
+/// The replay of an exercise whose consumed EEG starts [`PREROLL`] samples before
+/// `graph_start`, under the app's logged per-block inputs. The 45 Hz low-pass is
+/// switched in at consumed sample `graph_start + 1`.
+pub fn replay_from(eeg: &[[i32; 8]], graph_start: usize, blocks: Vec<Run8Block>) -> Replay {
+    let interference_switch = graph_start + 1;
     let mut design = fixtures::smart2_design();
     design.source.interference1 = Interference1::LowPass45;
     design.source.interference2 = Interference2::Hz25;
@@ -62,18 +68,17 @@ fn build() -> Replay {
     let counts_per_volt = ChannelCalibration::new(12.0, 10.0)
         .expect("baseline calibration")
         .divisor(DeviceFamily::F12);
-    let eeg = fixtures::run8_eeg();
-    let first = GRAPH_START - PREROLL;
+    let first = graph_start - PREROLL;
     let volts = |s: usize| -> [f64; 4] {
         let frame = &eeg[(s - first) / 2];
-        std::array::from_fn(|ch| f64::from(frame[ch + 4 * (s % 2)]) / counts_per_volt)
+        std::array::from_fn(|ch| f64::from(frame[ch + 4 * ((s - first) % 2)]) / counts_per_volt)
     };
     let mut warm = design.source.clone();
     warm.interference1 = Interference1::Off;
     let mut source: [SourceFilters; 4] =
         std::array::from_fn(|_| SourceFilters::new(&warm, RATE_HZ).unwrap());
     let mut filtered = |s: usize| -> [f64; 4] {
-        if s == INTERFERENCE_SWITCH {
+        if s == interference_switch {
             for chain in &mut source {
                 chain.set_interference1(design.source.interference1, RATE_HZ);
             }
@@ -81,10 +86,9 @@ fn build() -> Replay {
         let x = volts(s);
         std::array::from_fn(|ch| source[ch].push(x[ch]))
     };
-    for s in first..GRAPH_START {
+    for s in first..graph_start {
         filtered(s);
     }
-    let blocks = fixtures::run8_blocks();
     let mut graph = Smart2Graph::new(
         design.clone(),
         blocks[0].read_ms - TIMER_BEFORE_FIRST_BLOCK_MS,
@@ -100,7 +104,7 @@ fn build() -> Replay {
             }
             graph.set_scalar_heads(&heads);
             let samples: Vec<[f64; 4]> = (0..BLOCK_LEN)
-                .map(|n| filtered(GRAPH_START + b * BLOCK_LEN + n))
+                .map(|n| filtered(graph_start + b * BLOCK_LEN + n))
                 .collect();
             let clock = BlockClock {
                 read_ms: block.read_ms,

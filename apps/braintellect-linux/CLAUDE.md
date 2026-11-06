@@ -136,6 +136,9 @@ those findings, it cites them.
   `Read + Write` with `tests/harness/peer.rs` (`tests/emulator.rs`); the VM rig and the run-8
   replay result are in `docs/reverse-engineering/braintellect2/replay-rig.md`.
   `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
+  `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/`, and the ignored
+  `tests/replay_s48.rs` diffs the clone's decisions on that stream against the original's
+  (via `harness::run8::replay_from`); inputs are vendor-derived and stay outside Git.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and

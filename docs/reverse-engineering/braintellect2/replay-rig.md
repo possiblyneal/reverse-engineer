@@ -91,12 +91,39 @@ fire on. Nothing was tuned.
   in the replay. The parsers reproduce the baseline when run on the original `run8.bin`
   (same transitions, 415 fires), so the difference comes from the replayed run.
 
-## Capture size note
+## Result: the clone's decisions on the replayed stream (2026-11-06)
 
-`rx8.raw` (the RX bytes extracted from run 8's `run8.bin` tag-1 records) holds about 639k
-contiguous frames, against about 149k received frames recorded in `audio-feedback.md`. The
-emulator replays from the start of the file; whether the extra frames are earlier sessions
-appended to the log has not been checked.
+The target is the clone's decisions on this replay, not run 8's: the original's graph started
+at a different sample, so it saw different EEG. `tests/replay_s48.rs` (ignored; inputs outside
+Git) feeds the clone the replayed consumed EEG from the graph start with the original's
+logged Evaluator codes, counter clock reads and 16-tap-mean flags, as
+`tests/parity_smart2_exercise.rs` does for run 8, and diffs the Trigger/Note decisions.
+`scripts/replay-extract.py <run8.bin>` reduces the replay hook log to the files the test
+reads (default `tmp/s48/replay/`). Run
+`cargo test --release --test replay_s48 -- --ignored --nocapture` (about 30 s).
+
+- Logged consumed volts before block 0: 25952. As run 8's 25600 was (count 25912), the graph
+  start is located from the original's own logged E..H amplitudes: 25640 is the best start in
+  count-1900..count+400.
+- Decisions: 874 original (Trigger/Note) against 874 clone; 873 match in kind, value and clock
+  time. The one difference is decision 1, the first Note, at block 67 (clock 67 ms):
+  original 40, clone 42. The Trigger before it matches.
+- First divergence by stage: the Source/band amplitudes. Block 0 sample 1 band E is
+  4.4359053e-10 in the clone against 4.4354126e-10 logged (about 1e-4 relative); only 4 of
+  128 logged E..H values in blocks 0..7 are bit exact. The first Note is the first place
+  that perturbation changes a decision. Nothing was tuned; the cause (the Source chain's warm
+  state or the interference switch at the replay's start) is not pinned down. The band-rank
+  flag mapping (`RUN8_BAND_RANKS`) is assumed to carry over to the replay process and is
+  unverified.
+
+## Why rx8.raw holds 639k frames and `audio-feedback.md` says 149k
+
+`rx8.raw` was extracted from the whole `run8.bin` hook log: 639,284 frames parsed, 639,306
+markers, no duplicate frames and no counter breaks, so the emulator does not serve duplicates
+or wrong frames. The 149,122 frames (272,793 consumed samples) in `audio-feedback.md` come
+from an earlier or shorter log of the same run. The file spans about 42.6 min, of which about
+37 min is streaming after the exercise. The replay received 95,676 frames in about 380 s, so
+the emulator streams at the right rate (250 frames/s).
 
 ## Not run
 
