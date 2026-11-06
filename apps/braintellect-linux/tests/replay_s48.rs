@@ -150,12 +150,14 @@ fn amplitude_matches(run: &Replay) -> usize {
     n
 }
 
-/// The replay with `graph_start` as the graph's first consumed sample, over the first `limit` blocks.
+/// The replay with `graph_start` as the graph's first consumed sample and the 45 Hz low-pass
+/// switched in at consumed sample `interference_switch`, over the first `limit` blocks.
 fn replay_at(
     eeg: &[[i32; 4]],
     eeg_base: usize,
     blocks: &[Run8Block],
     graph_start: usize,
+    interference_switch: usize,
     limit: usize,
 ) -> Replay {
     // The original ran Source from its first streamed sample, so the warm-up is everything
@@ -168,6 +170,7 @@ fn replay_at(
         &frames,
         eeg_base,
         graph_start,
+        interference_switch,
         blocks.iter().take(limit).cloned().collect(),
     )
 }
@@ -181,10 +184,13 @@ fn clone_decisions_on_the_replayed_stream_against_the_originals() {
     // The app converts samples ahead of the graph, so the logged count is an upper bound on
     // the graph start (run 8: count 25912, start 25600). Locate it from the original's logged
     // E..H amplitudes: the start under which the clone reproduces the most of blocks 0..7.
+    // The switch (`setInterferenceFilter`, run by the UI thread at Play) is not logged either and
+    // lands at a different sample against the processing thread each run (run 8: start + 1), so
+    // it is located the same way, with the start found first under run 8's start + 1.
     let mut best: Vec<(usize, usize)> = (logged_count - 1900..=logged_count + 400)
         .map(|s| {
             (
-                amplitude_matches(&replay_at(&eeg, eeg_base, &blocks, s, 8)),
+                amplitude_matches(&replay_at(&eeg, eeg_base, &blocks, s, s + 1, 8)),
                 s,
             )
         })
@@ -195,11 +201,36 @@ fn clone_decisions_on_the_replayed_stream_against_the_originals() {
         &best[..3]
     );
     let graph_start = best[0].1;
-    let run = replay_at(&eeg, eeg_base, &blocks, graph_start, usize::MAX);
-    println!("graph start {graph_start}, blocks {}", run.blocks.len());
+    let mut switches: Vec<(usize, usize)> = (graph_start..=graph_start + 16)
+        .map(|s| {
+            (
+                amplitude_matches(&replay_at(&eeg, eeg_base, &blocks, graph_start, s, 8)),
+                s,
+            )
+        })
+        .collect();
+    switches.sort_unstable_by(|a, b| b.cmp(a));
+    println!(
+        "best (matching values of 128, switch): {:?}",
+        &switches[..3]
+    );
+    let run = replay_at(
+        &eeg,
+        eeg_base,
+        &blocks,
+        graph_start,
+        switches[0].1,
+        usize::MAX,
+    );
+    println!(
+        "graph start {graph_start}, switch {}, blocks {}",
+        switches[0].1,
+        run.blocks.len()
+    );
+    let mismatch = first_amplitude_mismatch(&run);
     println!(
         "first logged E..H amplitude mismatch: {}",
-        first_amplitude_mismatch(&run).unwrap_or_else(|| "none (bit for bit)".into())
+        mismatch.as_deref().unwrap_or("none (bit for bit)")
     );
     let want = original_decisions();
     let got = clone_decisions(&run);
@@ -226,6 +257,7 @@ fn clone_decisions_on_the_replayed_stream_against_the_originals() {
             got.get(i)
         ),
     }
+    assert_eq!(mismatch, None, "logged E..H amplitudes differ");
     assert!(
         first.is_none(),
         "the clone's decisions differ from the original's on the replay"

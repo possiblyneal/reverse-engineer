@@ -32,6 +32,12 @@ mf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mf)
 
 BLOCKS = mf.RUN8_BLOCKS
+# Band A..H -> rank of the band-pass object's address among the 18 graph-call objects. Object
+# addresses differ per process, so run 8's ranks (`mf.RUN8_BAND_RANKS`) do not carry over. E..H
+# are the ranks under which the clone reproduces the logged E..H amplitudes bit for bit (1200 of
+# 1200 values per band over blocks 0..299). A..D are not logged and no replay decision reads them
+# (Evaluator codes 111 and 183 sum E..H), so their ranks are not determined; run 8's stand in.
+REPLAY_BAND_RANKS = (*mf.RUN8_BAND_RANKS[:4], 7, 3, 1, 5)
 EEG_BASE = 0
 
 
@@ -90,7 +96,7 @@ def main():
     t0 = blocks[0]["clock"]
     rows, decs = [], []
     for b, blk in enumerate(blocks):
-        flags = "".join("1" if blk["calls"].get(keys[r]) else "0" for r in mf.RUN8_BAND_RANKS)
+        flags = "".join("1" if blk["calls"].get(keys[r]) else "0" for r in REPLAY_BAND_RANKS)
         now = blk["clock"] - t0
         lap = blk["lap"] - t0 if blk["lap"] is not None else -1
         rows.append(f"{flags}\t{blk['code']}\t{now}\t{lap}\n")
