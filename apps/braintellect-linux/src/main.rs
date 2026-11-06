@@ -1,15 +1,21 @@
-//! Live acquisition against a real B-2: `braintellect-linux --mac <MAC>`.
+//! Two commands.
 //!
-//! Connects over RFCOMM, runs the handshake, starts streaming, and prints one
+//! `braintellect-linux import <lib-dir>` copies the original's instrument banks
+//! (`dll<id>.BT.dll`) from its `lib` directory into the clone's data directory.
+//!
+//! `braintellect-linux --mac <MAC>` runs live acquisition against a real B-2.
+//! It connects over RFCOMM, runs the handshake, starts streaming, and prints one
 //! line of microvolts per frame until the stream ends or Ctrl-C. Needs a paired
 //! adapter that is not owned by another host; CI never runs it.
 
+use std::path::Path;
 use std::process::ExitCode;
 
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::acquisition::rfcomm::{RfcommStream, DEFAULT_CHANNEL};
 use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::acquisition::stream::StreamConfig;
+use braintellect_linux::audio::import;
 
 /// Baseline calibration (`b2-protocol.md`, "Calibration confirmed"): device
 /// family 12, channelGain 12, sensorGain 10. Not read from the device.
@@ -44,17 +50,32 @@ fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().collect();
-    let [_, flag, mac] = args.as_slice() else {
-        eprintln!("usage: braintellect-linux --mac <AA:BB:CC:DD:EE:FF>");
-        return ExitCode::from(2);
-    };
-    if flag != "--mac" {
-        eprintln!("usage: braintellect-linux --mac <AA:BB:CC:DD:EE:FF>");
-        return ExitCode::from(2);
+const USAGE: &str = "usage: braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>";
+
+fn import_banks(lib_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let dest = import::default_dir().ok_or("neither XDG_DATA_HOME nor HOME is set")?;
+    for path in import::import_banks(Path::new(lib_dir), &dest)? {
+        println!("{}", path.display());
     }
-    match run(mac) {
+    Ok(())
+}
+
+fn main() -> ExitCode {
+    let args: Vec<String> = std::env::args().skip(1).collect();
+    let result = match args
+        .iter()
+        .map(String::as_str)
+        .collect::<Vec<_>>()
+        .as_slice()
+    {
+        ["--mac", mac] => run(mac),
+        ["import", lib_dir] => import_banks(lib_dir),
+        _ => {
+            eprintln!("{USAGE}");
+            return ExitCode::from(2);
+        }
+    };
+    match result {
         Ok(()) => ExitCode::SUCCESS,
         Err(e) => {
             eprintln!("error: {e}");

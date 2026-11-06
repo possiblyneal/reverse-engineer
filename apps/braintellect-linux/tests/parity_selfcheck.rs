@@ -4,9 +4,11 @@
 
 mod harness;
 
-use harness::assertions;
+use braintellect_linux::audio::player::AudioEvent;
+
 use harness::fixtures::{self, Dir};
 use harness::tolerance::{RECORD_EPSILON, SAMPLE_EPSILON_UV, TIMING_WINDOW_MS};
+use harness::{assertions, audio};
 
 #[test]
 fn microvolts_green_on_baseline_red_on_wrong() {
@@ -138,6 +140,28 @@ fn notes_green_on_baseline_red_on_wrong() {
     off_by_one[7] += 1;
     assert!(assertions::notes(&baseline, &off_by_one).is_err());
     assert!(assertions::notes(&baseline, &baseline[1..]).is_err());
+}
+
+#[test]
+fn audio_events_green_on_baseline_within_window_red_outside() {
+    let baseline = audio::run8_events();
+    assert!(baseline.len() > 10);
+    assertions::audio_events(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut jittered = baseline.clone();
+    jittered[1].time_ms += TIMING_WINDOW_MS as i64;
+    assertions::audio_events(&baseline, &jittered).expect("inside the timing window");
+    jittered[1].time_ms += 1;
+    assert!(assertions::audio_events(&baseline, &jittered).is_err());
+
+    let wrongs: [fn(&mut AudioEvent); 3] =
+        [|e| e.note += 1, |e| e.sample_index += 1, |e| e.len -= 1];
+    for wrong in wrongs {
+        let mut changed = baseline.clone();
+        wrong(&mut changed[3]);
+        assert!(assertions::audio_events(&baseline, &changed).is_err());
+    }
+    assert!(assertions::audio_events(&baseline, &baseline[1..]).is_err());
 }
 
 #[test]

@@ -85,6 +85,17 @@ those findings, it cites them.
   or Java-serialized, encrypted blobs. `PRAGMA user_version` is the schema version
   (`SCHEMA_VERSION`); another version is refused, never migrated. Offline: no network,
   and the original's records are never read or migrated.
+- **Audio output** (`src/audio/`): `bank` parses an original `dll<id>.BT.dll` Qt resource into
+  note to PCM (note = trailing decimal of the resource name; shape-based, so it needs no
+  fixed offsets); `player` is deterministic (trigger decisions in, events and mixed PCM
+  out, no gate of its own, whole samples unscaled, overlaps summed and saturated);
+  `import` copies the owner's banks with `braintellect-linux import <original lib dir>` into
+  `$XDG_DATA_HOME/braintellect-linux/instruments/` (else `~/.local/share/...`, a relative
+  `XDG_DATA_HOME` ignored; the rule is shared with storage via `storage::resolve_data_dir`).
+  Only `sink::AlsaSink` touches a device (libasound loaded with `dlopen`); tests never open
+  it and nothing plays audio. The bank bytes are never committed: `tests/parity_audio.rs` and
+  the audio tests use synthetic banks (`tests/harness/synthetic_bank.rs`); the ignored real-bank
+  test reads `BT_BANK_1002_DLL`. Recovered behavior: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and

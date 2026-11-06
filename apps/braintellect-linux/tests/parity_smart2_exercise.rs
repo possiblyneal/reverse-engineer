@@ -12,112 +12,11 @@
 
 mod harness;
 
-use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
-use braintellect_linux::feedback::{
-    BlockClock, Interference1, Interference2, Smart2Graph, SourceFilters, BLOCK_LEN, RATE_HZ,
-};
-use std::sync::OnceLock;
+use braintellect_linux::feedback::BLOCK_LEN;
 
 use harness::assertions;
-use harness::fixtures::{self, Decision, Run8Block};
-
-/// Consumed-sample index the app's graph started at.
-const GRAPH_START: usize = 25600;
-/// Consumed samples of the EEG fixture before the graph start.
-const PREROLL: usize = 4000;
-/// Consumed-sample index the app switched the 45 Hz low-pass in at.
-const INTERFERENCE_SWITCH: usize = GRAPH_START + 1;
-/// The counter timer started one counter interval (500 ms) before the first
-/// logged read.
-const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
-
-struct Replay {
-    blocks: Vec<Run8Block>,
-    decisions: Vec<braintellect_linux::feedback::BlockDecision>,
-    band_index: Vec<usize>,
-}
-
-/// The replay, run once and shared by the tests.
-fn replay() -> &'static Replay {
-    static RUN: OnceLock<Replay> = OnceLock::new();
-    RUN.get_or_init(build)
-}
-
-fn build() -> Replay {
-    let mut design = fixtures::smart2_design();
-    design.source.interference1 = Interference1::LowPass45;
-    design.source.interference2 = Interference2::Hz25;
-    design.source.low_pass_hz = 150.0;
-    design.source.high_pass_hz = 1.5;
-    // Bands A..H (`fixtures::STAGES`), the order of the block table's flags.
-    let band_index: Vec<usize> = fixtures::STAGES
-        .iter()
-        .map(|&(label, channel)| {
-            design
-                .band_passes
-                .iter()
-                .position(|p| p.channel == channel && p.label == label)
-                .expect("band-pass in design")
-        })
-        .collect();
-    // Raw counts per volt at the baseline calibration (`b2-protocol.md`,
-    // "Calibration confirmed"): family 12, channelGain 12, sensorGain 10.
-    let counts_per_volt = ChannelCalibration::new(12.0, 10.0)
-        .expect("baseline calibration")
-        .divisor(DeviceFamily::F12);
-    let eeg = fixtures::run8_eeg();
-    let first = GRAPH_START - PREROLL;
-    let volts = |s: usize| -> [f64; 4] {
-        let frame = &eeg[(s - first) / 2];
-        std::array::from_fn(|ch| f64::from(frame[ch + 4 * (s % 2)]) / counts_per_volt)
-    };
-    let mut warm = design.source.clone();
-    warm.interference1 = Interference1::Off;
-    let mut source: [SourceFilters; 4] =
-        std::array::from_fn(|_| SourceFilters::new(&warm, RATE_HZ).unwrap());
-    let mut filtered = |s: usize| -> [f64; 4] {
-        if s == INTERFERENCE_SWITCH {
-            for chain in &mut source {
-                chain.set_interference1(design.source.interference1, RATE_HZ);
-            }
-        }
-        let x = volts(s);
-        std::array::from_fn(|ch| source[ch].push(x[ch]))
-    };
-    for s in first..GRAPH_START {
-        filtered(s);
-    }
-    let blocks = fixtures::run8_blocks();
-    let mut graph = Smart2Graph::new(
-        design.clone(),
-        blocks[0].read_ms - TIMER_BEFORE_FIRST_BLOCK_MS,
-    )
-    .expect("design");
-    let decisions = blocks
-        .iter()
-        .enumerate()
-        .map(|(b, block)| {
-            let mut heads = vec![false; design.band_passes.len()];
-            for (flag, &at) in block.scalar_heads.iter().zip(&band_index) {
-                heads[at] = *flag;
-            }
-            graph.set_scalar_heads(&heads);
-            let samples: Vec<[f64; 4]> = (0..BLOCK_LEN)
-                .map(|n| filtered(GRAPH_START + b * BLOCK_LEN + n))
-                .collect();
-            let clock = BlockClock {
-                read_ms: block.read_ms,
-                lap_ms: block.lap_ms.unwrap_or(block.read_ms),
-            };
-            graph.process_filtered_block(clock, block.control, &samples)
-        })
-        .collect();
-    Replay {
-        blocks,
-        decisions,
-        band_index,
-    }
-}
+use harness::fixtures::{self, Decision};
+use harness::run8::replay;
 
 fn expected(kind: &str) -> Vec<Decision> {
     fixtures::run8_decisions()
