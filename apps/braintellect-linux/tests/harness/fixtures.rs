@@ -511,7 +511,8 @@ pub struct Run8Block {
     pub lap_ms: Option<i64>,
 }
 
-/// The consumed EEG of run 8 from the graph's first sample: raw 24-bit counts,
+/// The consumed EEG of run 8 from 4000 samples before the graph's first sample
+/// (the pre-roll that warms the Source chain): raw 24-bit counts,
 /// eight per frame (slots 0..4 then 4..8 are two consecutive samples of the
 /// four channels).
 pub fn run8_eeg() -> Vec<[i32; 8]> {
@@ -557,7 +558,7 @@ pub fn run8_decisions() -> Vec<Decision> {
 }
 
 /// First block of [`run8_amplitudes`].
-pub const RUN8_AMPLITUDES_FIRST_BLOCK: usize = 1000;
+pub const RUN8_AMPLITUDES_FIRST_BLOCK: usize = 0;
 
 /// Logged amplitudes of bands E..H, four samples each (E0..E3, F0.., G0.., H0..),
 /// for a span of blocks starting at [`RUN8_AMPLITUDES_FIRST_BLOCK`].
