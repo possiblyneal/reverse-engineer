@@ -85,6 +85,23 @@ those findings, it cites them.
   or Java-serialized, encrypted blobs. `PRAGMA user_version` is the schema version
   (`SCHEMA_VERSION`); another version is refused, never migrated. Offline: no network,
   and the original's records are never read or migrated.
+- **Audio output** (`src/audio/`): `bank` parses an original `dll<id>.BT.dll` Qt resource into
+  note to PCM (note = trailing decimal of the resource name; shape-based, so it needs no
+  fixed offsets); `player` is deterministic (trigger decisions in, events and mixed PCM
+  out, no gate of its own, whole samples unscaled, overlaps summed and saturated);
+  `import` copies the owner's banks with `braintellect-linux import <original lib dir>` into
+  `$XDG_DATA_HOME/braintellect-linux/instruments/` (else `~/.local/share/...`, a relative
+  `XDG_DATA_HOME` ignored; the rule is shared with storage via `storage::resolve_data_dir`).
+  `import` refuses a source that is the destination (`ImportError::SameDirectory`; copying
+  onto itself would truncate the banks). `audio::load_instrument(dir, id)` reports a bank that
+  was never imported as `InstrumentError::Missing`, naming the path and the import command; a
+  sample rate of 0 is a `BankError`. The player sounds every trigger, repeated notes included
+  (the original's `+0x2cf` check is `playOnChange`, false in SMART-2); the 40..76 note clamp is
+  upstream in `feedback/note.rs`.
+  Only `sink::AlsaSink` touches a device (libasound loaded with `dlopen`); tests never open
+  it and nothing plays audio. The bank bytes are never committed: `tests/parity_audio.rs` and
+  the audio tests use synthetic banks (`tests/harness/synthetic_bank.rs`); the ignored real-bank
+  test reads `BT_BANK_1002_DLL`. Recovered behavior: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and

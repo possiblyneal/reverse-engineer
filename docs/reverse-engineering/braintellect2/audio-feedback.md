@@ -372,6 +372,39 @@ The retry archive's database and application-state copies contain 130 matching f
 
 The controller advertises as classic Bluetooth device `B-2` and pairs without a PIN (yes/no confirmation only). Pairing it in the offline guest, through a passed-through Broadcom BCM20702 adapter (`0a5c:21e8`), created no Bluetooth COM port. The executable imports Windows Bluetooth and socket libraries, so it may connect to the controller directly over Bluetooth rather than through a COM port; that is untested.
 
+## Wave device and instrument 1002 (static, Ghidra headless)
+
+Observed in the binary (image base `0x400000`) and in the install's `lib` directory:
+
+- `WaveDevice` (`media\WaveDevice.cpp`) vtable is `0x18a3570`. The `SoundElement` play path (`0x5a04e0`) calls slot `+0x1c` (`0x598060`, instrument open: reads the instrument plugin's rate, channel count, bit depth and volume, builds the `WAVEFORMATEX`), slot `+0x20` (`0x598f10`, note on: `sendNoteOnMsg`), and slot `+0x24` (`0x661f50`, returns 1).
+- Note on takes a free `waveOut` handle (`0x597930`, `waveOutOpen` with `CALLBACK_FUNCTION`), `waveOutPrepareHeader` (`0x5969b0`) over the plugin's per-note buffer (plugin vtable `+0x2c` size, `+0x30` data pointer, indexed by the note), sets the volume with `waveOutSetVolume` (`0x596830`, left, right or both from the pan string) and `waveOutWrite`s the buffer. The device does not synthesise or resample: it plays the plugin's stored buffer as is, at the plugin's rate, and the host mixer converts to the output format.
+- Wave instrument 1002 is a plugin DLL, `lib\dll1002.BT.dll` (exports `create`, `data`, `destroy`, plus zlib). It embeds 45 RIFF/WAVE blocks, each mono, 96000 Hz, 16-bit PCM, 153600 bytes of data (0.8 s). `dll1001.BT.dll` and `dll1003.BT.dll` are sibling banks. The recorded timbre is therefore sampled audio held in the original DLL; no waveform, envelope or table exists in `braintellect.exe` to recover. `braintellect-smart2-piano-feedback-20s.wav` (stereo, left differs from right) shows overlapping decaying notes consistent with sampled piano.
+- `SoundElement` play (`0x5a04e0`): returns if the output device pointer (`+0x1f8`) is null; takes the note (`+0x194`, or the pipe value at `+0x334`), clamps it to `+0x2d4`/`+0x2d8` (and returns without playing when the matching drop flag `+0x2cd`/`+0x2ce` is set), maps it through the step lookup `0x5a0030` (12-step pattern relative to `+0x2c8`, a scale table at `+0x2f4`), and plays only when `+0x2cf` (`playOnChange`) is clear or the step differs from the last played step (`+0x32c`); see "Playback gating".
+
+### Instrument bank layout and note map (static, recovered)
+
+Observed in `dll1002.BT.dll` (the Qt resource inside the DLL, parsed by `apps/braintellect-linux/src/audio/bank.rs`):
+
+- The samples are a Qt rcc resource. Each data blob is `[BE u32 length][RIFF/WAVE file]` (length is the RIFF size plus 8). The first blob's length prefix is at file offset `0x1398f0`. The name table is at `0x7d1960`, entries `[BE u16 chars][BE u32 hash][UTF-16BE]`. The tree is near `0x7d2076`, 14-byte big-endian nodes `name_off u32, flags u16, country u16, lang u16, data_off u32`; flags 0 is a file and `data_off` is relative to the first blob's prefix. Nodes are in name-hash order, so blob order is not note order.
+- Note map: the file name is `AcousticStrings<N>` and the trailing decimal `N` is the MIDI note. Bank 1002 holds notes 40 to 84 (45 notes), each 96 kHz mono 16-bit PCM, 76800 frames (0.8 s). Bank 1003 has the same shape; bank 1001 parses too but its notes differ in length (note 40 has 76882 frames).
+- The plugin vtable slots the device reads are `+0x2c` (buffer size) and `+0x30` (data pointer), both indexed by the note.
+- The recorded playback gain is about 1.0, so the samples play unscaled. The plugin's float at `this+4` (a loudness figure) is not otherwise used by the clone.
+
+### Playback gating (static, checked against the run-8 recording)
+
+- Observed in code: the `SoundElement` play path (`0x5a04e0`) has no timer and no length cap, so the 400 ms play interval and 500 ms maximum length properties are not enforced there. The trigger reaches it at most once per counter interval (500 ms, the counter's epoch gate).
+- Observed in the audio: each note rings its full 0.8 s with onsets about 0.5 s apart, so a note overlaps the next and they mix (sum).
+- Forced note (settled). `+0x2cf` is `playOnChange`, loaded by the `SoundElement` property loader from the design; the SMART-2 design has it false, so the check passes on every trigger and a note equal to the last one plays again. The design's "Forced note: enabled" is `forceNote`, stored at `+0x2d1`, which `0x5a04e0` never reads. `+0x32c` is updated on every successful note on. The step lookup `0x5a0030` returns the note unchanged when the scale pattern marks it in scale; the recording's median pitch offset from the clone's note is 0.00 semitones over 373 fires, consistent with the identity for scale None (the scale table itself was not read). Recording check: run 8 sits at about 5649.2 s of `bst-feedback.wav` (onset-train correlation 1646 against 832 for the next best offset); the 18 of the 22 repeated notes that follow a gap of 700 ms or less each have an onset (18 of 18, as for non-repeats at 99 %), and the 4 repeats after longer gaps lose sync like the non-repeats after longer gaps. Repeats are not suppressed.
+- The note is clamped to 40..76 upstream, in `src/feedback/note.rs` (`NOTE_LOW`, `NOTE_HIGH`), not in the player.
+- The clone's `Player` therefore adds no gate, plays whole samples unscaled and sums overlaps, saturating to 16 bits. `tests/parity_audio.rs` replays the 415 run-8 notes and matches note, start sample and length exactly.
+
+### Not resolved
+
+- The exact consumer of the `playEvery` and `endAfter` properties is not found statically.
+- Per-note matching of the clone's rendering against the recording is weak (correlation 0.6 to 0.77, overlapping notes), so the sample bytes themselves are not asserted.
+
+Decision (`docs/adrs/0004-read-instrument-samples-from-the-original-install.md`): the clone does not carry the sample bytes. `braintellect-linux import <original lib dir>` copies the owner's own `dll<id>.BT.dll` banks into the clone's data directory; no vendor bytes are in the repository.
+
 ## SoundManager requires a host audio output device (session-setup crash)
 
 Entering session setup ("Set up session" → "Select session properties") constructs

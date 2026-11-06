@@ -6,7 +6,10 @@
 #![allow(dead_code)]
 
 pub mod assertions;
+pub mod audio;
 pub mod fixtures;
+pub mod run8;
 pub mod session;
+pub mod synthetic_bank;
 pub mod tolerance;
 pub mod transport;

@@ -149,12 +149,14 @@ impl From<std::io::Error> for Error {
     }
 }
 
-/// The session database location by XDG convention:
-/// `$XDG_DATA_HOME/braintellect-linux/sessions.db`, else
-/// `$HOME/.local/share/braintellect-linux/sessions.db`. A relative
-/// `XDG_DATA_HOME` is ignored, as the XDG spec requires. `None` when neither is
-/// set. Pass an explicit path to [`Store::open`] to override it.
-pub fn resolve_path(xdg_data_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+/// The clone's data directory by XDG convention:
+/// `$XDG_DATA_HOME/braintellect-linux`, else
+/// `$HOME/.local/share/braintellect-linux`. A relative `XDG_DATA_HOME` is
+/// ignored, as the XDG spec requires. `None` when neither is set.
+pub fn resolve_data_dir(
+    xdg_data_home: Option<OsString>,
+    home: Option<OsString>,
+) -> Option<PathBuf> {
     let base = match xdg_data_home
         .map(PathBuf::from)
         .filter(|dir| dir.is_absolute())
@@ -162,7 +164,18 @@ pub fn resolve_path(xdg_data_home: Option<OsString>, home: Option<OsString>) -> 
         Some(dir) => dir,
         None => PathBuf::from(home.filter(|v| !v.is_empty())?).join(".local/share"),
     };
-    Some(base.join("braintellect-linux/sessions.db"))
+    Some(base.join("braintellect-linux"))
+}
+
+/// [`resolve_data_dir`] over the process environment.
+pub fn default_data_dir() -> Option<PathBuf> {
+    resolve_data_dir(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))
+}
+
+/// The session database location: `sessions.db` in the data directory. Pass an
+/// explicit path to [`Store::open`] to override it.
+pub fn resolve_path(xdg_data_home: Option<OsString>, home: Option<OsString>) -> Option<PathBuf> {
+    Some(resolve_data_dir(xdg_data_home, home)?.join("sessions.db"))
 }
 
 /// [`resolve_path`] over the process environment.
