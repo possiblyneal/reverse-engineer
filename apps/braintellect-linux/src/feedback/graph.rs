@@ -153,6 +153,20 @@ impl Smart2Graph {
         })
     }
 
+    /// Which band-pass output blocks start on the IPP kernel's scalar head (see
+    /// [`BandPass::set_scalar_head`]), in the design's `band_passes` order, from the
+    /// next block on. The app's choice follows the output buffer's heap address, so a
+    /// replay has to supply it; the default is all `false`.
+    ///
+    /// # Panics
+    /// Panics if `heads` is not one flag per band-pass.
+    pub fn set_scalar_heads(&mut self, heads: &[bool]) {
+        assert_eq!(heads.len(), self.bands.len(), "one flag per band-pass");
+        for (band, &head) in self.bands.iter_mut().zip(heads) {
+            band.set_scalar_head(head);
+        }
+    }
+
     fn filtered(&mut self, sample_uv: [f64; CHANNELS]) -> [f64; CHANNELS] {
         std::array::from_fn(|c| self.source[c].push(sample_uv[c] * VOLTS_PER_MICROVOLT))
     }
@@ -161,6 +175,12 @@ impl Smart2Graph {
     /// and PeakFrequency elements.
     pub fn push_sample(&mut self, sample_uv: [f64; CHANNELS]) -> SampleOutput {
         let volts = self.filtered(sample_uv);
+        self.push_filtered(volts)
+    }
+
+    /// One sample, in volts per channel, that has already left the Source filters:
+    /// the band-pass, Aggregator and PeakFrequency elements only.
+    pub fn push_filtered(&mut self, volts: [f64; CHANNELS]) -> SampleOutput {
         let bands: Vec<f32> = self
             .design
             .band_passes
@@ -195,7 +215,31 @@ impl Smart2Graph {
         control: u32,
         block: &[[f64; CHANNELS]],
     ) -> Result<BlockDecision, UnsupportedControl> {
-        let samples: Vec<SampleOutput> = block.iter().map(|&s| self.push_sample(s)).collect();
+        let samples = block.iter().map(|&s| self.push_sample(s)).collect();
+        self.decide(now_ms, control, samples)
+    }
+
+    /// [`Self::process_block`] for samples in volts that have already left the
+    /// Source filters (see [`Self::push_filtered`]).
+    ///
+    /// # Errors
+    /// Fails on an Evaluator code `ExprTriggerAll` has no recovered result for.
+    pub fn process_filtered_block(
+        &mut self,
+        now_ms: i64,
+        control: u32,
+        block: &[[f64; CHANNELS]],
+    ) -> Result<BlockDecision, UnsupportedControl> {
+        let samples = block.iter().map(|&s| self.push_filtered(s)).collect();
+        self.decide(now_ms, control, samples)
+    }
+
+    fn decide(
+        &mut self,
+        now_ms: i64,
+        control: u32,
+        samples: Vec<SampleOutput>,
+    ) -> Result<BlockDecision, UnsupportedControl> {
         let amplitudes: Vec<BandAmplitudes> = samples
             .iter()
             .map(|s| {

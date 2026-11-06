@@ -146,7 +146,7 @@ fn smart2_fixtures_are_well_formed() {
     let notes = fixtures::smart2_note_blocks();
     assert!(triggers.windows(2).all(|w| w[1].time_ms >= w[0].time_ms));
     assert!(triggers.len() <= notes.len(), "trigger span is a prefix");
-    assert!(notes.iter().any(|b| b.control == 111) && notes.iter().any(|b| b.control == 183));
+    assert!(notes.iter().any(|b| b.control == 111) && notes.iter().any(|b| b.control == 182));
     let decisions = fixtures::smart2_decisions();
     assert!(decisions.iter().any(|d| d.kind == "Trigger"));
     assert!(decisions.iter().any(|d| d.kind == "Note"));

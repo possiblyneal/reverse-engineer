@@ -230,7 +230,7 @@ pub fn feedback_eeg() -> Vec<EegFrame> {
         .collect()
 }
 
-/// One block of the run-4 `ExprTriggerAll` stage: the counter's clock reading,
+/// One block of the baseline `ExprTriggerAll` stage: the counter's clock reading,
 /// the Evaluator code, the Band 10/80 amplitudes E..H in volts (`[input][sample]`)
 /// and the pass flags the app's threshold produced from them.
 pub struct TriggerBlock {
@@ -240,7 +240,7 @@ pub struct TriggerBlock {
     pub passes: [bool; 4],
 }
 
-/// The run-4 `ExprTriggerAll` blocks, in order.
+/// The baseline `ExprTriggerAll` blocks, in order.
 pub fn smart2_trigger_blocks() -> Vec<TriggerBlock> {
     read("smart2_trigger_blocks.tsv")
         .lines()
@@ -259,7 +259,7 @@ pub fn smart2_trigger_blocks() -> Vec<TriggerBlock> {
         .collect()
 }
 
-/// One block of the run-4 `ExprNoteSelection` stage: the Evaluator code, the
+/// One block of the baseline `ExprNoteSelection` stage: the Evaluator code, the
 /// PeakFrequency of channels 1..4 in Hz (`[channel][sample]`) and the note the
 /// app computed from them.
 pub struct NoteBlock {
@@ -272,7 +272,7 @@ pub struct NoteBlock {
 /// stores each peak as its FFT bin, one hex digit per sample.
 const PEAK_BIN_HZ: f32 = 500.0 / 512.0;
 
-/// The run-4 `ExprNoteSelection` blocks, in order.
+/// The baseline `ExprNoteSelection` blocks, in order.
 pub fn smart2_note_blocks() -> Vec<NoteBlock> {
     read("smart2_note_blocks.tsv")
         .lines()
@@ -295,14 +295,14 @@ pub fn smart2_note_blocks() -> Vec<NoteBlock> {
         .collect()
 }
 
-/// The run-4 `Trigger` (counter fire) and `Note` (the note the sound element
+/// The baseline `Trigger` (counter fire) and `Note` (the note the sound element
 /// received at a fire) decisions over the span of [`smart2_trigger_blocks`],
 /// as [`feedback_decisions`] encodes them.
 pub fn smart2_decisions() -> Vec<Decision> {
     time_kind_value_decisions("smart2_decisions.tsv")
 }
 
-/// The blocks of the run-4 counter fires (the `Trigger` rows' value column).
+/// The blocks of the baseline counter fires (the `Trigger` rows' value column).
 pub fn smart2_fire_blocks() -> Vec<usize> {
     read("smart2_decisions.tsv")
         .lines()
@@ -312,7 +312,7 @@ pub fn smart2_fire_blocks() -> Vec<usize> {
         .collect()
 }
 
-/// The SMART-2 design the run-4 stages were logged under, read from the design
+/// The SMART-2 design the baseline stages were logged under, read from the design
 /// XML by `make-fixtures.py`.
 pub fn smart2_design() -> Smart2Design {
     let mut design = Smart2Design {
@@ -377,20 +377,33 @@ pub fn smart2_design() -> Smart2Design {
     design
 }
 
-/// Decoded microvolts per sample from the first logged sample on, with the
-/// sample's index relative to it.
-pub fn smart2_eeg() -> Vec<(i64, [f64; 4])> {
-    read("smart2_eeg.tsv")
+/// One block of the live Source output: each channel's 4 samples in volts as the app held
+/// them (float32), and, per band-pass in the design's order, whether the block's 16-tap
+/// mean ran the IPP kernel's scalar head.
+pub struct StageInput {
+    pub volts: [[f32; 4]; 4],
+    pub scalar_heads: [bool; 8],
+}
+
+/// The live Source output of the baseline's first blocks, in order.
+pub fn smart2_stage_inputs() -> Vec<StageInput> {
+    read("smart2_stage_inputs.tsv")
         .lines()
         .map(|l| {
             let c: Vec<&str> = l.split('\t').collect();
-            assert_eq!(c.len(), 5, "index and 4 channels");
-            (
-                c[0].parse().expect("index"),
-                std::array::from_fn(|i| c[1 + i].parse().expect("microvolts")),
-            )
+            assert_eq!(c.len(), 17, "16 samples and the head flags");
+            let flags = c[16].as_bytes();
+            assert_eq!(flags.len(), 8, "one flag per band-pass");
+            StageInput {
+                volts: std::array::from_fn(|ch| std::array::from_fn(|n| bits(c[4 * ch + n]))),
+                scalar_heads: std::array::from_fn(|i| flags[i] == b'1'),
+            }
         })
         .collect()
+}
+
+fn bits(hex: &str) -> f32 {
+    f32::from_bits(u32::from_str_radix(hex, 16).expect("float32 bits"))
 }
 
 /// One logged 4-sample block of the stage values.
@@ -445,15 +458,26 @@ pub fn smart2_stages() -> Vec<StageBlock> {
 /// One live sample of a single channel's `BandPassFilter` and `PeakFrequency` stages, in
 /// float32: the shared input in volts, the Band 10 FIR output and amplitude, the Band 80
 /// FIR output and amplitude, then the `PeakFrequency` frequency and amplitude.
-pub fn smart2_bandpass_stages() -> Vec<[f32; 7]> {
+pub struct BandStage {
+    pub values: [f32; 7],
+    /// Whether the sample's block ran the 16-tap mean's scalar head, for Band 10 and Band 80.
+    pub scalar_heads: [bool; 2],
+}
+
+pub fn smart2_bandpass_stages() -> Vec<BandStage> {
     read("smart2_bandpass_stages.tsv")
         .lines()
         .map(|l| {
             let c: Vec<&str> = l.split('\t').collect();
-            assert_eq!(c.len(), 7, "input, two bands of two stages, peak pair");
-            std::array::from_fn(|i| {
-                f32::from_bits(u32::from_str_radix(c[i], 16).expect("float32 bits"))
-            })
+            assert_eq!(
+                c.len(),
+                9,
+                "input, two bands of two stages, peak pair, two flags"
+            );
+            BandStage {
+                values: std::array::from_fn(|i| bits(c[i])),
+                scalar_heads: [c[7] == "1", c[8] == "1"],
+            }
         })
         .collect()
 }

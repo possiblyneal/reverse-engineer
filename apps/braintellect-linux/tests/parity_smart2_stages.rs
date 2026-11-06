@@ -1,11 +1,13 @@
-//! Parity of the SMART-2 stages upstream of `ExprTriggerAll` (Source filter
-//! chain, `BandPassFilter`, `PeakFrequency`, `AggregatorFilter`) and of the
-//! graph from decoded EEG to the trigger and note decisions, against run 4.
+//! Parity of the SMART-2 stages upstream of `ExprTriggerAll` (Source filter chain,
+//! `BandPassFilter`, `PeakFrequency`, `AggregatorFilter`) and of the graph from the
+//! live Source output to the trigger and note decisions.
 //!
-//! The Source chain, the band-pass FIR and PeakFrequency are asserted bit for bit
-//! against the run-5 live capture. Band `OutAmplitude` (a 16-tap mean, 1 to 3
-//! `f32` ulps off) and the run-4 band amplitudes are not asserted at any harness
-//! tolerance (see `band_pass_amplitude_agreement_report`, `stage_agreement_report`).
+//! Everything is asserted bit for bit: the Source chain, the band-pass FIR and
+//! `OutAmplitude` (the 16-tap mean in the IPP kernel's per-block sum order),
+//! `PeakFrequency`, the Aggregators, and every graph stage, Trigger and Note decision
+//! of the baseline. The serial log is not replayed through the Source chain: the
+//! hooked app drops frames the log still shows, so the replay starts at the Source
+//! output.
 
 mod harness;
 
@@ -18,24 +20,24 @@ use harness::fixtures::{self, Decision};
 
 /// Same counter timer start as `parity_feedback.rs`.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
-/// Logged samples excluded from the stage figures: `BandPassFilter` start-up,
-/// `audio-feedback.md` "Not resolved", first entry.
-const BAND_START_UP_SAMPLES: usize = 600;
 /// Window of the `continuous` Aggregators: 500 Hz times the 60 s `averageEpoch`.
 const AGGREGATOR_WINDOW: usize = 500 * 60;
 
-/// Run the graph over the decoded EEG, block by block, under the logged
-/// Evaluator codes and block times.
+/// Run the graph over the live Source output, block by block, under the logged
+/// Evaluator codes, block times and 16-tap-mean sum orders.
 fn replay() -> Vec<BlockDecision> {
     let mut graph =
         Smart2Graph::new(fixtures::smart2_design(), -TIMER_BEFORE_FIRST_BLOCK_MS).expect("design");
-    let logged: Vec<[f64; 4]> = fixtures::smart2_eeg().into_iter().map(|r| r.1).collect();
     fixtures::smart2_trigger_blocks()
         .iter()
-        .zip(logged.chunks(BLOCK_LEN))
-        .map(|(block, samples)| {
+        .zip(fixtures::smart2_stage_inputs())
+        .map(|(block, input)| {
+            graph.set_scalar_heads(&input.scalar_heads);
+            let samples: Vec<[f64; 4]> = (0..BLOCK_LEN)
+                .map(|n| std::array::from_fn(|ch| f64::from(input.volts[ch][n])))
+                .collect();
             graph
-                .process_block(block.time_ms as i64, block.control, samples)
+                .process_filtered_block(block.time_ms as i64, block.control, &samples)
                 .expect("observed Evaluator codes")
         })
         .collect()
@@ -72,9 +74,10 @@ fn source_chain_reproduces_the_live_stage_outputs_bit_for_bit() {
     }
 }
 
-/// `(low Hz, high Hz, column of the FIR output, column of the amplitude)` of the two
-/// captured bands.
-const CAPTURED_BANDS: [(f64, f64, usize, usize); 2] = [(1.0, 3.0, 1, 2), (23.0, 36.0, 3, 4)];
+/// `(low Hz, high Hz, index of the FIR output in `BandStage::values`, index of the
+/// amplitude, index of the band's scalar-head flag)` of the two captured bands.
+const CAPTURED_BANDS: [(f64, f64, usize, usize, usize); 2] =
+    [(1.0, 3.0, 1, 2, 0), (23.0, 36.0, 3, 4, 1)];
 
 fn captured_band(low_hz: f64, high_hz: f64) -> BandPass {
     let design = BandPassDesign {
@@ -89,35 +92,29 @@ fn captured_band(low_hz: f64, high_hz: f64) -> BandPass {
 fn band_pass_fir_reproduces_the_live_outputs_bit_for_bit() {
     let rows = fixtures::smart2_bandpass_stages();
     assert!(rows.len() >= 6000);
-    for (low_hz, high_hz, fir, _) in CAPTURED_BANDS {
+    for (low_hz, high_hz, fir, _, _) in CAPTURED_BANDS {
         let mut band = captured_band(low_hz, high_hz);
         for (n, row) in rows.iter().enumerate() {
-            let [out, _] = band.push_stages(f64::from(row[0]));
+            let [out, _] = band.push_stages(f64::from(row.values[0]));
             assert_eq!(
                 (out as f32).to_bits(),
-                row[fir].to_bits(),
+                row.values[fir].to_bits(),
                 "band {high_hz} sample {n}"
             );
         }
     }
 }
 
-/// Not asserted: the 16-tap mean of `OutAmplitude` is not bit exact (see
-/// `audio-feedback.md`), so print the f32 ulp distance of the clone to the live value.
 #[test]
-fn band_pass_amplitude_agreement_report() {
+fn band_pass_amplitude_reproduces_the_live_outputs_bit_for_bit() {
     let rows = fixtures::smart2_bandpass_stages();
-    for (low_hz, high_hz, _, amp) in CAPTURED_BANDS {
+    for (low_hz, high_hz, _, amp, head) in CAPTURED_BANDS {
         let mut band = captured_band(low_hz, high_hz);
-        let mut ulps = vec![0u32; 6];
         for (n, row) in rows.iter().enumerate() {
-            let got = (band.push(f64::from(row[0])) as f32).to_bits();
-            if n >= 600 {
-                let d = got.abs_diff(row[amp].to_bits()) as usize;
-                ulps[d.min(5)] += 1;
-            }
+            band.set_scalar_head(row.scalar_heads[head]);
+            let got = (band.push(f64::from(row.values[0])) as f32).to_bits();
+            assert_eq!(got, row.values[amp].to_bits(), "band {high_hz} sample {n}");
         }
-        println!("band {high_hz}: samples at 0..>=5 ulp {ulps:?}");
     }
 }
 
@@ -131,7 +128,7 @@ fn peak_frequency_reproduces_the_live_frequency_and_amplitude_bit_for_bit() {
     };
     let mut peak = PeakFrequency::new(&design, 500);
     for (n, row) in rows.iter().enumerate() {
-        let got = peak.push(f64::from(row[0]));
+        let got = peak.push(f64::from(row.values[0]));
         if n == 1 {
             // Two nonzero samples: the spectrum is flat to rounding, so the app's FFT
             // rounding decides the bin and the clone's FFT does not reproduce it.
@@ -139,12 +136,12 @@ fn peak_frequency_reproduces_the_live_frequency_and_amplitude_bit_for_bit() {
         }
         assert_eq!(
             (got.frequency_hz as f32).to_bits(),
-            row[5].to_bits(),
+            row.values[5].to_bits(),
             "frequency, sample {n}"
         );
         assert_eq!(
             (got.amplitude as f32).to_bits(),
-            row[6].to_bits(),
+            row.values[6].to_bits(),
             "amplitude, sample {n}"
         );
     }
@@ -185,10 +182,10 @@ fn end_to_end_trigger_decisions_match_the_baseline() {
         .filter(|d| d.kind == "Trigger")
         .collect();
     assert!(expected.len() > 15, "baseline holds many triggers");
-    assertions::decisions(&expected, &actual).expect("trigger parity from decoded EEG");
+    assertions::decisions(&expected, &actual).expect("trigger parity from the Source output");
 }
 
-/// The `Note` decisions from decoded EEG, then the baseline's.
+/// The `Note` decisions from the live Source output, then the baseline's.
 fn note_decisions() -> (Vec<Decision>, Vec<Decision>) {
     let blocks = fixtures::smart2_trigger_blocks();
     let actual: Vec<Decision> = replay()
@@ -210,84 +207,90 @@ fn note_decisions() -> (Vec<Decision>, Vec<Decision>) {
     (expected, actual)
 }
 
-/// Notes the graph reproduces from decoded EEG with the Source filters cold at the
-/// first logged sample (9 of 20 with warm filters). Not a tolerance: a floor that
-/// keeps that gain until the strict test below passes.
-const NOTES_MATCHING_FROM_DECODED_EEG: usize = 17;
+/// Blocks whose note still carries the app's pre-capture smoothing history (the
+/// capture started mid-session; the clone starts cold).
+const NOTE_WARM_UP_BLOCKS: usize = 15;
 
 #[test]
-fn most_note_decisions_match_the_baseline_from_decoded_eeg() {
-    let (expected, actual) = note_decisions();
-    assert_eq!(expected.len(), actual.len(), "one note per counter fire");
-    let matching = expected
+fn every_block_note_matches_the_baseline_after_warm_up() {
+    let decisions = replay();
+    for (b, want) in fixtures::smart2_note_blocks()
         .iter()
-        .zip(&actual)
-        .filter(|(e, a)| e.new == a.new)
-        .count();
-    assert!(
-        matching >= NOTES_MATCHING_FROM_DECODED_EEG,
-        "{matching} of {} notes match",
-        expected.len()
-    );
+        .enumerate()
+        .take(decisions.len())
+        .skip(NOTE_WARM_UP_BLOCKS)
+    {
+        assert_eq!(decisions[b].note, want.note, "block {b}");
+    }
 }
 
-/// Known gap: fires 1, 2 and 5 differ. Fires 1 and 2 read PeakFrequency values from
-/// the first 130 blocks, where the cold Source transient and the start-up window
-/// dominate; fire 5 is a counter fire one block late (`audio-feedback.md`, "Not
-/// resolved"). Run with `--ignored`; it fails until those are resolved.
+/// The note the sound element read at each baseline counter fire is the previous
+/// block's note.
 #[test]
-#[ignore = "17 of 20 note decisions match from decoded EEG"]
+fn notes_at_the_baseline_fires_match_the_baseline() {
+    let decisions = replay();
+    let (expected, _) = note_decisions();
+    let fires = fixtures::smart2_fire_blocks();
+    assert_eq!(expected.len(), fires.len(), "one note per fire");
+    for (i, (want, &block)) in expected.iter().zip(&fires).enumerate() {
+        assert_eq!(
+            u32::try_from(decisions[block - 1].note).expect("MIDI note"),
+            want.new,
+            "fire {i} (block {block})"
+        );
+    }
+}
+
+/// Known gap: the app's counter timer reads a clock the log does not carry (its
+/// reading trails the block's log time by up to about 15 ms), so some fires land
+/// one block early or late and read a different note.
+/// Run with `--ignored`; it fails until the timer clock is recovered.
+#[test]
+#[ignore = "counter fires drift from the app's unlogged timer clock"]
 fn end_to_end_note_decisions_match_the_baseline() {
     let (expected, actual) = note_decisions();
-    assertions::decisions(&expected, &actual).expect("note parity from decoded EEG");
+    assertions::decisions(&expected, &actual).expect("note parity from the Source output");
 }
 
-/// Prints how closely the recovered stages follow the logged values. Not an
-/// assertion: the harness has no tolerance that fits a statistical match.
-///
-/// Excluded from the figures: the first `BAND_START_UP_SAMPLES` samples
-/// (`audio-feedback.md` "Not resolved", BandPassFilter start-up) and Band 10 on
-/// Ch2 (same section, Band 10 Ch2 entry).
 #[test]
-#[ignore = "report only"]
-fn stage_agreement_report() {
+fn graph_stages_reproduce_the_logged_values_bit_for_bit() {
     let design = fixtures::smart2_design();
     let stages = fixtures::smart2_stages();
     let decisions = replay();
-    for (stage, &(label, channel)) in fixtures::STAGES.iter().enumerate() {
-        if (label, channel) == ("Band 10", 1) {
-            continue;
-        }
-        let at = design
-            .band_passes
-            .iter()
-            .position(|b| b.channel == channel && b.label == label)
-            .expect("band-pass in design");
-        let mut errors: Vec<f64> = (BAND_START_UP_SAMPLES..stages.len() * BLOCK_LEN)
-            .map(|s| {
-                let want = f64::from(stages[s / BLOCK_LEN].bands[stage][s % BLOCK_LEN]);
-                let got = f64::from(decisions[s / BLOCK_LEN].samples[s % BLOCK_LEN].bands[at]);
-                ((got - want) / want).abs()
-            })
-            .collect();
-        errors.sort_by(f64::total_cmp);
-        println!(
-            "{label} Ch{}: median relative error {:.3}",
-            channel + 1,
-            errors[errors.len() / 2]
-        );
-    }
-    let (mut missed, mut total) = (0, 0);
-    for (b, decision) in decisions.iter().take(stages.len()).enumerate() {
-        for (n, sample) in decision.samples.iter().enumerate() {
-            if b * BLOCK_LEN + n < BAND_START_UP_SAMPLES {
+    for (b, stage_block) in stages.iter().enumerate() {
+        for (n, sample) in decisions[b].samples.iter().enumerate() {
+            for (stage, &(label, channel)) in fixtures::STAGES.iter().enumerate() {
+                let at = design
+                    .band_passes
+                    .iter()
+                    .position(|p| p.channel == channel && p.label == label)
+                    .expect("band-pass in design");
+                assert_eq!(
+                    sample.bands[at].to_bits(),
+                    stage_block.bands[stage][n].to_bits(),
+                    "block {b} sample {n} {label} Ch{} band",
+                    channel + 1
+                );
+                assert_eq!(
+                    sample.aggregates[at].to_bits(),
+                    stage_block.aggregates[stage][n].to_bits(),
+                    "block {b} sample {n} {label} Ch{} aggregate",
+                    channel + 1
+                );
+            }
+            if (b, n) == (0, 1) {
+                // Two nonzero samples: the spectrum is flat to rounding (see the
+                // PeakFrequency test), so the app's FFT rounding decides the bin.
                 continue;
             }
             for ch in 0..4 {
-                total += 1;
-                missed += usize::from(sample.peaks[ch].bin != stages[b].peak_bins[ch][n]);
+                assert_eq!(
+                    sample.peaks[ch].bin,
+                    stage_block.peak_bins[ch][n],
+                    "block {b} sample {n} Ch{} peak bin",
+                    ch + 1
+                );
             }
         }
     }
-    println!("PeakFrequency bins differing: {missed} of {total}");
 }
