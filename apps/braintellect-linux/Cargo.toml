@@ -8,3 +8,7 @@ description = "Rust reimplementation of the BRAINtellect2 neurofeedback app for 
 [lib]
 name = "braintellect_linux"
 path = "src/lib.rs"
+
+[dependencies]
+libc = "0.2"
+rusqlite = { version = "0.41.1", features = ["bundled"] }

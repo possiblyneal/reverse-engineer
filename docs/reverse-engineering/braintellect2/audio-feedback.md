@@ -116,11 +116,26 @@ The property map is at `0x13f2afa` and the setter is at `0x6433d0`. `type` accep
 - About 65% of the 5,000 ms window passes by construction, so the auto threshold tracks the signal: about two thirds of recent samples pass, whatever the absolute level.
 - `timeHigh` fires on the first passing sample in the first block that begins at least `triggerEpoch` (500 ms) after the last fire or after start. The trigger output then stays 1 for the rest of that block. The input does not have to stay high for those 500 ms. Fires repeat at most once per epoch while passes continue, subject to block size and to how `SoundElement` consumes the trigger.
 - `triggerEpoch` is read as milliseconds against the timer. The divisor at `0x1895360` and the constructor defaults were not reconciled.
-- The 0-based or 1-based indexing of the order statistic in `0x62e3c0` is unresolved, which shifts the quantile by one sample.
+- The static `round(n·lower)` reading of the quantile index is superseded by the run-3 capture below (`trunc(n·lower)`, zero-based).
 
 ### Logging (observed)
 
 No runtime log string exists for threshold pass/fail, threshold updates, or counter fires. Only the validation errors exist (for example `"invalid trigger epoch"`, `0x18becfc`). A session's `braintellect.log` therefore cannot confirm this behavior. Only the element outputs in a recorded feedback series can.
+
+### Run 3 decision capture (observed)
+
+One SMART-2 session (guest profile, no wearer, sensors off) captured with one Frida script hooking the serial reads and the threshold and counter functions on a shared clock. Raw captures stay in the main checkout's `tmp/s26/run3/` (not committed); the committed fixtures are `tests/fixtures/feedback_{blocks,decisions,eeg}.tsv`, scrubbed and reproduced by `scripts/make-fixtures.py`.
+
+- **Quantile index:** the threshold is the sorted window's element at `trunc(n·lower)`, zero-based, clamped to `n − 1`, with `lower` the single-precision `0.65`. This replaces the static `round(n·lower)` reading.
+- **Window capacity:** a fixed 2,500 values (500 Hz × 5,000 ms). The threshold is recomputed after every input block and applies to the next block's samples.
+- **Pass flags:** the clone reproduces every recorded pass flag of the fixture's blocks (0 mismatches).
+- **Counter clock:** the timer is read once per block, as the static reading said. The clone reproduces every recorded fire given the observed per-block timer reading and a timer start at least 250 ms before the first block (the baseline's first fire is 250 ms after the first block). The exact start offset is unresolved.
+- **Decision stream:** `Trigger` and `Note` decisions are in `feedback_decisions.tsv`. The clone reproduces the `Trigger` decisions only.
+
+Gaps (not reproducible from this evidence, so not implemented):
+
+- The capture covers about 163 of 240 s: the guest's D: volume filled and the hook logs stopped. The PeakFrequency hook recorded nothing, cause unknown, so no per-channel peak outputs exist.
+- Upstream stages (band-pass, Aggregator, `ExprTriggerAll`), the `averageEpoch` smoothing, `ExprNoteSelection` channel order, and the `SoundElement` note mapping are unresolved. The channel-order mapping is not adopted: the evidence does not single one out. End-to-end EEG-to-decision parity is therefore not claimed; `feedback_eeg.tsv` holds the aligned EEG window for when those stages are recovered.
 
 ## SMART-2 Evaluator
 
@@ -160,6 +175,185 @@ The stored type-5 logs (2026-11-04) show:
 - With no sensors, floating inputs give near-equal band amplitudes and low coherence, so neither test passes and 111 holds.
 - Which path produced 82 in exercise 125 is not determined; it needs the per-epoch input values.
 - No dispatch on `style` or `evaluatorLogic` was found in `processLogic`. Whether another style changes the logic is unresolved.
+
+## PeakFrequency and Note Hook Points (static, braintellect.exe 5.1.57)
+
+Image base `0x400000`; all addresses are VAs. Recovered with Ghidra headless. The window, FFT and bin range of `0x632d90` are superseded by the Run 4 sections below; the remaining items are inferred from disassembly.
+
+### Observed in code
+
+- `DSPPkFreq::filter` is `0x632d90` (`__thiscall`, args: input float pointer, window length `N`, two output pointers). It copies the window to doubles, applies a window function through the statically linked IPP-style thunks (`0x66fd20`..`0x66fe40`), runs a real FFT, and reduces the magnitude spectrum to one peak. It writes the peak frequency to `*(this+0x58)` and the peak amplitude to `*(this+0x38)` as float32. The frequency is `(lowIdx + idx) * (rate / N)` with `idx` the argmax over the bins from `lowIdx` to `highIdx`.
+- The `PeakFrequency` element's process function is `0x6340d0`. For each new sample it shifts the window held at `this+0x1bc` (length `this+0x18c`, fill count `this+0x1c0`) and calls `0x632d90` once, so the element recomputes the peak per sample.
+- Threshold: pass test `0x62ed70` (`__thiscall`, one float), thresholds as doubles at `this+0x100` and `this+0x110`, pass flag at `this+0x89`; direction at `this+0x7c`, mode at `this+0x84`; automatic quantile recompute `0x62e6e0` using the order-statistic reader `0x62e3c0`. The quantile index is `round(n * (1 - q))` (or `round(n * q)` for the other direction), reduced by one when it equals `n`.
+- Counter block processor `0x642ed0` (`__thiscall`): the count at `this+0x18c` increments on each pass, and the trigger is raised and the count reset when the count reaches the `timeHigh` bound at `this+0x1a0`, compared against a per-block timer.
+- `SoundElement` pipe handler `0x59ad70`, note step lookup `0x5a0030` (maps the incoming note value into a 12-step pattern relative to `this+0x2c8`), and note play `0x5a04e0` (clamps the note to the range at `this+0x2d4`/`this+0x2d8`, then calls the output device through vtable slots `+0x1c`, `+0x20`, `+0x24`).
+
+### Not resolved
+
+- The conversion of the note input to the MIDI note number, including `noteAutoRange`.
+- Whether the order-statistic index is zero- or one-based.
+
+### Why a live capture is required
+
+Static reading does not fix the unresolved items, and the stored baseline carries no note or trigger decisions (the type-9 XML has no PeakFreq, note, threshold or counter output). A capture needs the hooks above, logged with the same millisecond clock as the serial trace, during one SMART-2 session.
+
+## Run 4 Capture: Stages Upstream of the Threshold (observed)
+
+One complete SMART-2 session (guest profile, no wearer, sensors off, 240 s, 30,005 blocks of 4 samples) under one combined Frida script, hard-restarted app. The raw logs stay in the main checkout's `tmp/s26/run4/` (never committed). Verified by replaying the logged inputs against the logged outputs:
+
+- **PK hook silence in run 3:** `0x632d90` and `0x6340d0` are called. The run 3 `onLeave` read dereferenced a wrong object or field (access violation at 0x200), which Frida swallowed. Run 4 logged the same failure as an error; the PeakFreq values were captured instead as the A..D inputs of `ExprNoteSelection`.
+- **Channel order:** see `b2-protocol.md`; PeakFreq Ch`n` reads payload slots `n-1` and `n+3`.
+- **PeakFrequency:** exact algorithm recovered from `0x632d90`, see "Recovered upstream stages" below. 99.7 % of 1000 samples match once the Source software filters (25 Hz notch, 1.5 Hz high-pass) are applied before the window; the earlier 97.8 % was the raw channel windowed directly.
+- **ExprNoteSelection:** input `x` is PeakFreq D when `J == 183`, else `(C + D) / 2`. Per sample `x` feeds a tracker (trailing 15000 samples, min and max) and a smoother (trailing 62-sample mean). The note is `trunc((hi - lo) * ratio) + lo` with `lo = 40`, `hi = 76`, `ratio = (mean - min) / (max - min)` (0 when the range is not positive), in float32 through the map at `0x578240`. The note is taken at each counter fire. Exact against the logged inputs.
+- **ExprTriggerAll:** one branch per Evaluator code, read from the design's own expression (`tmp/s26/run4/130-t1.xml`): 11 gives `A + B + C + D`, 12 `A`, 13 `B`, 81 `C + D`, 82 `C`, 83 `D`, 112 `E`, 113 `F`, 181 `G + H`, 182 `G`, 183 `H`, and any other code (111 included) `E + F + G + H`. The sums are formed in double precision and rounded to `float32` once. The Threshold input is that value in volts, smoothed in microvolts by a 62-sample smoother. Exact against the logged inputs for codes 111, 183 (run 6) and 12, 82 (run 8). Inputs A..D are the Band 10 (1-3 Hz) then Band 80 (23-36 Hz) BPF amplitudes of Ch1, Ch2 and E..H the same for Ch3, Ch4 (A, B = Ch1, Ch2 Band 10; C, D = Ch1, Ch2 Band 80; E, F = Ch3, Ch4 Band 10; G, H = Ch3, Ch4 Band 80).
+- **Evaluator J:** 111 until 120000 ms, 183 afterwards (first block with 183 is 14999) in run 6; 111 for blocks 0 to 14998, 12 for the next 7500 and 82 for the last 7502 in run 8 (a different SMART-2 setting). The Evaluator is not replicated: its code is a per-block input.
+
+### Not resolved
+
+- The first about 600 logged samples of Band 10 and Band 80 (BandPassFilter start-up) do not match with a warm Source chain: that replay reproduces neither the size nor the timing of the early transient. Run 8 resolves the start-up for its exercise (warm Source chain, 45 Hz low-pass switched in cold; see "Run 8 whole-exercise capture"). Run 4's account, kept for its figures: cold, Band 10 matches within about 1 to 3 % up to block 44 (sample 176) and then diverges (the logged transient stays large until about block 80, the replay's decays by block 60). The remaining cause is not isolated (Source IIR transient details, or the start-up of the band-pass itself).
+- Band 10 on Ch2 (correlation 0.73 at a median error of about 1 %): a few late-held maxima in the 83-sample max window differ, cause not isolated. The Rust replay (`apps/braintellect-linux/tests/parity_smart2_stages.rs`) leaves it out of its stage figures, as it does the start-up span above.
+- Replaying run 4's decoded EEG through the clone never matched the run-4 band amplitudes (1 to 5 % off) or all notes. The run 6 baseline replays from the live Source output and matches exactly (see "Run 6 baseline"); run 8 replays from decoded EEG and matches the triggers and nearly all notes (see "Run 8 whole-exercise capture").
+- The exact IIR design behind the Source notch and high-pass (IPP generator internals) and whether the 150 Hz low-pass FIR is applied: the replay cannot tell it from a 4-sample change of alignment.
+- Why the log records `dataAlreadyFiltered: 1` while the software filters demonstrably act (`+0x10c` flag; see "Source-side software filters").
+- The Aggregator numeric replay against logged output (the code reading is below).
+
+## Recovered upstream stages (static decompile, checked offline against run 4)
+
+Headless Ghidra on `braintellect.exe` 5.1.57, image base `0x400000`; the classes were found through MSVC RTTI. IPP calls go through thunk tables indexed by `_DAT_0200f428`; thunk identities below are inferred from argument shapes, not from names. Scratch scripts and captures stay in the main checkout's `tmp/s43/` (not committed). Checks replay the run 4 serial frames (channel `c` = payload slots `c` and `4+c`, volts per `b2-protocol.md`) against the logged stage values.
+
+### Alignment (observed)
+
+Logged sample 0 of Ch1 is absolute channel sample `2 * 34000 + 3659` of the run 4 stream (frame about 35829.5), found by sliding-DFT against the logged PeakFreq. Earlier guesses were wrong.
+
+### BandPassFilter OutAmplitude (decompile, partly matched)
+
+Vtable `0x18bf7fc`; rebuild `0x66dc00`; FIR constructor `0x650ed0`; IIR constructor `0x6536a0`; apply `0x651490`; amplitude `0x650cf0`; sizing `0x6506c0`; 16-tap setup `0x6507e0`; per-block process `0x66e9f0`.
+
+- Stage 1: `y` = FIR of the input, taps from `ippsFIRGenBandpass` with edges `f / rate`.
+- Stage 2: `tmp[i]` = max-abs (`ippsMaxAbs_32f`) of `y` over the last `W` samples (sliding, zero-initialised history). `W = max(trunc(rate / (2 * highCutoff)), blockLen)`: Band 10 (1-3 Hz) gives `W = 83`, Band 80 (23-36 Hz) gives `W = 6`.
+- Stage 3: `OutAmplitude` = 16-tap FIR of `tmp`, each tap `2.0 / 16` (constant `2.0` at `0x18953a8`).
+- This explains the earlier puzzle: Band 10 holds for runs because the 83-sample max window changes rarely; the 16-tap mean produces the linear ramps between holds; Band 80 (`W = 6`) never holds. A Hamming FIR followed by `|y|` and a boxcar could not reproduce either.
+- The input to this element is not the raw frame: the Source applies the software filter chain described in "Source-side software filters" first. The earlier fit that inferred a 1.5 Hz high-pass was the high-pass slot of that chain; the Band 80 mismatch was its 25 Hz notch.
+- Offline match with that chain (run 4, 2000 samples, FIR order 128 = 128 taps, Hamming, `W` 83 and 6, 16-tap `2/16` mean): see the match table in "Source-side software filters". Band 10 steady state and Band 80 after about 600 samples match; the start-up does not.
+
+### Source-side software filters (decompile, matched)
+
+The transform between the raw B-2 frames and the Source outputs that feed BandPassFilter and PeakFrequency is the device-layer software filter chain of `BSTAmplifierDataProcessor`.
+
+Observed in code:
+- Per sample, `processData` (`0x555c00`) converts the 3-byte big-endian value (`0x555930`; scale factors from `0x5558c0`) and, when the byte at `this+0x10c` is zero, calls `0x557f00`, which runs the channel's filter slots through the filter apply `0x651490` in this order, skipping null slots: `+0x30` interference filter, `+0x34` interference filter 2, `+0x38` low-pass, `+0x3c` high-pass. The result goes to the engine queue `0x5773a0`.
+- `setInterferenceFilter` `0x554fe0`: `"60 Hz"` IIR band-stop (kind 3, type 5, order 1, 59/61 Hz); `"50 Hz"` the same at 49/51 Hz; `"50/60 Hz"` FIR band-stop (Hamming, 64 taps, 42/68 Hz); `"45Hz LP"` FIR low-pass (Hamming, 256 taps, 47.5 Hz).
+- `setInterferenceFilter2` `0x555370`: `"25 Hz"` IIR band-stop (kind 3, type 5, order 2, 23.5/25.75 Hz, ripple argument 0.1); `"10 Hz"` FIR band-stop (Hamming, 384 taps, 9/11 Hz).
+- `setLPFilter` `0x554ae0`: FIR (`0x650ed0`), kind 0, Hamming, 24 taps, requires 0 < cutoff <= rate. `setHPFilter` `0x554d60`: IIR (`0x6536a0`), kind 1, type 5, order 1, ripple argument 0.1.
+- Run 4 `app.log` (observed): `interferenceFilter -> Off`, `interferenceFilter2 -> 25 Hz`, `lowPassCutoff -> 150.0`, `highPassCutoff -> 1.5`, `sampleRate: 500`, `dataStorageStyle: filtered`, `dataAlreadyFiltered: 1`.
+- The BandPassFilter element (`0x66dc00`) picks FIR (`0x650ed0`, mode 0) or IIR (`0x6536a0`, mode 1) from `this+0x198`; the run 4 design gives every BandPassFilter windowType Hamming and filterOrder 128.
+
+Inferred:
+- Type 5 is Butterworth and the IIR generators prewarp and use the bilinear transform; the replay builds the band-stop from an order-2 analogue Butterworth prototype (a 4th-order digital filter, two biquads) and the high-pass as a first-order bilinear Butterworth. The order-1-prototype variant fits worse (Band 80 correlation 0.73 against 0.79 on the first 1600 samples).
+- The flag at `+0x10c` is zero in the run 4 path: the 1.5 Hz high-pass and the 25 Hz notch both visibly act on the data, although the log reports `dataAlreadyFiltered: 1`. The flag's source (a string compare in the constructor `0x5576b0` at `0x5577ab` against a runtime-initialised global) was not resolved.
+- Alignment: the best fit is 4 samples later than the earlier PeakFrequency-derived start (logged sample 0 = channel sample `2 * 34000 + 3659 + 4`). A 150 Hz Hamming FIR low-pass would add about 11.5 samples of delay; with it, the best offset moves to about 15 and the match is the same, so whether the low-pass runs cannot be decided from this data.
+
+Offline match, run 4, filters started warm (6000 samples of history), band-pass started at zero state at logged sample 0, pure-Python replay (`python3 -I`, no signal values recorded here). Correlation and relative error are against the logged BandPassFilter amplitude:
+
+| Input to the band-pass | Band 10 (n >= 450), Ch1..Ch4 | Band 80 (n >= 600), Ch1..Ch4 |
+|---|---|---|
+| raw frame | high-pass missing: scale off about 12x | not tried |
+| 1.5 Hz high-pass only | corr 0.998 / 0.730 / 0.971 / 0.987 | corr 0.648 / 0.666 / 0.424 / 0.193 |
+| 25 Hz notch + 1.5 Hz high-pass | corr 0.998 / 0.731 / 0.971 / 0.987 (median error 1.0-2.5 %) | corr 0.997 / 0.998 / 0.999 / 0.998 (median error 6.2 / 3.2 / 1.7 / 1.7 %, 90th percentile 31 / 13 / 7 / 7.5 %) |
+
+- PeakFrequency bin, Ch1, samples 1000-1999: raw 986/1000 at offset 0, 974/1000 at offset 4; notch + high-pass 997/1000 at offset 4 (high-pass only 992/1000). The earlier 97.8 % figure was over a different 2000-sample span.
+- Band 10 Ch2 stays at 0.73 although its median error is 1 %: a few late-held maxima differ (the 83-sample max window is sensitive to single peaks).
+- Not matched: the first about 600 samples of both bands (see "Not resolved"). This table started the Source filters warm; that is superseded: the logged Band 10 start-up matches only with cold Source filters ("Note divergence from decoded EEG").
+
+### Run 5 live Source-chain capture (observed)
+
+A Frida hook injected into the running `braintellect.exe` (no restart) logged the inputs and outputs of the filter apply `0x651490` per sample for channel 0 at the four Source return sites `0x557fb5`, `0x557fe6`, `0x558011`, `0x55803c`, with every read range-checked. The session was a no-wearer, sensors-off stream with no exercise running; 6036 samples were captured. Raw logs stay in `tmp/s43/live/` (never committed); `smart2_source_stages.tsv` holds the scrubbed stage values.
+
+Observed:
+- All four slots run, one call each per sample (n = 1), and each stage's output is bit-identical to the next stage's input. Slot kinds: `+0x30` kind 0 (FIR, 256 taps, edge 47.5 Hz: the `"45Hz LP"` interference filter), `+0x34` kind 1 (IIR, edges 23.5/25.75 Hz), `+0x38` kind 0 (FIR, 24 taps, 150 Hz), `+0x3c` kind 1 (IIR, 1.5 Hz). Samples are `float32`. The live guest profile has interference filter 1 on; the run 4 design has it `Off`, so slot `+0x30` is not part of the SMART-2 design the clone replays.
+- Free fits of the captured stage input to output reproduce the clone's designs: the low-pass is a symmetric 24-tap FIR with unit DC gain; the band-stop is a 4th-order IIR; the high-pass is first order with `b0 = 1 / (1 + w)`, `w = tan(pi * 1.5 / 500)`.
+- Fed the captured band-stop input, the clone's f64 chain (Hamming 24-tap low-pass unit DC gain, order-2-Butterworth band-stop, first-order bilinear high-pass, existing formulas unchanged) with each stage output rounded to `float32` reproduces every stage output bit for bit once the filter memory has converged (3000 samples; the capture started mid-stream). Rounding is required: without it the outputs differ in the last `float32` bit. The IPP IIR filters compute with `f64` state and coefficients and round only the output (an `f32` state or `f32` coefficients matches 15 to 62 % of samples).
+
+- The 256-tap slot `+0x30` is a Hamming low-pass at 47.5 Hz with unit DC gain (the clone's `lowpass_taps`), computed as the `f64` sequential sum and rounded once to `float32`. The clone's full four-stage chain (`Interference1::LowPass45`) reproduces the live band-stop, low-pass and high-pass outputs bit for bit from the chain input (`smart2_source_stages.tsv` column 0 is the slot `+0x30` input), 5736 of 5736 samples after the 3000-sample convergence. The setting is the `interferenceFilter` device preference (`"45Hz LP"`, `setInterferenceFilter` `0x554fe0`), not a design XML field; the clone keeps it as `SourceDesign.interference1`.
+
+Consequence: the Source chain is exact for the live design (`Interference1::LowPass45`) and for the SMART-2 design (`Off`).
+
+### Run 5 live BandPass and PeakFrequency capture (observed)
+
+After a hard restart (process kill, no graceful exit) and an exercise start, a second hook (`hook7`) logged, with pointers and lengths validated before every read: the `ippsFIRGenBandpass` tap output once per BandPassFilter object, each object's per-block input, FIR output and `OutAmplitude` (apply `0x651490`, amplitude `0x650cf0`, call site `0x66ea81`, four samples per block), and the PeakFrequency input window and outputs (`0x632d90`). Four channels each have Band 10 (1.0 to 3.0 Hz) and Band 80 (23.0 to 36.0 Hz) objects; about 5800 samples per object were kept. Raw logs stay in `tmp/s43/live/`.
+
+Observed:
+- The generated taps (128, `f64`) equal the clone's `bandpass_taps` (Hamming, unit gain at the band centre) to 1e-16. Edges are 0.002 to 0.006 and 0.046 to 0.072 of the sample rate.
+- The FIR output is the sequential `f64` sum of `tap[k] * x[n-k]` (k from 0, zero history at object start) rounded once to `float32`. The clone reproduces every FIR output of Band 10 and Band 80 bit for bit from the object's first sample.
+- `OutAmplitude` is a sliding maximum of the absolute FIR output over `W` samples (`W = 83` for Band 10, `W = 6` for Band 80; the maximum is exact) followed by a 16-tap mean (`0x66ffc0`, `float32` taps of 0.125).
+- PeakFrequency's window is an `float32` array filled from index 0 with the Source output (the same samples the band-passes read) until 512 have arrived, then the oldest drops off the front. The window is the symmetric Hann (denominator `N - 1`), and the clone reproduces the logged frequency and amplitude bit for bit over all captured samples except sample 1 (two nonzero samples, a flat spectrum whose bin is set by FFT rounding). The amplitude is computed in `float32` (`(4 / N)`, the magnitude and the window mean each rounded to `float32`); the same in `f64` differs from the app in 26 % of samples at the last `float32` bit.
+
+Resolved by the run 6 baseline (below): the 16-tap mean is the IPP `float32` FIR (`ippsFIR_32f`), bit exact in the sum order the kernel uses for the block's heap alignment.
+
+### PeakFrequency (decompile, matched)
+
+Vtable `0x18bc414` (secondary `0x18bc400`); `DSPPkFreq::filter` `0x632d90`; constructor about `0x633400`-`0x633f23`; process `0x6340d0`; free `0x632c10`.
+
+- `N = 2^fftOrder = 512` (`fftOrder` 9), `df = 500 / 512`. Bins `ftol(low / df)`..`ftol(high / df)`: Ch1, Ch2 6..14; Ch3, Ch4 7..15.
+- The input is a ring of `this+0x18c` samples, newest at the end once full, filled from the front with the tail zero until then (observed in the run 5 capture), windowed by a symmetric Hann window (`ippsWinHann_64f_I` over ones, denominator `N - 1`; window mean at `this+0x68` is sum / N).
+- Unscaled real FFT (flag 8), conj-pack expansion to complex, magnitude, first maximum over the bin range. Frequency = `(lowbin + idx) * df`; amplitude = `(4.0 / N) * max / mean(window)` (constant `4.0` at `0x1895398`).
+- Thunks (inferred): `0x66fd90` Zero_64f, `0x66fd80` Mul_64f_I, `0x66fd70` FFTFwd_RToPack_64f, `0x66fd60` ConjPack_64fc, `0x66fd50` Magnitude_64fc, `0x66fd40` MaxIndx_64f; window selectors `0x66fda0` Hann, `0x66fdb0` Hamming, `0x66fdc0` Kaiser.
+- Superseded by the run 5 capture: the denominator is `N - 1` and the result is `float32`, bit exact on the live input. Earlier offline match: 1955 of 2000 samples (97.8 %) with a Hann denominator `N` (the `N - 1` and `N + 1` variants and an added high-pass were no better on run 4). The mismatches are near-ties between adjacent bins, so the true input differs slightly from the raw frames, consistent with the unlocated Source-side stage.
+
+### Aggregator (static, partial)
+
+`AggregatorFilter` vtable `0x18bf91c` (secondary `0x18bf90c`). Observed in code: reset on message type 3 (`0x649c70`); property setter `0x649b60` creates the aggregation object at `this+0x1e4` from the flow-style string; setup `0x64a3e0` passes `rate * [0x62]` (sample rate times `averageEpoch`) to that object's virtual `+0x18`.
+
+- Style strings (static initialisers at `0x13f8620`, `0x13f8640`, `0x13f8660`): `0x1fbf194` = `"absolute"`, `0x1fbf3c4` = `"continuous"`, `0x1fbf178` = `"discrete"`. `"absolute"` creates the `0x18bf978` object (0x70 bytes; running sum in a double at `+0x60`, count at `+0x68`; value = sum / count, `0x649850`). `"continuous"` and `"discrete"` create the `0x6542a0` object (0x60 bytes, vtable `0x18c1a98`). The run 4 design uses `"continuous"` with `averageEpoch` 60 for all six Aggregators, so the `0x18bf978` object is not on the replayed path.
+- `0x18c1a98` per-sample (virtual `+8`, `0x6543f0`): `v' = scale * v + offset` (floats at `+0x50`, `+0x54`, copied by the constructor from the owning property block at `+0x18c`, `+0x190`). When the window length at `+0x58` is above zero (set by virtual `+0x18`, `0x654510`, which also rebuilds the buffer through `+0x1c`, `0x654530`), `v'` goes through the moving average `0x654fe0`; otherwise `v'` is the output. The block entry (virtual `+4`, `0x6544d0`) just repeats the per-sample call. The output is held as a float at `+0x5c`.
+- Moving average `0x654fe0` (object `0x654f20(window, 0, 1)`): circular buffer of doubles. Running sum += `x`, then -= the overwritten oldest entry (float arithmetic, stored in a double), the slot is overwritten with `x`, and the result is sum / `min(samples seen, window)`. This is a sliding boxcar mean with a partial-fill divisor, window `rate * averageEpoch` = 30000 samples at 500 Hz, matching the 60 s boxcar read earlier from the logged sum and window. Inferred, not replayed: `scale` = 1 and `offset` = 0 (not read from the design); the Evaluator-side `0x654440` (sign times log) variant is not used by this path.
+
+### Note divergence from decoded EEG (observed, with inferences marked)
+
+Ticket 43. Notes at the 20 counter fires from decoded EEG matched 9 of 20 with warm Source filters and match 17 of 20 with cold ones. Per-block comparison against the run 4 logs (clone `PeakFrequency` bins versus the logged `ExprNoteSelection` inputs, clone tracker range versus the logged one):
+
+- **Observed, cause of the 11 early misses: the tracker minimum.** The logged range of the selected PeakFrequency `(C + D) / 2` is `[7, 15]` bins from the first block (block 0 has Ch3 = Ch4 = 7 at sample 0). With warm filters the replay's minimum fell from 11 to 7 only by block about 850, so every note before then was scaled by a wrong lower bound. The tracker, smoother and `noteAutoRange` logic are not at fault: replayed from the logged PeakFrequency they are exact, and no state carried before the logged span matters (the app's first `NP`/`TR` logs start at block 0 with `cnt=1`).
+- **Observed: the Source filters start cold at logged sample 0.** The stream ran about 143 s before the graph's first sample (`SM` smoothers log from `1793911027988`, the first `PKIN` at `1793911171296`), but the logged Band 10 amplitudes in blocks 0 to 44 follow a zero-state Source chain (high-pass step transient of the sample offset) to within about 1 to 3 %, where the warm replay is 2 to 8 times off. Superseded by run 8 ("Run 8 whole-exercise capture"), where exact logs show the chain warm with only the 45 Hz low-pass switched in cold at the graph start. The `+15` sample alignment offset is kept; scanning it from -40 to +40 with cold filters, 0 minimises the PeakFrequency bin mismatches.
+- **Observed: counter fires.** With cold filters the replay fires on the baseline's blocks except fire 1 (block 48 against 49, same millisecond) and fire 5 (block 359 against 358): the pass flags near the Threshold differ by one block because the Band amplitudes carry 1 to 5 % error. With warm filters the first three fires were 16 blocks early.
+- **Remaining misses (fires 1, 2, 5).** Fire 1: the replay fires a block early (pass-flag timing above) and the note path differs by 2 steps. Fire 2 (block 128): the replay's Ch3/Ch4 bins in blocks 108 to 127 are 7 and 15 where the app logs 10 and 7; the first 512 samples (window not yet full) depend on the Source transient that is not matched past block 44. Fire 5: counter one block late.
+- **Tried, rejected (observed):** filling the PeakFrequency window from the front instead of zero-padding at the front of the ring reproduces sample 0 of all four channels (the Hann weight at index 0 is zero, so the spectrum ties at the lowest bin) but raises the bin mismatches over blocks 0 to 129 from 1065 to 1324 of 2080 and leaves 17 of 20 notes; reversing the window orientation raises steady-state mismatches. Bins in the first blocks are decided by FFT rounding on near-flat spectra (a single nonzero sample), which the replay's FFT cannot reproduce.
+- **Observed (ticket 43g): the 45 Hz low-pass does not explain the run-4 residuals.** Run 4's `app.log` has `interferenceFilter -> Off`, so the stage is absent there. Replaying run-4 decoded EEG through the clone with `LowPass45` and scanning the start offset -140 to -100 (about the stage's 127.5-sample group delay) raised the median Band 10/80 amplitude error from 0.9 to 5 % (stage-dependent) to 25 to 60 %, the PeakFrequency bin mismatches from 114 to over 3600 of 4000 (samples 600 on), and the notes from 17 to at most 12 of 20. The residuals stay open and the stage is not part of the run-4 design.
+- Not resolved: the Source transient past block 44 (candidate: the IIR design or initial state; the 150 Hz low-pass FIR, with the alignment offset, did not discriminate in a scan of 33 offsets with and without it).
+
+### Run 6 baseline (observed)
+
+Ticket 43h. One SMART-2 session (no wearer, sensors off) after a hard restart, with serial RX, the Source output, every band-pass call (`0x66ea81`: input, FIR output and amplitude of four samples, plus each object's edges), PeakFrequency and every Expression/Threshold/Counter stage hooked. Raw logs stay in `tmp/s43/baseline/`; `make-fixtures.py` builds the `smart2_*` fixtures from the last run in them.
+
+- **The 16-tap mean is exact.** `OutAmplitude` is the `float32` FIR of the last 16 sliding maxima with taps 0.125, each product rounded to `float32`. The kernel (`0x67a000`, thunk `0x66ffc0`) sums in a fixed order that depends on the output buffer's alignment (`dst % 16`). Aligned to 16: SIMD order for all four outputs: `(p0+p1)+(p2+p3)`, then for each further group of four `s+=p3; s+=p2; s+=(p0+p1)`. Aligned to 8: the first two outputs of the block sum sequentially from 0 (scalar head), the last two use the SIMD order. This explains the earlier "hidden state at block positions 0 and 1". The alignment follows the heap and is not logged, so each block's order is recovered from the logged amplitude (a block both orders explain is read as SIMD): every one of about 13.8k blocks times 8 bands is explained. The clone takes the order per block as input (`BandPass::set_scalar_head`).
+- **Input is the live Source output.** The run 6 fixtures start at the live Source output (`smart2_stage_inputs.tsv`, `float32` volts), and the Source chain is verified against its own live capture (run 5). Run 8 supplies the serial stream and the consumed samples on one clock (below).
+- **Everything downstream is exact** from that input: Band 10/80 amplitudes, Aggregators, PeakFrequency bins (except sample 1, the flat spectrum), every block's note after the first 15, the notes at all 229 counter fires and the trigger decisions (count and kind exact, times within the harness window).
+- **Counter timer: not exact in run 6.** The counter fires on wall-clock block times. A fire is one block early or late in some stretches (blocks 110 to 210, 1119 to 1163 of the first 1500) and a shifted fire reads a different note, so the full note-decision list is not asserted. Run 6 did not log the timer reads; run 8 did, and explains the shift (next section).
+
+### Run 8 whole-exercise capture (observed, with inferences marked)
+
+Ticket 43. One SMART-2 exercise (no wearer, sensors off, about four minutes past the 120000 ms switch, 30001 graph blocks) with serial RX, the consumed per-sample volts, every band-pass call's destination, the counter timer's clock reads, the Evaluator code and the Expression, Threshold, Counter and note stages hooked into one binary log. The Source settings were the 45 Hz interference low-pass, the 25 Hz band-stop, the 150 Hz low-pass and the 1.5 Hz high-pass. Raw logs stay in `tmp/s43/run7/` and `tmp/s43/run8/`; `make-fixtures.py --src8` builds the `run8_*` fixtures (consumed EEG as 24-bit counts, the per-block table, the baseline decisions, a span of logged E..H amplitudes) with the raw serial bytes left out.
+
+Observed:
+
+- **Received versus consumed.** The serial trace holds 149,122 frames and the app consumed 148,896 of them: 76 counter jumps drop whole frames. Matching each consumed ch0 volt forward into the received stream finds a counterpart for every consumed sample, so the consumed stream is a subsequence of the received frames. Earlier wording that decoded EEG cannot reproduce the app's input was a limit of the older logs, not of the app.
+- **Conversion.** The app converts each sample as `raw / DIV` in `f64` with `DIV = 12 * (2^23 - 1) * 10 / 2.4`, then rounds to `float32` when the graph takes it. This is exact for all 272,793 logged ch0 samples. Channel `c` reads payload slots `c` and `4 + c` (`b2-protocol.md`).
+- **Graph start.** The graph's first block takes the consumed sample at index 25600 and block `b` takes the four samples from `25600 + 4b`. Observed: the Source chain is warm there. Its logged output matches, 1600 of 1600 samples, a chain that ran the earlier stream with the interference filter off and has a zero-history 45 Hz low-pass switched in at consumed sample 25601, while the band-stop, 150 Hz low-pass and high-pass keep their state. Inferred: the exercise start calls `setInterferenceFilter` (`0x554fe0`), which builds a new interference filter. The clone does this with `SourceFilters::set_interference1`; the fixtures carry 4000 consumed samples before the graph start to warm the chain.
+- **Band-pass to object mapping.** The eight band-pass objects map to bands A..H by matching each object's logged amplitudes to the clone's (exact, 3200 of 3200 blocks per band); the 16-tap-mean sum order is taken from the logged destination alignment of each object's call (scalar head when `dst % 16 == 8`).
+- **Counter timer.** The counter tests `now - start >= 500` with `now` the GetLocalTime time of day in ms read at evaluation. On a fire the app takes a second read as the new start, which differs from the evaluation read by 1 to 6 ms in 17 of 415 fires. The clone models both reads as inputs (`BlockClock`) and that removes the one-block fire shifts of run 6.
+- **Evaluator code.** 111 for blocks 0 to 14998, 12 for the next 7500, 82 for the last 7502 (`ExprTriggerAll` branches above).
+
+Replay from the consumed EEG, Source warm from the 4000-sample pre-roll, with the logged codes, clocks and sum orders (`apps/braintellect-linux/tests/parity_smart2_exercise.rs`):
+
+- All 415 baseline fires are reproduced in count and kind; each lands within the harness window.
+- Notes at the fires: 414 of 415 are exact; only fire 89 differs (note 46 at 50209 ms against 45 at 50251 ms).
+- All eight band amplitudes (A..H) are bit exact in blocks 0 to 6408; the asserted span is E..H over blocks 0 to 2999. Across the whole exercise 93 blocks differ at the last `float32` bit, all in bands F and H (channel 4), in two bursts (blocks 6409 to 6477 and 12082 to 12175). Each burst starts at one band-stop output on channel 4 (consumed samples 51209 and 73886) that lies 1579 and 79 `f64` ulps from the `float32` rounding midpoint; rounding that one value the other way removes the burst. Inferred: the app's band-stop IIR orders its `f64` arithmetic differently from the clone's direct form I. A direct form II replay leaves 5 differing blocks (first 29509, again one band-stop rounding, on channel 0), transposed direct form II 31; no tried structure is exact.
+- The counter count after each block (logged) differs in 37 blocks when resynced per block. The first is block 6343 sample 3: the clone's smoothed value 6.4189105 µV (`0x40cd67b7`) is below its threshold 6.4203076 µV (`0x40cd7329`) and passes, and the app does not pass; that pass moves fire 89 one block early. The Threshold inputs there are bit exact and the margin is about 2930 `float32` ulps, so it is not a rounding flip. Excluded: seven smoother sum orders (all identical), smoother windows of 61 and 63, Threshold windows 2492 to 2508, quantile index `k ± 1`, a one-block threshold lag, and recomputing before the test.
+
+Not resolved:
+
+- The band-stop's exact `f64` structure (the two last-bit bursts).
+- Why the app does not pass at block 6343 sample 3 (the 37 count-differing blocks, fire 89).
+- Strict equality of the full Note decision stream: all but fire 89 match; the strict note test stays ignored (`note_decisions_match_the_baseline_exactly`).
 
 ## Export Completeness and Startup
 

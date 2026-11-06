@@ -1,9 +1,14 @@
-//! B-2 controller acquisition layer: Bluetooth RFCOMM transport, the 101/110/112
-//! handshake, start/stop, and decoding the inbound sample stream to volts.
+//! B-2 controller acquisition layer: the 101/110/112 handshake, start/stop, and
+//! decoding the inbound sample stream to microvolts, over any `Read + Write`
+//! byte stream. The Bluetooth RFCOMM socket is one such transport
+//! ([`rfcomm::RfcommStream`]); parity tests drive the same code from fixtures.
 //!
-//! Only the statically recovered, cross-verified arithmetic lives here so far:
-//! the 24-bit sample decode, the lead-off reading, and the ADC->volts
-//! conversion with its per-family constants. The transport, handshake, and
-//! packet framing are gated on the T2 baseline capture.
+//! Not implemented (the protocol doc marks them unresolved): the meaning of the
+//! 110 pairs 1-2 and the 112 payload, deriving the device family from the
+//! handshake, and power-off.
 
+pub mod command;
 pub mod decode;
+pub mod rfcomm;
+pub mod session;
+pub mod stream;
