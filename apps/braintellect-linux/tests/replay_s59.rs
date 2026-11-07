@@ -1,10 +1,11 @@
 //! Holds the clone's BAGSD report (Band 10, Band 80 and `FFT-Normal-Order` per channel) to the
 //! original's stored type-9 record of the ticket-59 capture (exercise 147), within the record
-//! epsilon.
+//! epsilon, and each logged `DSPFFT` block to the original's output bit for bit.
 //!
 //! The original, fed run 8's no-wearer stream by `emulate`, stored an exercise and ran its
 //! BAGSD design (`replay-rig.md`, ticket 59). `scripts/fft-extract.py` reduces its hook log to
-//! `volts.tsv` (the consumed volts, as `replay_s55`); `ed_9.xml` is the decoded type-9 record.
+//! `volts.tsv` (the consumed volts, as `replay_s55`) and `fft_in_<c>.txt` / `fft_out_<c>.txt`
+//! (each BAGSD `DSPFFT` call's input block and output, one line per call); `ed_9.xml` is the decoded type-9 record.
 //! Both are vendor-derived and stay under `tmp/`. Run with
 //! `cargo test --release --test replay_s59 -- --ignored --nocapture`; `S59_REPLAY_DIR`
 //! overrides the default directory (`tmp/s59/replay` at the repository root).
@@ -13,7 +14,7 @@ mod harness;
 
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::feedback::{
-    Interference1, Interference2, SourceDesign, SourceFilters, StoredSeries, CHANNELS,
+    DspFft, Interference1, Interference2, SourceDesign, SourceFilters, StoredSeries, CHANNELS,
     FFT_NORMAL_ORDER, RATE_HZ,
 };
 use braintellect_linux::storage::{Channel, Point, Series};
@@ -147,4 +148,34 @@ fn the_bagsd_report_matches_the_stored_record() {
         .fold(0.0, f64::max);
     println!("{SAMPLES} samples, largest |dy| {worst:e} uV");
     assertions::stored_series(&expected, &actual).expect("BAGSD report parity");
+}
+
+/// One line of logged `float32` values.
+fn floats(line: &str) -> Vec<f32> {
+    line.split_whitespace()
+        .map(|v| v.parse::<f64>().expect("number") as f32)
+        .collect()
+}
+
+#[test]
+#[ignore = "inputs live outside Git (tmp/s59/replay)"]
+fn every_logged_dspfft_block_is_bit_exact() {
+    let fft = DspFft::new();
+    for c in 0..CHANNELS {
+        let inputs = read(&format!("fft_in_{c}.txt"));
+        let outputs = read(&format!("fft_out_{c}.txt"));
+        assert_eq!(
+            inputs.lines().count(),
+            outputs.lines().count(),
+            "channel {c}"
+        );
+        for (call, (input, output)) in inputs.lines().zip(outputs.lines()).enumerate() {
+            let mut block = [0.0f32; 512];
+            let input = floats(input);
+            block[..input.len()].copy_from_slice(&input);
+            let got = fft.spectrum(&block).map(f32::to_bits);
+            let want: Vec<u32> = floats(output).iter().map(|v| v.to_bits()).collect();
+            assert_eq!(got[..], want[..], "channel {c} call {call}");
+        }
+    }
 }

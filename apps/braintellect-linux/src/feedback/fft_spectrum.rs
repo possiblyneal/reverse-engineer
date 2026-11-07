@@ -1,14 +1,13 @@
 //! The `FFT` element in `discrete` style feeding an absolute `VectorAggregator`
 //! (receive `0x6382d0`, `DSPFFT::process` `0x637940`; `bagsd-design.md`, "Discrete FFT"): the
 //! Source output as stored, gathered until the element's trigger count of 500 samples, zero
-//! padded to the 512-point transform, each under a `float32` Bartlett window, the IPP order-9
-//! real FFT, bins `0..256` as magnitudes scaled by `1/128` over the window's mean. A stop
-//! inside a block transforms the zero-padded partial one too. The aggregator's single stored
-//! vector is the mean of the block spectra.
+//! padded to the 512-point transform, then [`DspFft`]: the `float32` Bartlett window, the IPP
+//! order-9 real FFT, the IPP magnitude and the `1/128` over the window's mean. A stop inside a
+//! block transforms the zero-padded partial one too. The aggregator's single stored vector is
+//! the mean of the block spectra.
 
 use super::assess::stored_volts;
-use super::fft::SPECTRUM_GAIN;
-use super::ipp_fft::RealFft512;
+use super::dsp_fft::DspFft;
 
 /// The transform size.
 const BLOCK: usize = 512;
@@ -18,28 +17,9 @@ const BINS: usize = BLOCK / 2;
 /// Volts to microvolts, the stored vector's unit.
 const MICROVOLTS: f64 = 1e6;
 
-/// The `float32` Bartlett window as `DSPFFT` builds it: the rising half in four lanes, each
-/// lane starting at `i / 255.5` and adding `4 / 255.5` per step, mirrored for the falling half.
-fn bartlett() -> [f32; BLOCK] {
-    const LANES: usize = 4;
-    let slope = 1.0f32 / ((BLOCK - 1) as f32 / 2.0);
-    let mut rising = [0.0f32; BLOCK / 2];
-    for i in 0..rising.len() {
-        rising[i] = if i < LANES {
-            i as f32 * slope
-        } else {
-            rising[i - LANES] + LANES as f32 * slope
-        };
-    }
-    std::array::from_fn(|i| rising[i.min(BLOCK - 1 - i)])
-}
-
 /// One channel's block-mean spectrum.
 pub struct FftSpectrum {
-    fft: RealFft512,
-    window: [f32; BLOCK],
-    /// The window's mean, summed in `float32` as the original does.
-    mean: f64,
+    fft: DspFft,
     counts_per_volt: f64,
     block: Vec<f32>,
     sum: [f64; BINS],
@@ -48,13 +28,8 @@ pub struct FftSpectrum {
 
 impl FftSpectrum {
     pub fn new(counts_per_volt: f64) -> Self {
-        let window = bartlett();
-        // The original's mean: a sequential `float32` sum over the window, divided by its length.
-        let mean = window.iter().fold(0.0f32, |sum, &w| sum + w) / BLOCK as f32;
         Self {
-            fft: RealFft512::new(),
-            mean: f64::from(mean),
-            window,
+            fft: DspFft::new(),
             counts_per_volt,
             block: Vec::with_capacity(TRIGGER),
             sum: [0.0; BINS],
@@ -97,13 +72,10 @@ impl FftSpectrum {
     /// `f32(magnitude * (1/128) / mean)`.
     fn magnitudes(&self, block: &[f32]) -> [f64; BINS] {
         let mut x = [0.0f32; BLOCK];
-        for ((x, &s), &w) in x.iter_mut().zip(block).zip(&self.window) {
-            *x = s * w;
-        }
+        x[..block.len()].copy_from_slice(block);
         let mut out = [0.0; BINS];
-        for (out, (re, im)) in out.iter_mut().zip(self.fft.forward(&x)) {
-            let magnitude = f64::from((re * re + im * im).sqrt());
-            *out = f64::from((magnitude * SPECTRUM_GAIN / self.mean) as f32);
+        for (out, bin) in out.iter_mut().zip(self.fft.spectrum(&x)) {
+            *out = f64::from(bin);
         }
         out
     }
@@ -114,24 +86,6 @@ mod tests {
     use super::*;
 
     const COUNTS_PER_VOLT: f64 = 1e9;
-
-    #[test]
-    fn the_window_is_the_original_four_lane_float32_ramp() {
-        // Values the ticket-59 hook read from the original's window buffer (a no-wearer run).
-        let window = bartlett();
-        assert_eq!(window[1], 0.003_913_894_3_f32);
-        assert_eq!(window[65], 0.254_403_1_f32);
-        assert_eq!(window[134], 0.524_461_8_f32);
-        assert_eq!(window[255], window[256]);
-        assert_eq!(window[511], 0.0);
-        assert!(window.iter().zip(window.iter().rev()).all(|(a, b)| a == b));
-    }
-
-    #[test]
-    fn the_scale_divides_by_the_sequential_float32_window_mean() {
-        let mean = bartlett().iter().fold(0.0f32, |sum, &w| sum + w) / BLOCK as f32;
-        assert_eq!(f64::from(mean), 0.499_022_156_000_137_33);
-    }
 
     #[test]
     fn a_constant_input_is_about_four_times_its_level_in_bin_zero_only() {

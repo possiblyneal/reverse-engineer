@@ -38,7 +38,9 @@ clone has no selector for it and none is invented. Its outputs are the stored se
   or 0xc) transforms a partial buffer, zero padded, when its count is neither 0 nor `+0x73`.
 - `DSPFFT::process` `0x637940`: `float32` Bartlett window (`sensor-status.md`, "Window": four SSE
   lanes, mean 0.499022156 as the sequential `float32` sum / 512), the IPP order-9 real FFT
-  (`ipp_fft.rs`), `float32` magnitude of bins 0..255, then x87 `f32(mag * (1/128) / mean)`.
+  (`ipp_fft.rs`), the IPP magnitude (`rsqrtps` plus one Newton step, `ipp_magnitude.rs`) of bins
+  0..255, then x87 `f32(mag * (1/128) / mean)`. `feedback::DspFft` is this chain, bit exact per
+  block against the sensors-off capture (`sensor-status.md`, "Level bit exactness").
 - **Trigger count 500 (observed, #59 tag 30).** The element gathers 500 samples (`+0x73`), not
   512: every logged call has input samples 0..499 and zeros from 500 on. Exercise 147's 120020
   samples are 240 whole blocks plus a 20-sample partial, 241 calls per channel, the last one at
@@ -50,9 +52,9 @@ clone has no selector for it and none is invented. Its outputs are the stored se
 
 ## Clone and parity
 
-`feedback::FftSpectrum` implements the above over the stored Source output, and `StoredSeries`
-(`assess.rs`) stores its mean as each channel's `FFT-Normal-Order` series (`x` the bin index, `y`
-microvolts) next to the Band 10 and Band 80 series: the clone's BAGSD report.
+`feedback::FftSpectrum` implements the above over the stored Source output, through `DspFft`, and
+`StoredSeries` (`assess.rs`) stores its mean as each channel's `FFT-Normal-Order` series (`x` the
+bin index, `y` microvolts) next to the Band 10 and Band 80 series: the clone's BAGSD report.
 
 `tests/replay_s59.rs` (ignored; `S59_REPLAY_DIR`, default `tmp/s59/replay`) runs the #59 capture
 (exercise 147, `replay-rig.md`) through the Source chain and `StoredSeries` and holds every
@@ -65,9 +67,7 @@ the first logged `DSPFFT` input block against the clone's Source output, which i
 
 What closed the earlier 2 to 3 percent gap (#59's first pass on exercise 146): the 500-sample
 trigger (the old 512 block put the zero padding in the wrong place), the original's window and
-mean (the f64 ramp is 1 to 3 ulp off), and the x87 scale. What is still open: the clone's
-per-block output differs from the logged `DSPFFT` output by 1 to 3 `float32` ulp in some bins
-(about 2e-7 relative, as `sensor-status.md` found for the sensor FFT); the mean over 241 blocks
-averages it below the record epsilon, so the stored vector matches, but a single block is not bit
-exact. The FFT kernel itself is pinned bit for bit under Unicorn (`ipp_fft.rs`), so the residual
-is in how the app's kernel runs against the captured input, not in the clone's arithmetic order.
+mean (the f64 ramp is 1 to 3 ulp off), and the x87 scale. The last 1 to 3 `float32` ulp per
+block was the magnitude: with #57's IPP `rsqrtps` magnitude, `DspFft` equals all 964 logged
+`DSPFFT` outputs of exercise 147 (241 calls on each of 4 channels) bit for bit, asserted by
+`tests/replay_s59.rs` (`fft_in_<c>.txt` / `fft_out_<c>.txt` from `scripts/fft-extract.py`).

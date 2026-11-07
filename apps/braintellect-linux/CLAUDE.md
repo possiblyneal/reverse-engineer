@@ -188,8 +188,9 @@ those findings, it cites them.
   `session-storage.md`, "Stored FFT (#59)"). The ignored `tests/replay_s59.rs` holds the whole
   report (bands and spectrum) to exercise 147's record within `RECORD_EPSILON` (inputs
   `volts.tsv` from `scripts/fft-extract.py` and `ed_9.xml` in `tmp/s59/replay`,
-  `S59_REPLAY_DIR`; `bagsd-design.md`, "Clone and parity"). A single block still differs from
-  the logged `DSPFFT` output by 1 to 3 `float32` ulp in some bins. BAGSD is a post-session
+  `S59_REPLAY_DIR`; `bagsd-design.md`, "Clone and parity") and every logged `DSPFFT` block bit
+  for bit (`fft_in_<c>.txt`, `fft_out_<c>.txt`); the FFT stage is `feedback::DspFft`, shared
+  with sensor status. BAGSD is a post-session
   design, so the session window does not offer it.
 - **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
   `stateChangeDelay` debounce and the engine lifecycle, off while a session connects or runs
@@ -197,9 +198,11 @@ those findings, it cites them.
   (512-sample FFT blocks per channel, five band levels, then the evaluator). `live::monitor`
   runs it on an opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check
   sensors" button, `Command::CheckSensors`), needs no tone, and returns why it could not run or
-  broke off, which ends the check with that reason in the notice. Its levels are
-  replay-reported against the original, not asserted, and the evaluator fault flag is
-  replay-asserted exactly (`sensor-status.md`). Tests: `tests/parity_sensor_status.rs`
+  broke off, which ends the check with that reason in the notice. The FFT stage is
+  `feedback::DspFft` (`DSPFFT::process`: f32 Bartlett, `RealFft512`, the `rsqrtps` magnitude of
+  `ipp_magnitude.rs`, the x87 scale); the spectra, levels and evaluator fault flag are all
+  replay-asserted bit exact against the original's sensors-off capture (`sensor-status.md`).
+  The `rsqrtps` table is Intel's. Tests: `tests/parity_sensor_status.rs`
   (synthetic fault tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`),
   `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the
   in-memory stream).
