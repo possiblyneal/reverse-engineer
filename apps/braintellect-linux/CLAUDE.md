@@ -130,8 +130,12 @@ those findings, it cites them.
   `Smart2Design::smart2`, checked against the design fixture in `tests/parity_feedback.rs`.
   The stored series are one point per band-pass amplitude (microvolts) every 5 s of stream
   time under `Channel<n>` / the band label; which signals the original's 16 stored series
-  hold is unresolved. The UI shows signal level and stream health, never the original's
-  "Ready"/"Adjust Fit" verdict (`sensor-status.md`, "Unresolved"). `ui::state::UiModel` is the
+  hold is unresolved. The UI shows signal level and stream health, plus the sensor status
+  (`src/sensor.rs`: the Head2D evaluator's three fault tests, the `stateChangeDelay` debounce
+  and the engine lifecycle, off while a session connects or runs; `ui::state::Event::Sensor`
+  carries it). Nothing yet feeds the pre-session status: the FFT stage and the live level
+  feed are not built, and the replay-capture parity for levels is open (`sensor-status.md`,
+  "Unresolved"). Synthetic fault tests: `tests/parity_sensor_status.rs`. `ui::state::UiModel` is the
   pure model (actions and events in, `View` out) and is tested in `tests/ui_state.rs`;
   `ui::app` only draws it, and `ui::worker` is the device glue (RFCOMM with a 1 s read
   timeout, ALSA, the default store, bank 1002); neither is unit-tested. The window offers the

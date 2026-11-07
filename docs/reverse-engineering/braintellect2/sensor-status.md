@@ -161,6 +161,11 @@ it at `0x444a8a`.
 
 ## Unresolved
 
+- Capture of the original's Head2D inputs and overlay state for a no-wearer stream (the
+  levels, the FFT divisor and window values, the band scaler parameters, whether a
+  ground item sets an `errorThreshold`). Not done: the replay rig lock was held by
+  another ticket for the whole session. The clone's evaluator is checked only against
+  synthetic levels (`tests/parity_sensor_status.rs`).
 - Which of the five band objects (`+0x84`, `+0xe4`, `+0x144`, `+0x1a4`, `+0x204`) are the
   three levels the pair test compares, and their frequencies.
 - Where `deviceMinFloor` and `deviceOffHeadFloor` are consumed. They do not enter the

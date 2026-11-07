@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::live::{Health, Phase, SessionProperties, Snapshot};
+use crate::sensor::SensorStatus;
 
 /// The channel names of the montage `FP1FP2T3T4`, in the engine's channel order.
 const CHANNEL_LABELS: [&str; 4] = ["FP1", "FP2", "T3", "T4"];
@@ -20,6 +21,8 @@ pub enum Instrument {
 pub enum Event {
     /// The running session's state, including its final state.
     Update(Snapshot),
+    /// The sensor status the engine reports while no session runs.
+    Sensor(SensorStatus),
     /// The session could not start, and why.
     Failed(String),
     /// A stop ended the session before it streamed.
@@ -62,6 +65,8 @@ pub struct View {
     /// The latest outcome or problem; empty when there is none.
     pub notice: String,
     pub connection: String,
+    /// "Ready", "Adjust Fit" or "Not Available".
+    pub sensor: String,
     pub channels: Vec<ChannelView>,
     pub frames: String,
     pub feedback: String,
@@ -75,6 +80,7 @@ pub struct UiModel {
     pub properties: SessionProperties,
     stage: Stage,
     snapshot: Option<Snapshot>,
+    sensor: SensorStatus,
     notice: String,
 }
 
@@ -91,6 +97,7 @@ impl UiModel {
             properties: SessionProperties::default(),
             stage: Stage::Setup,
             snapshot: None,
+            sensor: SensorStatus::NotAvailable,
             notice,
         }
     }
@@ -137,6 +144,7 @@ impl UiModel {
                 }
                 self.snapshot = Some(snapshot);
             }
+            Event::Sensor(status) => self.sensor = status,
             Event::Failed(why) => self.fail(&why),
             Event::Cancelled => {
                 self.stage = Stage::Setup;
@@ -159,6 +167,7 @@ impl UiModel {
             needs_import: matches!(self.instrument, Instrument::Missing(_)),
             notice: self.notice.clone(),
             connection: self.connection(),
+            sensor: self.sensor_label().to_owned(),
             channels: CHANNEL_LABELS
                 .iter()
                 .enumerate()
@@ -187,6 +196,14 @@ impl UiModel {
                     clock(self.properties.duration_s)
                 )
             }),
+        }
+    }
+
+    /// The engine is off while a session connects or runs (`sensor-status.md`).
+    fn sensor_label(&self) -> &'static str {
+        match self.stage {
+            Stage::Setup | Stage::Done => self.sensor.label(),
+            Stage::Connecting | Stage::Running => SensorStatus::NotAvailable.label(),
         }
     }
 

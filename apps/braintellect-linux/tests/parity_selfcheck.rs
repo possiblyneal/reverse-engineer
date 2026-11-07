@@ -175,3 +175,24 @@ fn smart2_fixtures_are_well_formed() {
     assert!(decisions.iter().any(|d| d.kind == "Trigger"));
     assert!(decisions.iter().any(|d| d.kind == "Note"));
 }
+
+#[test]
+fn sensor_status_green_on_baseline_red_on_wrong() {
+    use braintellect_linux::sensor::SensorStatus::{AdjustFit, NotAvailable, Ready};
+    use harness::sensor;
+
+    let baseline = [Ready, Ready, AdjustFit, Ready, NotAvailable];
+    sensor::expect(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut wrong_state = baseline;
+    wrong_state[2] = Ready;
+    assert!(sensor::expect(&baseline, &wrong_state).is_err());
+    assert!(sensor::expect(&baseline, &baseline[1..]).is_err());
+
+    // The debounce: the fault is Adjust Fit only once stateChangeDelay has passed.
+    let faulty = sensor::faulty_outlier();
+    let early = sensor::run(true, &[(0, faulty.clone()), (999, faulty.clone())]);
+    assert!(sensor::expect(&early, &[Ready, AdjustFit]).is_err());
+    let late = sensor::run(true, &[(0, faulty.clone()), (1000, faulty)]);
+    sensor::expect(&late, &[Ready, AdjustFit]).expect("delay reached");
+}
