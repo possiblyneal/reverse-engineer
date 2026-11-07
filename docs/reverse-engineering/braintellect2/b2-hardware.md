@@ -123,9 +123,8 @@ D1 = 2.4 V and D2 = 2^23 - 1.
   coding, not measured).
 - Connector: J59's pin pitch scales to about 2 mm against J58's 2.54 mm header, so JST PH 2.0
   (inferred from pitch; not measured).
-- **Polarity at J59: unconfirmed.** Lead colours are observed; the plug keying against J59 and
-  the pad polarity are not. Meter or a photo of the seated plug needed before powering from a
-  bench cell.
+- Polarity at J59 (observed, Operator report 2026-11-07): the pin nearer the WT12 module (Z50)
+  is negative, the other pin positive.
 - Battery field check: no field of the 110/112/131 replies reads as a battery voltage. A
   `VBATA/2` divider reads about 1.5-2.1 V for a 3.0-4.2 V cell: on a 12-bit ADC at 3.3 V that is
   1861-2606 counts, on the PIC's 10-bit ADC 465-653. The only unexplained payload is 112's
@@ -153,7 +152,7 @@ D1 = 2.4 V and D2 = 2^23 - 1.
 ## Safety
 
 - The cell is Li-ion polymer: do not short, puncture, reverse or charge it outside a charger
-  designed for one cell; a reversed J59 plug can destroy U60, Q50 or U61 (polarity unconfirmed).
+  designed for one cell; a reversed J59 plug can destroy U60, Q50 or U61 (negative is the pin nearer Z50).
 - The B-2 is an electrode-connected device. When any header (SWD, J52, ADS SPI pads) is wired to
   a PC, treat the board as non-isolated: do not connect a wearer's electrodes while a PC ground
   or a USB cable is attached to the board.
@@ -163,7 +162,6 @@ D1 = 2.4 V and D2 = 2^23 - 1.
 ## Unresolved
 
 - U60's pin use and role; J56 and J61 pinout; J52's function; the states of the solder jumpers.
-- J59 polarity.
 - The SMD codes `N20`, `B55Q`, `KE87`, `PKKP` (no exact marking-code match).
 - Whether `sensorGain` 10 is an analog stage on this board, and the AVDD voltage.
 - Which `CONFIG1`/`CONFIG3`/`CHnSET` values U57 programs (needs an SPI capture on the ADS pads).
