@@ -18,7 +18,7 @@ mod harness;
 use std::fs;
 use std::path::PathBuf;
 
-use braintellect_linux::feedback::BLOCK_LEN;
+use braintellect_linux::feedback::{Mode, BLOCK_LEN};
 use harness::fixtures::Run8Block;
 use harness::run8::{deviation, replay_from, Replay};
 
@@ -255,7 +255,14 @@ fn replay_at(
         .chunks_exact(2)
         .map(|pair| std::array::from_fn(|k| pair[k / 4][k % 4]))
         .collect();
-    replay_from(&frames, eeg_base, graph_start, interference_switch, blocks)
+    replay_from(
+        &frames,
+        eeg_base,
+        graph_start,
+        interference_switch,
+        blocks,
+        Mode::Original,
+    )
 }
 
 #[test]

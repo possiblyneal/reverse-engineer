@@ -32,7 +32,7 @@ use crate::audio::bank::Bank;
 use crate::audio::player::Player;
 use crate::audio::sink::{AlsaSink, SinkError};
 use crate::feedback::{
-    Interference1, Interference2, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
+    Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
     BLOCK_LEN, CHANNELS, RATE_HZ, TRIGGER_EPOCH_MS,
 };
 use crate::storage::{Channel, Header, Point, Series, SessionRecord, Store};
@@ -288,10 +288,9 @@ impl<'a> Engine<'a> {
             .map(|_| SourceFilters::new(&design.source, RATE_HZ))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        let mut graph = Smart2Graph::new(design.clone(), start_ms - TRIGGER_EPOCH_MS)
+        let graph = Smart2Graph::new(design.clone(), start_ms - TRIGGER_EPOCH_MS, Mode::Fixed)
             .map_err(|e| e.to_string())?;
         let bands = design.band_passes.len();
-        graph.set_scalar_heads(&vec![true; bands]);
         Ok(Self {
             design,
             source,
