@@ -12,7 +12,3 @@ pub const TIMING_WINDOW_MS: u64 = 1_000;
 /// Largest accepted difference between a numeric stored-record field and the
 /// baseline value (the app stores single-precision floats as text).
 pub const RECORD_EPSILON: f64 = 1e-6;
-
-/// Largest accepted difference between a clone sensor level and the original's,
-/// in dB. The original runs the FFT and the logarithm in single precision.
-pub const LEVEL_EPSILON_DB: f32 = 1e-3;

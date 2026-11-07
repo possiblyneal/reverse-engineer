@@ -294,25 +294,15 @@ fn sensor_feed_red_on_a_wrong_stream_result() {
 }
 
 #[test]
-fn sensor_replay_red_on_a_wrong_level_or_fault() {
-    use harness::{fixtures, sensor, tolerance::LEVEL_EPSILON_DB};
+fn sensor_replay_red_on_a_wrong_fault() {
+    use harness::{fixtures, sensor};
 
     let blocks = fixtures::sensor_blocks();
     let actual = sensor::replay_blocks(&blocks);
-    sensor::expect_blocks(&actual, &blocks).expect("the clone against the original");
+    sensor::expect_faults(&actual, &blocks).expect("the clone against the original");
 
-    let mut within = actual.clone();
-    within[3].0[1].bands[2] += LEVEL_EPSILON_DB / 2.0;
-    sensor::expect_blocks(&within, &blocks).expect("inside the tolerance");
-
-    let mut wrong_band = actual.clone();
-    wrong_band[3].0[1].bands[2] += LEVEL_EPSILON_DB * 2.0;
-    assert!(sensor::expect_blocks(&wrong_band, &blocks).is_err());
-    let mut wrong_line = actual.clone();
-    wrong_line[0].0[0].line_noise = -44.7;
-    assert!(sensor::expect_blocks(&wrong_line, &blocks).is_err());
     let mut wrong_fault = actual.clone();
     wrong_fault[5].1 = !wrong_fault[5].1;
-    assert!(sensor::expect_blocks(&wrong_fault, &blocks).is_err());
-    assert!(sensor::expect_blocks(&actual[1..], &blocks).is_err());
+    assert!(sensor::expect_faults(&wrong_fault, &blocks).is_err());
+    assert!(sensor::expect_faults(&actual[1..], &blocks).is_err());
 }

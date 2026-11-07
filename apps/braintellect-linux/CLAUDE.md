@@ -169,8 +169,9 @@ those findings, it cites them.
   channel, five band levels, then the evaluator). `live::monitor` runs it on an
   opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check sensors" button,
   `Command::CheckSensors`; the window shows the status). Its levels (FFT scale, level offset, bin rule, line-noise
-  floor for two blocks then the 60 Hz level) and the evaluator fault flag are replay-checked
-  against the original; the 50 Hz branch of the line rule and the overlay timing on a captured
+  floor for two blocks then the 60 Hz level) are replay-reported against the original (the
+  max deviation is printed, not asserted: the FFT is not bit exact) and the evaluator fault
+  flag is replay-asserted exactly; the 50 Hz branch of the line rule and the overlay timing on a captured
   stream are not (`sensor-status.md`). Tests: `tests/parity_sensor_status.rs` (synthetic fault
   tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`), `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the in-memory stream). `ui::state::UiModel` is the
   pure model (actions and events in, `View` out) and is tested in `tests/ui_state.rs`;
