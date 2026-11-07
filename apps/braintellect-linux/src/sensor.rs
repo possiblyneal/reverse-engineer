@@ -5,7 +5,8 @@
 //! The caller supplies each channel's levels ([`ChannelLevels`], from [`level_db`] on
 //! the channel's FFT spectrum); [`SensorStatusEngine`] applies the three fault tests
 //! with the `stateChangeDelay` debounce and the engine lifecycle (off while a session
-//! plays). Not implemented: the FFT stage and the 50/60 Hz line-noise frequency test.
+//! plays). [`SensorMonitor`] adds the FFT stage and level computation in front of it;
+//! its FFT scale and 50/60 Hz choice are unverified.
 
 /// `lineNoiseDifference` of the BT-LOD `Sensors` element, in dB.
 pub const LINE_NOISE_DIFFERENCE: f32 = 15.5;
@@ -86,6 +87,148 @@ pub fn level_db(bin: f32, previous: f32) -> f32 {
         previous
     } else {
         20.0 * bin.log10()
+    }
+}
+
+/// Samples per FFT block: `fftOrder` 9, discrete (non-overlapping) blocks.
+pub const BLOCK_SAMPLES: usize = 512;
+/// The Source rate the design runs at.
+const RATE_HZ: f32 = 500.0;
+/// Spectrum values per block.
+const BINS: usize = BLOCK_SAMPLES / 2;
+/// Mains frequencies the line-noise test chooses between (`0x1897ab8`, `0x1880338`).
+const MAINS_HZ: [f32; 2] = [50.0, 60.0];
+/// The band frequencies whose levels the pair test compares (`0x1897aa8`,
+/// `0x1897aa0`, `0x1897ab0`). The evaluator vector holds them as 70, 40, 12 Hz
+/// (`0x568db5`); the order does not matter to the count.
+const PAIR_BAND_HZ: [f32; 3] = [12.0, 40.0, 70.0];
+/// Channels of the design.
+const CHANNELS: usize = 4;
+
+/// The spectrum of one channel's block, as the FFT element emits it: Bartlett
+/// window, real FFT, magnitude of bins 0..N/2.
+///
+/// Unverified against the original: `DSPFFT::process` (`0x637940`) scales each
+/// magnitude by `+0x54 / +0x50`, whose values are not recovered; this uses 1.
+fn spectrum(block: &[f64]) -> Vec<f32> {
+    let n = block.len();
+    let mut re: Vec<f64> = block
+        .iter()
+        .enumerate()
+        .map(|(i, &x)| x * (1.0 - (2.0 * i as f64 / (n - 1) as f64 - 1.0).abs()))
+        .collect();
+    let mut im = vec![0.0; n];
+    fft(&mut re, &mut im);
+    (0..n / 2).map(|k| re[k].hypot(im[k]) as f32).collect()
+}
+
+/// In-place radix-2 FFT; `re.len()` is a power of two.
+fn fft(re: &mut [f64], im: &mut [f64]) {
+    let n = re.len();
+    let mut j = 0;
+    for i in 1..n {
+        let mut bit = n >> 1;
+        while j & bit != 0 {
+            j ^= bit;
+            bit >>= 1;
+        }
+        j |= bit;
+        if i < j {
+            re.swap(i, j);
+            im.swap(i, j);
+        }
+    }
+    let mut len = 2;
+    while len <= n {
+        let angle = -2.0 * std::f64::consts::PI / len as f64;
+        for start in (0..n).step_by(len) {
+            for k in 0..len / 2 {
+                let (s, c) = (angle * k as f64).sin_cos();
+                let (a, b) = (start + k, start + k + len / 2);
+                let (tr, ti) = (re[b] * c - im[b] * s, re[b] * s + im[b] * c);
+                re[b] = re[a] - tr;
+                im[b] = im[a] - ti;
+                re[a] += tr;
+                im[a] += ti;
+            }
+        }
+        len <<= 1;
+    }
+}
+
+/// One channel's Head2D level state: the last level of each of the 50, 60, 12,
+/// 40 and 70 Hz bins, kept when a bin reads exactly 0.0.
+#[derive(Debug, Clone, Default)]
+struct BandLevels {
+    mains: [f32; 2],
+    pair: [f32; 3],
+}
+
+impl BandLevels {
+    fn update(&mut self, spectrum: &[f32]) {
+        let level = |hz: f32, previous: f32| {
+            level_db(
+                spectrum[bin_index(hz, RATE_HZ, BINS).min(BINS - 1)],
+                previous,
+            )
+        };
+        for (l, hz) in self.mains.iter_mut().zip(MAINS_HZ) {
+            *l = level(hz, *l);
+        }
+        for (l, hz) in self.pair.iter_mut().zip(PAIR_BAND_HZ) {
+            *l = level(hz, *l);
+        }
+    }
+}
+
+/// The FFT stage and level computation in front of [`SensorStatusEngine`]: Source
+/// output in volts, one sample per channel at a time.
+///
+/// Unverified against the original (open in `sensor-status.md`): the FFT scaling,
+/// the band scalers (taken as identity), and the line-noise frequency rule, which
+/// here picks the mains frequency with the higher mean level over the channels.
+#[derive(Debug, Clone)]
+pub struct SensorMonitor {
+    engine: SensorStatusEngine,
+    block: [Vec<f64>; CHANNELS],
+    levels: [BandLevels; CHANNELS],
+}
+
+impl SensorMonitor {
+    #[must_use]
+    pub fn new(design: SensorDesign) -> Self {
+        Self {
+            engine: SensorStatusEngine::new(design),
+            block: std::array::from_fn(|_| Vec::with_capacity(BLOCK_SAMPLES)),
+            levels: std::array::from_fn(|_| BandLevels::default()),
+        }
+    }
+
+    /// See [`SensorStatusEngine::set_engine_running`].
+    pub fn set_engine_running(&mut self, running: bool) {
+        self.engine.set_engine_running(running);
+    }
+
+    /// One Source sample per channel, read at `now_ms`. After the 512th sample of
+    /// a block the display updates and the status is returned.
+    pub fn push(&mut self, now_ms: i64, volts: &[f64; CHANNELS]) -> Option<SensorStatus> {
+        for (block, &v) in self.block.iter_mut().zip(volts) {
+            block.push(v);
+        }
+        if self.block[0].len() < BLOCK_SAMPLES {
+            return None;
+        }
+        for (block, levels) in self.block.iter_mut().zip(&mut self.levels) {
+            levels.update(&spectrum(block));
+            block.clear();
+        }
+        let mean = |i: usize| self.levels.iter().map(|l| l.mains[i]).sum::<f32>() / CHANNELS as f32;
+        let line = usize::from(mean(1) >= mean(0));
+        let channels: [ChannelLevels; CHANNELS] = std::array::from_fn(|c| ChannelLevels {
+            line_noise: self.levels[c].mains[line],
+            bands: self.levels[c].pair.to_vec(),
+        });
+        Some(self.engine.update(now_ms, &channels))
     }
 }
 

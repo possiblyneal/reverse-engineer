@@ -196,3 +196,17 @@ fn sensor_status_green_on_baseline_red_on_wrong() {
     let late = sensor::run(true, &[(0, faulty.clone()), (1000, faulty)]);
     sensor::expect(&late, &[Ready, AdjustFit]).expect("delay reached");
 }
+
+#[test]
+fn sensor_feed_red_on_a_wrong_stream_result() {
+    use braintellect_linux::sensor::SensorStatus::{AdjustFit, Ready};
+    use harness::sensor;
+
+    let healthy = sensor::run_feed(&sensor::stream(2, sensor::tones_healthy));
+    sensor::expect(&healthy, &[Ready, Ready]).expect("healthy feed");
+    let outlier = sensor::run_feed(&sensor::stream(2, sensor::tones_outlier));
+    assert!(sensor::expect(&outlier, &[Ready, Ready]).is_err());
+    assert!(sensor::expect(&healthy, &[Ready, AdjustFit]).is_err());
+    let short = sensor::run_feed(&sensor::stream(1, sensor::tones_healthy));
+    assert!(sensor::expect(&short, &[Ready, Ready]).is_err());
+}

@@ -159,6 +159,14 @@ it at `0x444a8a`.
 - `Engine::State` values `3` and `4` are read as paused/stopped and running from their
   callers. The enum names were not recovered.
 
+## Observed: band objects and floors (static, `0x560f40`, `0x562400`, `0x568db5`)
+
+- Each channel has five band levels, `20 * log10(bin)` of the spectrum bin nearest the frequency (a bin of exactly 0.0 keeps the previous level): 50 Hz and 60 Hz (mains), and 12, 40 and 70 Hz.
+- The line-noise level `m` is the mains level. The pair test compares the vector [70, 40, 12] Hz of each channel with its partner (order does not affect the count).
+- Head2D `+0x94` is `max(mean 50 Hz level, mean 60 Hz level)` over the channels (`0x562400`); the dispatcher compares it with the ground item's thresholds.
+- `deviceMinFloor` and `deviceOffHeadFloor` are stored at Head2D `+0x44` / `+0x48` (moderate confidence) and logged. They are read only at `0x569e61`, on the path for a data source other than "Line noise" (red when a level is below `+0x48`). They are unused for BT-LOD "Line noise".
+- The clone feeds this through `SensorMonitor` (`src/sensor.rs`): 512-sample blocks per channel, Bartlett-windowed FFT, these five levels, then the evaluator.
+
 ## Unresolved
 
 - Capture of the original's Head2D inputs and overlay state for a no-wearer stream (the
@@ -166,9 +174,5 @@ it at `0x444a8a`.
   ground item sets an `errorThreshold`). Not done: the replay rig lock was held by
   another ticket for the whole session. The clone's evaluator is checked only against
   synthetic levels (`tests/parity_sensor_status.rs`).
-- Which of the five band objects (`+0x84`, `+0xe4`, `+0x144`, `+0x1a4`, `+0x204`) are the
-  three levels the pair test compares, and their frequencies.
-- Where `deviceMinFloor` and `deviceOffHeadFloor` are consumed. They do not enter the
-  "Image overlay" evaluator. One floor reaches Head2D `+0x94`, which is compared with
-  the ground item's thresholds at `0x569d62`.
+- The FFT scale (`DSPFFT::process` `0x637940`: `out[k] = mag[k] * scale * [+0x54] / [+0x50]`), the window values, the band scalers, and the rule that picks the 50 or 60 Hz line-noise level. The clone uses scale 1, the Bartlett window, identity scalers and the larger channel-mean of 50/60 Hz (`SensorMonitor`).
 - The source string compared with `"placebo"` in `launchExercise` (`0x4e4410`).

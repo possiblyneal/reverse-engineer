@@ -133,9 +133,11 @@ those findings, it cites them.
   hold is unresolved. The UI shows signal level and stream health, plus the sensor status
   (`src/sensor.rs`: the Head2D evaluator's three fault tests, the `stateChangeDelay` debounce
   and the engine lifecycle, off while a session connects or runs; `ui::state::Event::Sensor`
-  carries it). Nothing yet feeds the pre-session status: the FFT stage and the live level
-  feed are not built, and the replay-capture parity for levels is open (`sensor-status.md`,
-  "Unresolved"). Synthetic fault tests: `tests/parity_sensor_status.rs`. `ui::state::UiModel` is the
+  carries it). `sensor::SensorMonitor` is the pre-session feed (512-sample FFT blocks per
+  channel, five band levels, then the evaluator). It is tested on synthetic Source streams
+  but not wired to a live pre-session stream or the window; its FFT scale and line-noise
+  frequency rule are unverified because the replay-capture parity for levels is open
+  (`sensor-status.md`, "Unresolved"). Synthetic fault tests: `tests/parity_sensor_status.rs`. `ui::state::UiModel` is the
   pure model (actions and events in, `View` out) and is tested in `tests/ui_state.rs`;
   `ui::app` only draws it, and `ui::worker` is the device glue (RFCOMM with a 1 s read
   timeout, ALSA, the default store, bank 1002); neither is unit-tested. The window offers the
