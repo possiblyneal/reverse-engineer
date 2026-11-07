@@ -21,8 +21,12 @@ const KEY_BITS: u32 = 11;
 const RESULT_EXPONENT: i32 = 126;
 const EXPONENT_BIAS: i32 = 127;
 
-/// `rsqrtps` of a positive normal number.
+/// `rsqrtps` of a positive number: a subnormal reads as zero, so its estimate is infinite
+/// (observed on the table's i3-10100T).
 fn rsqrt_estimate(x: f32) -> f32 {
+    if x < f32::MIN_POSITIVE {
+        return f32::INFINITY;
+    }
     let bits = x.to_bits();
     let exponent = (bits >> MANTISSA_BITS) as i32 - EXPONENT_BIAS;
     let parity = exponent.rem_euclid(2);
@@ -65,6 +69,12 @@ mod tests {
     fn the_estimate_at_one_is_the_hardware_value() {
         // Intel `rsqrtps` of 1.0 is 0.99975586 (1 - 2^-12), not 1.0.
         assert_eq!(rsqrt_estimate(1.0).to_bits(), 0x3f7f_f000);
+    }
+
+    #[test]
+    fn a_subnormal_power_is_the_hardware_negative_infinity() {
+        // The i3-10100T's `rsqrtps` of a subnormal is inf, so the Newton step gives -inf.
+        assert_eq!(magnitude((1e-20, 0.0)), f32::NEG_INFINITY);
     }
 
     #[test]

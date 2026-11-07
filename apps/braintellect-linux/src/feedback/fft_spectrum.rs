@@ -7,13 +7,10 @@
 //! the mean of the block spectra.
 
 use super::assess::stored_volts;
-use super::dsp_fft::DspFft;
+use super::dsp_fft::{DspFft, BINS, BLOCK};
 
-/// The transform size.
-const BLOCK: usize = 512;
 /// Samples gathered per transform (the `FFT` element's trigger count); the rest is zero.
 const TRIGGER: usize = 500;
-const BINS: usize = BLOCK / 2;
 /// Volts to microvolts, the stored vector's unit.
 const MICROVOLTS: f64 = 1e6;
 
@@ -42,10 +39,7 @@ impl FftSpectrum {
         self.block
             .push(stored_volts(volts, self.counts_per_volt) as f32);
         if self.block.len() == TRIGGER {
-            let magnitudes = self.magnitudes(&self.block);
-            for (sum, magnitude) in self.sum.iter_mut().zip(magnitudes) {
-                *sum += magnitude;
-            }
+            add_block(&self.fft, &mut self.sum, &self.block);
             self.blocks += 1;
             self.block.clear();
         }
@@ -57,9 +51,7 @@ impl FftSpectrum {
         let mut sum = self.sum;
         let mut blocks = self.blocks;
         if !self.block.is_empty() {
-            for (sum, magnitude) in sum.iter_mut().zip(self.magnitudes(&self.block)) {
-                *sum += magnitude;
-            }
+            add_block(&self.fft, &mut sum, &self.block);
             blocks += 1;
         }
         if blocks == 0 {
@@ -67,17 +59,14 @@ impl FftSpectrum {
         }
         sum.iter().map(|s| s / blocks as f64 * MICROVOLTS).collect()
     }
+}
 
-    /// One block's `DSPFFT` output: the window, the FFT, `float32` magnitudes, then the x87
-    /// `f32(magnitude * (1/128) / mean)`.
-    fn magnitudes(&self, block: &[f32]) -> [f64; BINS] {
-        let mut x = [0.0f32; BLOCK];
-        x[..block.len()].copy_from_slice(block);
-        let mut out = [0.0; BINS];
-        for (out, bin) in out.iter_mut().zip(self.fft.spectrum(&x)) {
-            *out = f64::from(bin);
-        }
-        out
+/// Adds one block's `DSPFFT` output, the block zero padded to `BLOCK`, to `sum`.
+fn add_block(fft: &DspFft, sum: &mut [f64; BINS], block: &[f32]) {
+    let mut x = [0.0f32; BLOCK];
+    x[..block.len()].copy_from_slice(block);
+    for (sum, bin) in sum.iter_mut().zip(fft.process(&x)) {
+        *sum += f64::from(bin);
     }
 }
 

@@ -36,8 +36,11 @@ struct Outcome {
     captured: Vec<u8>,
 }
 
+/// A fresh store per test and per process, so a concurrent run of this suite cannot
+/// delete this one's rollback journal (SQLite `IOERR_DELETE_NOENT`).
 fn scratch_store(name: &str) -> Store {
-    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("live-{name}.db"));
+    let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
+        .join(format!("live-{name}-{}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
     Store::open(&path).expect("scratch store")
 }

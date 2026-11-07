@@ -190,7 +190,7 @@ pub fn replay_spectra(blocks: &[SensorBlock]) -> Vec<[Vec<f32>; 4]> {
             std::array::from_fn(|c| {
                 let input: &[f32; BLOCK_SAMPLES] =
                     block.samples[c].as_slice().try_into().expect("512 samples");
-                fft.spectrum(input).to_vec()
+                fft.process(input).to_vec()
             })
         })
         .collect()

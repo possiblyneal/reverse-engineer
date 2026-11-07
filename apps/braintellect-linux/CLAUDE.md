@@ -110,7 +110,8 @@ those findings, it cites them.
   exercise 146 (`circle_balance_lmh.tsv` and `circle_balance_chart.tsv`, `make-fixtures.py
   --src62/--lmh62`, the asserting test in `tests/parity_circle_balance.rs`; the chart fixture is in
   the original's call order, see `fixtures::circle_balance_report_in_call_order`). The ignored
-  `tests/replay_s62.rs` holds it to the raw hook log under `tmp/s62/` (`S62_CAPTURE`, `S62_LMH`).
+  `tests/replay_s62.rs` holds it to the raw hook log under `tmp/s62/` (`S62_CAPTURE`, and `S62_LMH`, the
+  `scripts/lmh-extract.py` output of the exercise's type-9 XML).
   The clone stores no LMH series of its own and the live B-2 selection is not exercised.
   Evidence: `audio-feedback.md`, "Circle-Balance design".
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite

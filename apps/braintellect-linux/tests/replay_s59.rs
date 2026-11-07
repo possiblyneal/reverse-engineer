@@ -173,7 +173,7 @@ fn every_logged_dspfft_block_is_bit_exact() {
             let mut block = [0.0f32; 512];
             let input = floats(input);
             block[..input.len()].copy_from_slice(&input);
-            let got = fft.spectrum(&block).map(f32::to_bits);
+            let got = fft.process(&block).map(f32::to_bits);
             let want: Vec<u32> = floats(output).iter().map(|v| v.to_bits()).collect();
             assert_eq!(got[..], want[..], "channel {c} call {call}");
         }

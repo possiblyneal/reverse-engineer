@@ -36,7 +36,7 @@ mod trigger_all;
 pub use assess::{StoredSeries, FFT_NORMAL_ORDER};
 pub use band_pass::{BandPass, BandPassDesign};
 pub use counter::{BlockClock, Counter, CounterClock, TRIGGER_EPOCH_MS};
-pub use dsp_fft::DspFft;
+pub use dsp_fft::{DspFft, BLOCK as FFT_BLOCK};
 pub use evaluator::{balances, Evaluator, BALANCES, COHERENCES, DEFAULT_CODE};
 pub use fft_spectrum::FftSpectrum;
 pub use graph::{

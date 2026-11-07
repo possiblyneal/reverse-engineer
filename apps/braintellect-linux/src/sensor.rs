@@ -101,7 +101,7 @@ pub fn level_db(bin: f32, previous: f32) -> f32 {
 }
 
 /// Samples per FFT block: `fftOrder` 9, discrete (non-overlapping) blocks.
-pub const BLOCK_SAMPLES: usize = 512;
+pub const BLOCK_SAMPLES: usize = crate::feedback::FFT_BLOCK;
 /// The Source rate the design runs at.
 const RATE_HZ: f32 = 500.0;
 /// Spectrum values per block.
@@ -225,7 +225,7 @@ impl SensorMonitor {
         }
         for (block, levels) in self.block.iter_mut().zip(&mut self.levels) {
             let block_samples = block.as_slice().try_into().expect("a full block");
-            levels.update(&self.fft.spectrum(block_samples));
+            levels.update(&self.fft.process(block_samples));
             block.clear();
         }
         self.current = std::array::from_fn(|c| ChannelLevels {

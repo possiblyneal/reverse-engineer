@@ -25,6 +25,10 @@ fn chart_inputs(capture: &[u8]) -> Vec<f32> {
     let mut i = 0;
     while i < words.len() {
         let (tag, len) = (words[i] as u32, words[i + 1] as usize);
+        assert!(
+            len >= 2 && i + len <= words.len(),
+            "record at word {i} has length {len}: a truncated or corrupt log"
+        );
         if tag == 31 {
             assert_eq!(
                 (words[i + 4], words[i + 5]),

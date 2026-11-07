@@ -6,9 +6,10 @@
 use super::ipp_fft::RealFft512;
 use super::ipp_magnitude::magnitude;
 
-const BLOCK: usize = 512;
+/// Samples per transform: `fftOrder` 9.
+pub const BLOCK: usize = 512;
 /// Bins the FFT element emits: `0..BLOCK / 2`.
-const BINS: usize = BLOCK / 2;
+pub const BINS: usize = BLOCK / 2;
 /// SSE lanes of the IPP Bartlett kernel (`0x6b53f0`).
 const LANES: usize = 4;
 /// `+0x54`: 1/128 for the 512-point FFT, times the `fftScalingFactor` of 1.0.
@@ -34,14 +35,9 @@ impl DspFft {
         }
     }
 
-    /// The window the FFT multiplies a block by.
-    pub fn window(&self) -> &[f32; BLOCK] {
-        &self.window
-    }
-
     /// Bins `0..BINS` of the windowed block: each magnitude times `GAIN`, over the
     /// window's mean, in the x87's 53-bit precision and rounded once to `float32`.
-    pub fn spectrum(&self, block: &[f32; BLOCK]) -> [f32; BINS] {
+    pub fn process(&self, block: &[f32; BLOCK]) -> [f32; BINS] {
         let windowed: [f32; BLOCK] = std::array::from_fn(|i| block[i] * self.window[i]);
         let bins = self.fft.forward(&windowed);
         std::array::from_fn(|k| {
@@ -81,7 +77,7 @@ mod tests {
 
     #[test]
     fn the_window_rises_to_one_and_mirrors() {
-        let window = *DspFft::new().window();
+        let window = DspFft::new().window;
         assert_eq!(window[0], 0.0);
         assert!(window[BLOCK / 2 - 1] > 0.99);
         assert!((0..BLOCK).all(|i| window[i] == window[BLOCK - 1 - i]));
@@ -105,7 +101,7 @@ mod tests {
 
     #[test]
     fn a_constant_block_is_four_times_its_level_in_bin_zero() {
-        let spectrum = DspFft::new().spectrum(&[1e-5; BLOCK]);
+        let spectrum = DspFft::new().process(&[1e-5; BLOCK]);
         assert!((spectrum[0] - 4e-5).abs() < 1e-8, "{}", spectrum[0]);
         assert!(spectrum[64..].iter().all(|&v| v < 1e-7));
     }

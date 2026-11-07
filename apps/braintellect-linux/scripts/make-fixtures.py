@@ -472,6 +472,8 @@ def circle_balance_chart(path):
     out, pending, i = [], None, 0
     while i < len(words):
         tag, length = int(words[i]), int(words[i + 1])
+        if length < 2 or i + length > len(words):
+            raise SystemExit(f"{path}: record at word {i} has length {length}: a truncated or corrupt log")
         rec = words[i + 2:i + length]
         i += length
         if tag == 31:
