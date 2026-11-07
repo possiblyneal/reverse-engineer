@@ -205,6 +205,21 @@ channels 1 to 3 at the same site as tag 12's channel 0), host at 3.8 GHz.
   counter error.
 - The log (`s55.bin`, 80 MB) stays in the main checkout's `tmp/s55/`.
 
+## Result: the stored session against the consumed volts (#56, 2026-11-07)
+
+Run 8's rx stream replayed with a hook file (`hook13.js` plus the aggregator emit 0x649580 and the
+series push 0x6497b0/0x649820/0x649840) at 3.8 GHz, then gear, OK and Play through the #53
+clicker and a 310 s wait so the exercise stored (exercise 146). The clicker waited on the title
+`BRAINtellect 2  Version*` (two spaces); a one-space pattern costs three minutes of timeout.
+
+- Logged: 262,516 consumed samples per channel from the stream start (tag 12 and 13, none
+  dropped), and 49 emits for each of 64 aggregators. The push and reset hooks never fired.
+- The stored Band-10 and Band-80 series match the offline model to 3.5e-4..7.9e-4 relative, with a
+  per-channel gain residual; see `session-storage.md` for the fit and the open questions.
+- The datadir was copied off the stopped guest's NTFS disk after `ntfsfix -d`; a throwaway
+  `mysql:5.7` container read it. The log (`s56.bin`, 350 MB) stays in the main checkout's
+  `tmp/s56/`.
+
 ## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
 
 The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00
