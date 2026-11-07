@@ -180,11 +180,13 @@ Fit quality on points 1..48: mean absolute error 1.2e-3..3e-3 µV (relative abou
 
 The fit does not reach the harness record tolerance (`RECORD_EPSILON` = 1e-6), so no stored-series value assertion exists and none is added. Not yet recovered:
 
-- the exact band-pass coefficients (about 1e-3 relative residual remains; f32 rounding of stages cannot explain it, so the design arithmetic or the notch/low-pass taps differ slightly);
-- the exact aggregation start per channel and the first (transient) point's cold or warm filter state;
-- what the closing point at 240008 is (a flush of a partial window on stop is the leading hypothesis);
-- the Band-10 ranks for Channels 1..4 (A..D) are unlogged stand-ins.
+- Aggregator (static read, 0x649cc0 with the AbsoluteDataSeries accumulator vtable 0x18bf978): values are pushed in blocks; the running sum is a float32 (each add rounded to f32, held in a double slot), the mean is `(float)sum / (float)count` (0x649850), and the point x is `(float)count * (float)dt` (0x649580). A type-0xc message (stop) emits the partial window once if the window flag is set or the elapsed time exceeds a threshold (`_DAT_01895360`), which is the closing point at 240008 ms. The reset between windows is not in these functions.
+- With the best start (s0 = 25640) a per-channel linear map of the model onto the stored points leaves a residual rms of 3e-5..7e-5 µV and a gain of 0.9995..0.9998 per channel (identical for both bands, so it sits in the Source chain or the volts conversion, not the band-pass). The exact Source taps for channels 2..4 are unverified: the replay hook logged channel 1 only.
+- The exact aggregation start per channel and the first (transient) point's cold or warm filter state.
+- The Band-10 ranks for Channels 1..4 (A..D) are unlogged stand-ins.
 
-Code located: BAGSD run 0x44b700; GeneralDataCollector 0x5c1300, 0x5c1c80, 0x5c2070; IIR design 0x66dc00, 0x6536a0, 0x653220, 0x652e90, 0x652ac0, 0x652020, 0x650a20; aggregator message handler 0x649cc0.
+A capture would settle it. Hooks, each logging on every call for the stored run: the AbsoluteDataSeries push (0x6497b0: array pointer and length, 0x649820: single value) to give the exact f32 values entering the mean; the emit at 0x649580 (the result of the vtable +0x10 call, and the counts at `this+0x1d0` and `this+0x1d8`) to give window boundaries and the closing flush; and the consumed-volts hook (tag 12) widened from channel 1 to all four channels.
+
+Code located: BAGSD run 0x44b700; GeneralDataCollector 0x5c1300, 0x5c1c80, 0x5c2070; IIR design 0x66dc00, 0x6536a0, 0x653220, 0x652e90, 0x652ac0, 0x652020, 0x650a20; aggregator message handler 0x649cc0, emit 0x649580, accumulator 0x6497b0/0x649820/0x649850/0x649840.
 
 Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the `LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, the 256-point `FFT-Normal-Order` series, and the `flowDesign` (type 1) and `flowControlMessage` (type 5) blobs. Follow-up: finish the coefficient and start-sample recovery above, build the IIR band-pass and 5 s aggregator in `src/feedback/`, then add an exact harness assertion with a `parity_selfcheck` red case.
