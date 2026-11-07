@@ -215,7 +215,7 @@ from every sample's magnitude).
   was captured.
 - The per-channel switch sample is the app's thread timing (Channel1 one sample later here; run
   8 switched at the graph start + 1). A live clone run switches at the graph start
-  (`Mode::Fixed`), and its stored series start at its first sample.
+  (`Mode::Fixed`), and its stored series start at the graph's first sample, after the Source warm-up (#66).
 
 Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the
 `LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, the 256-point `FFT-Normal-Order`

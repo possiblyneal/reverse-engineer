@@ -12,14 +12,18 @@
 //! `defaultControlValue` (111) until the first 60 s epoch end decides one; the
 //! [`Snapshot`] reports the current code.
 //!
-//! Inputs the clone does not derive, and what a live run uses for each:
+//! The Source filters run [`GraphStart::warmup_samples`] of the stream, with the interference
+//! filter off, before the graph's first sample, as the original's run from connect to Play
+//! (`audio-feedback.md`, "Live replay of the #33 capture").
+//!
+//! Inputs the clone does not derive, and what a live run ([`GraphStart::LIVE`]) uses for each:
 //! - The IPP scalar-head flags are all `true`: the original's order follows heap alignment
 //!   per process, and all-scalar-head departs less from its logged order than all-SIMD
 //!   (`audio-feedback.md`, "Live sum order").
 //! - The counter timer starts one epoch ([`TRIGGER_EPOCH_MS`]) before the clock reading
 //!   taken as the graph is built, so the first block is already eligible to fire, as in
-//!   the original (`audio-feedback.md`, "Counter timer start"); both of its clock reads
-//!   per block are the block's reading.
+//!   the original (`audio-feedback.md`, "Counter timer start"). It reads the clock once per
+//!   block and again when it fires, to restart.
 
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
@@ -34,8 +38,8 @@ use crate::audio::bank::Bank;
 use crate::audio::player::Player;
 use crate::audio::sink::{AlsaSink, SinkError};
 use crate::feedback::{
-    Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
-    StoredSeries, BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
+    CounterClock, Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign,
+    SourceFilters, StoredSeries, BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
 };
 use crate::sensor::{SensorDesign, SensorMonitor, SensorStatus, BLOCK_SAMPLES};
 use crate::storage::{Channel, Header, SessionRecord, Store};
@@ -121,6 +125,33 @@ impl SessionProperties {
     }
 }
 
+/// How the feedback graph starts on the stream. A live session runs [`GraphStart::LIVE`]; a
+/// replay of the original's run supplies the original's behaviour and its thread-timed
+/// inputs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct GraphStart {
+    pub mode: Mode,
+    /// Samples the Source filters run, with the interference filter off, before the
+    /// graph's first sample. The original streams from connect and starts the graph at
+    /// Play, so its Source filters are warm there.
+    pub warmup_samples: usize,
+    /// Graph samples before the session's interference filter switches in, in
+    /// [`Mode::Original`] (the original's is thread-timed: 1 in run 8, 4 in the #48 and #33
+    /// replays); [`Mode::Fixed`] switches it in at the first graph sample.
+    pub interference_switch: usize,
+}
+
+impl GraphStart {
+    /// Fixed mode after one second of warm-up, twice the 256 samples that gave the #33
+    /// capture the decisions of a 31 s warm-up (`audio-feedback.md`, "Live replay of the
+    /// #33 capture").
+    pub const LIVE: Self = Self {
+        mode: Mode::Fixed,
+        warmup_samples: RATE_HZ,
+        interference_switch: 0,
+    };
+}
+
 /// Where a session is.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Phase {
@@ -169,17 +200,20 @@ pub struct Environment<'a> {
     pub store: &'a Store,
     /// Raised to end the session; it is stored like any other end.
     pub stop: &'a AtomicBool,
-    /// Milliseconds on a monotonic clock; read once per block and once per
-    /// quiet read.
+    /// Milliseconds on a monotonic clock; read as the graph is built, once per block,
+    /// again in a block where the counter fires, and once per quiet read.
     pub clock: &'a mut dyn FnMut() -> i64,
+    /// How the graph starts: [`GraphStart::LIVE`] for a live session.
+    pub graph: GraphStart,
     /// Called with the state on every change worth drawing.
     pub report: &'a mut dyn FnMut(&Snapshot),
 }
 
 /// Run one session to its end and return the final state, which has also been
-/// reported. The session ends when `stop` is raised, the length is reached, or
-/// the device closes the stream. It is stored if any frame arrived; an error
-/// (the link, the audio device, the store) ends it without storing.
+/// reported. The session ends when `stop` is raised, the length (counted from the graph's
+/// first block, after the warm-up) is reached, or the device closes the stream. It is
+/// stored if any frame arrived; an error (the link, the audio device, the store) ends it
+/// without storing.
 pub fn run<T: Read + Write>(
     mut session: Session<T>,
     properties: &SessionProperties,
@@ -201,7 +235,13 @@ pub fn run<T: Read + Write>(
     let built = ChannelCalibration::new(CHANNEL_GAIN, SENSOR_GAIN)
         .map_err(|e| format!("{e:?}"))
         .and_then(|calibration| {
-            Engine::new(properties, env.bank, start_ms, calibration.divisor(family))
+            Engine::new(
+                properties,
+                env.graph,
+                env.bank,
+                start_ms,
+                calibration.divisor(family),
+            )
         });
     let mut engine = match built {
         Ok(engine) => engine,
@@ -329,9 +369,16 @@ struct Engine<'a> {
     block: Vec<[f64; CHANNELS]>,
     /// The last second of Source output per channel, microvolts.
     window: [VecDeque<f64>; CHANNELS],
-    /// The stored series, fed the Source output from the first sample.
+    /// The stored series, fed the Source output from the graph's first sample.
     stored: StoredSeries,
+    /// Stream samples still to warm the Source filters before the graph starts.
+    warmup_left: usize,
+    /// Graph samples before the session's interference filter switches in.
+    switch_left: Option<usize>,
+    /// The session's interference filter, switched in after `switch_left`.
+    interference1: Interference1,
     blocks: u64,
+    /// The clock at the graph's construction, then at its first block.
     start_ms: i64,
     now_ms: i64,
     last_frame_ms: i64,
@@ -340,17 +387,26 @@ struct Engine<'a> {
 impl<'a> Engine<'a> {
     fn new(
         properties: &SessionProperties,
+        start: GraphStart,
         bank: &'a Bank,
         start_ms: i64,
         counts_per_volt: f64,
     ) -> Result<Self, String> {
         let design = Smart2Design::smart2(properties.source());
+        // The interference filter is off until the graph starts, as in the original before Play.
+        let warm = SourceDesign {
+            interference1: Interference1::Off,
+            ..design.source.clone()
+        };
         let source = (0..CHANNELS)
-            .map(|_| SourceFilters::new(&design.source, RATE_HZ))
+            .map(|_| SourceFilters::new(&warm, RATE_HZ))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        let graph = Smart2Graph::new(design, start_ms - TRIGGER_EPOCH_MS, Mode::Fixed)
+        let mut graph = Smart2Graph::new(design.clone(), start_ms - TRIGGER_EPOCH_MS, start.mode)
             .map_err(|e| e.to_string())?;
+        let bands = design.band_passes.len();
+        // The live sum order in either mode: original mode defaults to all-SIMD.
+        graph.set_scalar_heads(&vec![true; bands]);
         Ok(Self {
             source,
             graph,
@@ -358,6 +414,9 @@ impl<'a> Engine<'a> {
             block: Vec::with_capacity(BLOCK_LEN),
             window: std::array::from_fn(|_| VecDeque::with_capacity(RATE_HZ)),
             stored: StoredSeries::new(counts_per_volt, RATE_HZ),
+            warmup_left: start.warmup_samples,
+            switch_left: Some(start.mode.interference_switch(0, start.interference_switch)),
+            interference1: design.source.interference1,
             blocks: 0,
             start_ms,
             now_ms: start_ms,
@@ -394,6 +453,11 @@ impl<'a> Engine<'a> {
         let (blocks, control, triggers) = (self.blocks, snapshot.control, snapshot.triggers);
         for n in 0..frame.channels[0].len() {
             let mut volts = [0.0; CHANNELS];
+            if self.warmup_left == 0 && self.switch_left == Some(0) {
+                for chain in &mut self.source {
+                    chain.set_interference1(self.interference1, RATE_HZ);
+                }
+            }
             for (c, chain) in self.source.iter_mut().enumerate() {
                 volts[c] = chain.push(frame.channels[c][n] * 1e-6);
                 let window = &mut self.window[c];
@@ -402,7 +466,12 @@ impl<'a> Engine<'a> {
                 }
                 window.push_back(volts[c] * 1e6);
             }
+            if self.warmup_left > 0 {
+                self.warmup_left -= 1;
+                continue;
+            }
             self.stored.push(&volts);
+            self.switch_left = self.switch_left.and_then(|left| left.checked_sub(1));
             self.block.push(volts);
             if self.block.len() == BLOCK_LEN {
                 self.process_block(env, snapshot)?;
@@ -428,7 +497,14 @@ impl<'a> Engine<'a> {
     ) -> Result<(), String> {
         self.now_ms = (env.clock)();
         self.last_frame_ms = self.now_ms;
-        let decision = self.graph.process_evaluated_block(self.now_ms, &self.block);
+        if self.blocks == 0 {
+            self.start_ms = self.now_ms;
+        }
+        let clock = LiveClock {
+            read_ms: self.now_ms,
+            clock: &mut *env.clock,
+        };
+        let decision = self.graph.process_evaluated_block(clock, &self.block);
         snapshot.control = decision.control;
         self.block.clear();
         let stream_ms = self.blocks * BLOCK_MS;
@@ -494,6 +570,22 @@ impl<'a> Engine<'a> {
             duration_s: self.elapsed_s(),
             channels,
         }
+    }
+}
+
+/// The counter's clock in a live block: the block's read, and a fresh read on a fire.
+struct LiveClock<'c> {
+    read_ms: i64,
+    clock: &'c mut dyn FnMut() -> i64,
+}
+
+impl CounterClock for LiveClock<'_> {
+    fn read_ms(&self) -> i64 {
+        self.read_ms
+    }
+
+    fn lap_ms(&mut self) -> i64 {
+        (self.clock)()
     }
 }
 

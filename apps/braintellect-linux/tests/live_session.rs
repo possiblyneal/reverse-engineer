@@ -14,7 +14,9 @@ use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::acquisition::stream::StreamConfig;
 use braintellect_linux::capture::Recording;
 use braintellect_linux::feedback::Interference1;
-use braintellect_linux::live::{self, Environment, Health, Phase, SessionProperties, Snapshot};
+use braintellect_linux::live::{
+    self, Environment, GraphStart, Health, Phase, SessionProperties, Snapshot,
+};
 use braintellect_linux::storage::Store;
 use harness::audio::{small_bank, RecordingSink, RATE_HZ};
 use harness::fixtures;
@@ -22,6 +24,8 @@ use harness::transport::{frames_from_counts, ReplayTransport};
 
 /// Frames of the run-8 EEG in 30 s (250 frames a second).
 const THIRTY_SECONDS: usize = 30 * 250;
+/// Frames that warm the Source filters before the graph's first block (two samples a frame).
+const WARMUP_FRAMES: usize = GraphStart::LIVE.warmup_samples / 2;
 
 struct Outcome {
     last: Snapshot,
@@ -97,6 +101,7 @@ fn exercise_stepping(
             store: &store,
             stop: &stop,
             clock: &mut clock,
+            graph: GraphStart::LIVE,
             report: &mut report,
         },
     );
@@ -120,7 +125,7 @@ fn saved_id(run: &Outcome) -> i64 {
 fn a_run_to_the_end_of_the_stream_is_stored_and_readable() {
     let run = exercise(
         "end",
-        THIRTY_SECONDS,
+        WARMUP_FRAMES + THIRTY_SECONDS,
         false,
         &SessionProperties::default(),
         None,
@@ -181,7 +186,7 @@ fn triggers_reach_the_sink_as_audio_and_are_counted() {
     assert!(run.last.last_note.is_some_and(|n| (40..=76).contains(&n)));
     assert_eq!(run.last.control, 111, "no epoch has ended in 30 s");
     // A block (4 samples, 8 ms) is 8 ms of audio whether or not a note rings.
-    let blocks = THIRTY_SECONDS / 2;
+    let blocks = (THIRTY_SECONDS - WARMUP_FRAMES) / 2;
     assert_eq!(run.sink.frames.len(), blocks * (RATE_HZ as usize / 125));
     assert!(run.sink.frames.iter().any(|&f| f != 0));
 }
@@ -205,7 +210,7 @@ fn first_sounding_block(step_ms: i64) -> usize {
         .expect("a note sounds")
 }
 
-/// 125 s of the run-8 EEG, streamed from its first sample: the Evaluator leaves 111
+/// 125 s of the run-8 EEG after the warm-up, streamed from its first sample: the Evaluator leaves 111
 /// for the code it decides there, which the snapshot reports. The code is the clone's own on
 /// this stream (the original never ran it, so no logged code applies; `replay_s48` holds the
 /// parity against the original's codes).
@@ -213,20 +218,23 @@ fn first_sounding_block(step_ms: i64) -> usize {
 fn the_snapshot_reports_the_code_the_evaluator_decides() {
     let run = exercise(
         "evaluator",
-        125 * 250,
+        WARMUP_FRAMES + 125 * 250,
         false,
         &SessionProperties::default(),
         None,
     );
 
-    assert_eq!(run.last.control, 82);
+    assert_eq!(run.last.control, 12);
     // The code is reported in the frame that closes the deciding epoch's last block.
     let first = run
         .reports
         .iter()
         .find(|s| s.control != 111)
         .expect("a code change");
-    assert_eq!((first.frames, first.control), (2 * 15_000, 82));
+    assert_eq!(
+        (first.frames, first.control),
+        ((WARMUP_FRAMES + 2 * 15_000) as u64, 12)
+    );
 }
 
 /// Every trigger is reported with its note in the frame that closes its block, so the
@@ -250,7 +258,7 @@ fn every_trigger_is_reported_as_it_happens() {
         .find(|s| s.triggers == 1)
         .expect("a trigger");
     let block = first_sounding_block(8);
-    assert_eq!(first.frames, 2 * (block as u64 + 1));
+    assert_eq!(first.frames, (WARMUP_FRAMES + 2 * (block + 1)) as u64);
 }
 
 /// The original's counter timer starts long before the first graph block (3707 to 21018 ms

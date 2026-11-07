@@ -49,8 +49,8 @@ those findings, it cites them.
 - **Two feedback modes** (`feedback::Mode`, one explicit value passed to
   `Smart2Graph::new` / `TriggerPath::smart2` / `Threshold::smart2`; no global or flag).
   `Mode::Original` reproduces the original's feedback defects and is the mode of every
-  parity test; parity is asserted in original mode only. `Mode::Fixed` is what `live::run`
-  runs and corrects four defects: the threshold window erases one entry when a value
+  parity test; parity is asserted in original mode only. `Mode::Fixed` is what a live
+  session runs (`live::GraphStart::LIVE`) and corrects four defects: the threshold window erases one entry when a value
   leaves it, not every equal one (`multiset::erase(key)`, `audio-feedback.md`); the 45 Hz
   interference low-pass takes over at the first graph sample (`Mode::interference_switch`),
   not a thread-timed one; every band-pass uses the all-scalar-head 16-tap-mean sum order
@@ -89,7 +89,8 @@ those findings, it cites them.
   `Smart2Graph::new` refuses a rate other than `RATE_HZ` (500) or an aggregator epoch
   of 0. The run-6 and run-8 replays feed the IPP 16-tap sum-order flags
   (`set_scalar_head(s)`) and the counter clock (`BlockClock`) as inputs, never read
-  from the host. `tests/parity_smart2_exercise.rs` overrides the design's
+  from the host. The counter takes its clock as a `CounterClock`: one read per block for
+  the epoch test and, only on a fire, a lap read that restarts its timer. `tests/parity_smart2_exercise.rs` overrides the design's
   interference1/2, low-pass and high-pass Source fields to the run-8 device settings,
   warms the Source chain over the 4000-sample pre-roll, and switches the 45 Hz
   low-pass in cold one sample after the graph start. The 25 Hz band-stop (`Notch`,
@@ -145,10 +146,14 @@ those findings, it cites them.
   runs off the UI thread and reports a `Snapshot` (phase, link health, frames, `StreamStats`,
   per-channel RMS microvolts over the last second, triggers, the control code) through
   `Environment::report`, every 25 blocks and in the frame a trigger or a code change happens;
-  the transport, sink, clock and stop flag are all injected. Live inputs the clone does not
+  the transport, sink, clock, stop flag and graph start (`Environment::graph`, a
+  `GraphStart`) are all injected. Before the graph's first block the Source filters run
+  `GraphStart::warmup_samples` of the stream with the interference filter off, as the original's
+  did from connect to Play; a live session (`GraphStart::LIVE`) is fixed mode after 500 samples
+  (1 s), and the session length counts from the first block. Live inputs the clone does not
   derive: the control code comes from the Evaluator, both paths (111 until its first
   full epoch pair; `Snapshot.control` reports it and the session window shows it). The IPP scalar-head
-  flags are all `true` (`Mode::Fixed`): the original's sum order follows heap alignment per process and
+  flags are all `true` in either mode: the original's sum order follows heap alignment per process and
   cannot be derived, so a live run fixes the order that departs less from run 8's logged
   one. Measured on run 8 and its replay, all-scalar-head differs from the logged order in
   about 13.0 % of band amplitudes (last `float32` bit) against 13.1 % to 13.3 % for all-SIMD,
@@ -156,12 +161,12 @@ those findings, it cites them.
   `tests/parity_smart2_exercise.rs`). The counter timer starts one epoch
   (`feedback::TRIGGER_EPOCH_MS`, 500 ms) before the clock reading taken as the graph is
   built, so the first block is already eligible, as in the original, where the timer was
-  3.7 to 21 s old at block 0 (`audio-feedback.md`, "Counter timer start"); both of its
-  reads per block are the block's. The clinician sets the Source device settings
+  3.7 to 21 s old at block 0 (`audio-feedback.md`, "Counter timer start"); it reads the
+  clock once per block and again in a block where it fires. The clinician sets the Source device settings
   (`SessionProperties`, default the run-8 baseline) and the length; the design is
   `Smart2Design::smart2`, checked against the design fixture in `tests/parity_feedback.rs`.
   The stored series are `feedback::StoredSeries` (`assess.rs`), the original's BAGSD design
-  fed the Source output from the first sample: per channel `Band 10` and `Band 80`, one
+  fed the Source output from the graph's first sample, after the warm-up: per channel `Band 10` and `Band 80`, one
   microvolt point every 5 s of stream time and a closing point at the stop
   (`session-storage.md`, "Stored series (#56)"). The ignored `tests/replay_s56.rs` holds them to
   the original's exercise 146 record within `RECORD_EPSILON` (`assertions::stored_series`;
@@ -189,8 +194,10 @@ those findings, it cites them.
   `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG framed by
   `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank. The ignored
   `tests/replay_live.rs` reads the #33 capture back through `live::run` (`S33_CAPTURE`,
-  `S33_REPLAY_DIR`) and asserts the original's per-block codes exactly; its Trigger/Note
-  decisions are reported only (`audio-feedback.md`, "Live replay of the #33 capture").
+  `S33_REPLAY_DIR`) in original mode with the original's graph start, switch and clock and
+  lap reads, and asserts the original's per-block codes and the block and note of all 367
+  triggers exactly (`assertions::trigger_notes`; `audio-feedback.md`, "Live replay of the #33
+  capture").
 - **B-2 emulator and capture** (`src/emulate.rs`, `src/capture.rs`). The live session tees its raw
   RX to `<data dir>/captures/b2-<secs>.rx` (`capture::Recording`). `braintellect-linux emulate
   <capture> <socket>` plays a B-2 over a Unix socket (the QEMU serial chardev): `Command::decode`

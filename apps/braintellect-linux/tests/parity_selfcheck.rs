@@ -175,6 +175,21 @@ fn pass_flags_green_on_baseline_red_on_wrong() {
 }
 
 #[test]
+fn trigger_notes_green_on_baseline_red_on_a_shifted_block_or_wrong_note() {
+    let baseline = fixtures::run8_trigger_notes();
+    assert!(baseline.len() > 10, "run 8 triggers are non-trivial");
+    assertions::trigger_notes(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut early = baseline.clone();
+    early[3].0 -= 1;
+    assert!(assertions::trigger_notes(&baseline, &early).is_err());
+    let mut wrong = baseline.clone();
+    wrong[3].1 += 1;
+    assert!(assertions::trigger_notes(&baseline, &wrong).is_err());
+    assert!(assertions::trigger_notes(&baseline, &baseline[1..]).is_err());
+}
+
+#[test]
 fn control_codes_green_on_baseline_red_on_wrong() {
     let baseline: Vec<u32> = [111, 111, 12, 12, 82].repeat(3);
     assertions::control_codes(&baseline, &baseline).expect("baseline vs itself");
