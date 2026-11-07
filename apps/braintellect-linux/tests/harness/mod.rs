@@ -7,6 +7,7 @@
 
 pub mod assertions;
 pub mod audio;
+pub mod channels;
 pub mod fixtures;
 pub mod peer;
 pub mod run8;

@@ -33,6 +33,40 @@ pub fn microvolts(expected: &[f64], actual: &[f64]) -> Parity {
     Ok(())
 }
 
+/// Decoded microvolts match bit for bit on every channel (`[channel][sample]`,
+/// channels 0 to 3). No tolerance applies: the original's logged values and the
+/// clone's decode are the same arithmetic. The mismatch names the first
+/// differing sample, channel by channel.
+pub fn channel_microvolts(expected: &[Vec<f64>], actual: &[Vec<f64>]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "channel count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    for (c, (e, a)) in expected.iter().zip(actual).enumerate() {
+        if e.len() != a.len() {
+            return mismatch(format!(
+                "channel {c} sample count: expected {}, got {}",
+                e.len(),
+                a.len()
+            ));
+        }
+        if let Some(i) = e
+            .iter()
+            .zip(a)
+            .position(|(x, y)| x.to_bits() != y.to_bits())
+        {
+            return mismatch(format!(
+                "channel {c} sample {i}: expected {} uV, got {} uV",
+                e[i], a[i]
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Commands written to the controller match byte for byte, in order.
 pub fn command_bytes(expected: &[Vec<u8>], actual: &[Vec<u8>]) -> Parity {
     if expected.len() != actual.len() {
