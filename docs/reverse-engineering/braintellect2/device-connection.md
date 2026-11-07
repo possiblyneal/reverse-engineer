@@ -207,7 +207,7 @@ the replay rig, never the live B-2. Pair the B-2 only in BlueZ (`btmgmt bondable
 or the bond is not kept).
 
 Observed 2026-11-06, with no re-pairing (btmon on the host): the B-2 connected on the stored
-BlueZ bond after a host reboot (bond file written 19:21, booted 21:25, connected 22:34) and
+BlueZ bond after a host reboot (paired 19:21 per btmon, booted 21:25, connected 22:34) and
 again after the B-2 was powered off and on (23:33). Each time BlueZ answered
 `Link_Key_Request` from its store, `Encryption_Change` succeeded with no IO capability
 exchange, and the B-2 answered `!*#101` with its 56-byte reply.
@@ -246,6 +246,6 @@ With BlueZ as the owner, `0x17` has not been seen; the matching reset would be
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Connect fails after the B-2 was paired on another stack sharing the adapter (a guest, or before #38 the host) | Inferred: that pairing replaced the B-2's key, so this stack's bond is stale | Re-pair in the server's BlueZ (`btmgmt bondable on` first) and take the adapter away from any guest; expected, not tested |
+| Connect fails after the B-2 was paired on another stack sharing the adapter (a guest, or the host's BlueZ) | Inferred: that pairing replaced the B-2's key, so this stack's bond is stale | Re-pair in the server's BlueZ (`btmgmt bondable on` first) and take the adapter away from any guest; expected, not tested |
 | Pairing refused within ~100 ms, `Disconnection_Complete` reason `0x17`, no `Link_Key_Request` | The adapter holds an authentication back-off | Reset the adapter (previous section) |
 | `Create_Connection` ends `PageTimeout` (`0x04`) | The B-2 is asleep or off (observed ~15 min after pairing with no open port) | Wake or switch on the B-2 |
