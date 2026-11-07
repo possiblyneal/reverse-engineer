@@ -258,7 +258,9 @@ fn replay_at(
     // The original ran Source from its first streamed sample, so the warm-up is everything
     // before the graph start.
     let frames: Vec<[i32; 8]> = eeg
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| std::array::from_fn(|k| pair[k / 4][k % 4]))
         .collect();
     replay_from(

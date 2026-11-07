@@ -84,9 +84,15 @@ fn consumed_frames<'a>(stream: &'a [u8], eeg: &str) -> Vec<&'a [u8]> {
             i32::from_be_bytes([frame[at], frame[at + 1], frame[at + 2], 0]) >> 8
         })
     };
-    let mut frames = stream.chunks_exact(FRAME_LEN);
+    let mut frames = stream
+        .as_chunks::<FRAME_LEN>()
+        .0
+        .iter()
+        .map(<[u8; FRAME_LEN]>::as_slice);
     samples
-        .chunks_exact(2)
+        .as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             let want = [pair[0], pair[1]].concat();
             frames

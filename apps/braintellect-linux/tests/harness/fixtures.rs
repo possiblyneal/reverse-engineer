@@ -617,7 +617,9 @@ pub fn run8_decisions() -> Vec<Decision> {
 /// is the block and whose Note follows its Trigger (`scripts/replay-extract.py`).
 pub fn trigger_notes(log: &str) -> Vec<(usize, u32)> {
     let rows: Vec<Vec<&str>> = log.lines().map(|l| l.split('\t').collect()).collect();
-    rows.chunks_exact(2)
+    rows.as_chunks::<2>()
+        .0
+        .iter()
         .map(|pair| {
             assert_eq!((pair[0][1], pair[1][1]), ("Trigger", "Note"), "{pair:?}");
             (

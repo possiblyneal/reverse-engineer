@@ -321,7 +321,9 @@ fn index_range(
 fn generators(table: &[u8], (from, to): (usize, usize)) -> Result<Vec<(u16, i16)>, SoundFontError> {
     let bytes = table.get(from * GEN_LEN..to * GEN_LEN).ok_or(BAD_INDEX)?;
     Ok(bytes
-        .chunks_exact(GEN_LEN)
+        .as_chunks::<GEN_LEN>()
+        .0
+        .iter()
         .map(|g| (le16(g, 0), le16(g, 2) as i16))
         .collect())
 }
