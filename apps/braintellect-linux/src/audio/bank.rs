@@ -92,6 +92,12 @@ impl Bank {
         Ok(Bank { samples })
     }
 
+    /// A bank of already-decoded samples, by MIDI note.
+    #[must_use]
+    pub fn from_samples(samples: BTreeMap<i32, Sample>) -> Bank {
+        Bank { samples }
+    }
+
     /// The sample of MIDI `note`, if the bank has one.
     pub fn sample(&self, note: i32) -> Option<&Sample> {
         self.samples.get(&note)

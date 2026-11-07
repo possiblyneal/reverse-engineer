@@ -14,5 +14,6 @@ pub mod run8;
 pub mod sensor;
 pub mod session;
 pub mod synthetic_bank;
+pub mod synthetic_soundfont;
 pub mod tolerance;
 pub mod transport;

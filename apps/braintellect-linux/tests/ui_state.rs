@@ -2,6 +2,7 @@
 //! shows out. No window is drawn.
 
 use braintellect_linux::acquisition::stream::StreamStats;
+use braintellect_linux::audio::tone::{Tone, DEFAULT_TONE, TONES};
 use braintellect_linux::live::{Health, Phase, SessionProperties, Snapshot};
 use braintellect_linux::ui::state::{Command, Event, Instrument, Stage, UiModel};
 
@@ -236,4 +237,86 @@ fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
     model.start().expect("starts");
     assert!(!model.view().can_check);
     assert_eq!(model.check_sensors(), None);
+}
+
+fn tone_key(key: &str) -> &'static Tone {
+    TONES.iter().find(|t| t.key == key).expect("tone")
+}
+
+/// Only the default tone and the harp are imported.
+fn with_harp() -> UiModel {
+    let mut model = ready();
+    model.set_tones(
+        TONES
+            .iter()
+            .map(|t| match t.key {
+                "strings" | "harp" => Instrument::Ready,
+                _ => Instrument::Missing(format!("{} is not imported", t.label)),
+            })
+            .collect(),
+    );
+    model
+}
+
+#[test]
+fn the_setup_screen_lists_every_tone_and_marks_the_missing_ones_unavailable() {
+    let view = with_harp().view();
+
+    let listed: Vec<(&str, bool, bool)> = view
+        .tones
+        .iter()
+        .map(|t| (t.label.as_str(), t.available, t.selected))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Acoustic strings (original default)", true, true),
+            ("Piano", false, false),
+            ("Celeste", false, false),
+            ("Harp", true, false),
+            ("Acoustic guitar", false, false),
+            ("Xylophone", false, false),
+        ]
+    );
+    assert_eq!(view.tones[1].status, "Piano is not imported");
+    assert!(view.can_start, "missing tones do not stop a session");
+}
+
+#[test]
+fn the_default_tone_is_the_original_bank() {
+    assert_eq!(ready().tone(), &DEFAULT_TONE);
+}
+
+#[test]
+fn an_available_tone_can_be_chosen_and_an_unavailable_one_is_refused() {
+    let mut model = with_harp();
+
+    assert!(model.select_tone(tone_key("harp")));
+    assert_eq!(model.tone().key, "harp");
+    assert!(model.view().tones[3].selected);
+
+    assert!(!model.select_tone(tone_key("xylophone")));
+    assert_eq!(model.tone().key, "harp");
+}
+
+#[test]
+fn a_session_can_start_on_a_recorded_tone_while_the_original_bank_is_missing() {
+    let mut model = UiModel::new("m".to_owned(), Instrument::Missing("missing".to_owned()));
+    let mut states = vec![Instrument::Missing("missing".to_owned()); TONES.len()];
+    states[3] = Instrument::Ready;
+    model.set_tones(states);
+
+    assert!(!model.view().can_start);
+    assert!(model.select_tone(tone_key("harp")));
+    assert!(model.view().can_start);
+    assert!(matches!(model.start(), Some(Command::Start(_))));
+}
+
+#[test]
+fn the_tone_cannot_change_while_a_session_runs() {
+    let mut model = with_harp();
+    model.start();
+
+    assert!(!model.select_tone(tone_key("harp")));
+    assert_eq!(model.tone(), &DEFAULT_TONE);
 }

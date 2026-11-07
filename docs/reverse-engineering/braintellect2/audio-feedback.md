@@ -553,6 +553,15 @@ Observed in `dll1002.BT.dll` (the Qt resource inside the DLL, parsed by `apps/br
 
 Decision (`docs/adrs/0004-read-instrument-samples-from-the-original-install.md`): the clone does not carry the sample bytes. `braintellect-linux import <original lib dir>` copies the owner's own `dll<id>.BT.dll` banks into the clone's data directory; no vendor bytes are in the repository.
 
+## Recorded tones (ticket 65, ADR 0006)
+
+The set-up screen lists the feedback tones; the note decisions are the same for all of them and the parity tests keep bank 1002.
+
+- Original banks (observed in the resource names of the install's `lib` directory): 1002 `AcousticStrings` (default), 1001 `Piano`, 1003 `Celeste`. None of the three shares a PCM blob with another, so all three are listed.
+- Recorded tones: Harp, Acoustic guitar and Xylophone are General MIDI programs 46, 24 and 13 of FluidR3_GM, licence MIT (Frank Wen, Toby Smithe; the package `copyright` file). Source: `https://deb.debian.org/debian/pool/main/f/fluid-soundfont-gm/fluid-soundfont-gm_3.1-6_all.deb`, package sha256 `9965fbcc6acee17d6f72b685d28c7f968ec64eba14645445b476d5c6cc2eee4c`; `usr/share/sounds/sf2/FluidR3_GM.sf2` inside it has sha256 `74594e8f4250680adf590507a306655a299935343583256f3b722c48a1bc1cb0`. The font is downloaded by the clinician and is never committed.
+- Rendering (`apps/braintellect-linux/src/audio/soundfont.rs`, `tone.rs`): per MIDI note 40 to 76, the instrument zone whose key range holds the note (left mono samples only), played at rate `sample_rate / 96000 * 2^(((note - root) * scaleTuning + coarse * 100 + fine) / 1200)` with linear interpolation, looping when `sampleModes` loops (the instrument's global zone gives the defaults), zero after an unlooped sample ends, a 480-frame linear fade-out, 76800 frames (0.8 s) at 96 kHz. The root key is `overridingRootKey` when set, else the sample header's pitch. Envelopes, filters and modulators are ignored.
+- Observed with the real font: all three programs cover notes 40 to 76; the harp renders note 60 at 261.7 Hz and note 69 at 440.0 Hz. Pitch for every note is checked with a synthetic SoundFont in `tests/audio_tone.rs`, not with the real one.
+
 ## SoundManager requires a host audio output device (session-setup crash)
 
 Entering session setup ("Set up session" → "Select session properties") constructs
