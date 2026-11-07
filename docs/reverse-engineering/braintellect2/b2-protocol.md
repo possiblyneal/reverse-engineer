@@ -152,6 +152,8 @@ processed down to the stored result blobs (`session-storage.md`).
 
 ## ADC → volts conversion
 
+The ADS1294 datasheet check of D1, D2 and the gain is in `b2-hardware.md`.
+
 `BSTAmplifierDataProcessor::_convertValue(const int&, const int&)` (VA
 `0x555930`) returns, per channel:
 
