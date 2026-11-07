@@ -179,6 +179,7 @@ fn triggers_reach_the_sink_as_audio_and_are_counted() {
         "the run-8 EEG triggers under control 111"
     );
     assert!(run.last.last_note.is_some_and(|n| (40..=76).contains(&n)));
+    assert_eq!(run.last.control, 111, "no epoch has ended in 30 s");
     // A block (4 samples, 8 ms) is 8 ms of audio whether or not a note rings.
     let blocks = THIRTY_SECONDS / 2;
     assert_eq!(run.sink.frames.len(), blocks * (RATE_HZ as usize / 125));
@@ -202,6 +203,23 @@ fn first_sounding_block(step_ms: i64) -> usize {
         .position(|&f| f != 0)
         .map(|at| at / frames_per_block)
         .expect("a note sounds")
+}
+
+/// 125 s of the run-8 EEG, streamed from its first sample: the Evaluator leaves 111
+/// for the code it decides there, which the snapshot reports. The code is the clone's own on
+/// this stream (the original never ran it, so no logged code applies; `replay_s48` holds the
+/// parity against the original's codes).
+#[test]
+fn the_snapshot_reports_the_code_the_evaluator_decides() {
+    let run = exercise(
+        "evaluator",
+        125 * 250,
+        false,
+        &SessionProperties::default(),
+        None,
+    );
+
+    assert_eq!(run.last.control, 82);
 }
 
 /// The original's counter timer starts long before the first graph block (3707 to 21018 ms

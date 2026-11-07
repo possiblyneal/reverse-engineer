@@ -9,8 +9,9 @@
 //! clock and the stop flag.
 //!
 //! Inputs the clone does not derive, and what a live run uses for each:
-//! - The Evaluator is not implemented; every block runs under its documented
-//!   `defaultControlValue`, [`DEFAULT_CONTROL`].
+//! - The Evaluator's Coherence path is not implemented. The control code comes from its
+//!   Balance path, which starts at the documented `defaultControlValue` (111) and is
+//!   decided at each 60 s epoch end; the [`Snapshot`] reports the current code.
 //! - The IPP scalar-head flags are all `true`: the original's order follows heap alignment
 //!   per process, and all-scalar-head departs less from its logged order than all-SIMD
 //!   (`audio-feedback.md`, "Live sum order").
@@ -33,14 +34,10 @@ use crate::audio::player::Player;
 use crate::audio::sink::{AlsaSink, SinkError};
 use crate::feedback::{
     Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
-    BLOCK_LEN, CHANNELS, RATE_HZ, TRIGGER_EPOCH_MS,
+    BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
 };
 use crate::storage::{Channel, Header, Point, Series, SessionRecord, Store};
 
-/// The Evaluator's `defaultControlValue` (`audio-feedback.md`, "SMART-2
-/// Evaluator"): the code it holds until a balance or coherence test passes. The
-/// Evaluator is unimplemented, so a live run feeds it to every block.
-pub const DEFAULT_CONTROL: u32 = 111;
 /// Output rate of the sink: the sample rate of instrument bank 1002
 /// (`audio-feedback.md`, "Wave device and instrument 1002").
 pub const OUTPUT_RATE_HZ: u32 = 96_000;
@@ -159,6 +156,8 @@ pub struct Snapshot {
     /// Notes triggered so far.
     pub triggers: u32,
     pub last_note: Option<i32>,
+    /// The Evaluator's current control code.
+    pub control: u32,
     /// Seconds on the clock since the session started.
     pub elapsed_s: u32,
 }
@@ -194,6 +193,7 @@ pub fn run<T: Read + Write>(
         rms_uv: [0.0; STREAM_CHANNELS],
         triggers: 0,
         last_note: None,
+        control: DEFAULT_CODE,
         elapsed_s: 0,
     };
     let (family, model) = (session.family(), session.info().system1.model);
@@ -365,9 +365,8 @@ impl<'a> Engine<'a> {
     ) -> Result<(), String> {
         self.now_ms = (env.clock)();
         self.last_frame_ms = self.now_ms;
-        let decision = self
-            .graph
-            .process_filtered_block(self.now_ms, DEFAULT_CONTROL, &self.block);
+        let decision = self.graph.process_evaluated_block(self.now_ms, &self.block);
+        snapshot.control = decision.control;
         self.block.clear();
         let stream_ms = self.blocks * BLOCK_MS;
         let block = usize::try_from(self.blocks).map_err(|e| e.to_string())?;

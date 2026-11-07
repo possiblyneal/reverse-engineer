@@ -18,11 +18,15 @@ consumed a stream replayed by `braintellect-linux emulate`; see
 - `blocks.tsv`: per block `flags<TAB>Evaluator code<TAB>read ms<TAB>lap ms`, clocks in ms from
   block 0. `flags` holds the 16-tap-mean flag of all 18 graph-call objects, in rank order (the
   rank of the object's address among the 18). Which rank is which band differs per process, so
-  the test locates the E..H ranks from the logged amplitudes. A..D amplitudes are not logged, so
-  their ranks cannot be located and run 8's (`run8_band_ranks`) stand in; Evaluator codes 12 and
-  82 (`ExprTriggerAll`) read A and C, so a wrong A..D rank is unchecked there.
-- `amps.tsv`: per block the logged E..H band amplitudes as 16 float32 hex words (as the
-  `run8_amplitudes_*.tsv` fixtures), or `-` where the log has none.
+  the test locates the A..H ranks from the logged amplitudes. Logs from before #53 have no
+  A..D amplitudes; then run 8's (`run8_band_ranks`) stand in for A..D.
+- `amps.tsv`: per block the logged A..H band amplitudes as 32 float32 hex words (A..D then
+  E..H, four samples each; the `run8_amplitudes_*.tsv` fixtures hold E..H only), or `-` where
+  the log has none. A..D are logged from `hook12.js` on (#53); `recs[0:4]` of the tag-11 record.
+- `evaluator.tsv` (only when the log has the Evaluator hooks of #53): per block the latest
+  value of the Evaluator's series after the block as six float32 hex words: Balance Ch1/2
+  Band 10, Balance Ch1/2 Band 80, Balance Ch3/4 Band 10, Balance Ch3/4 Band 80, Coherence
+  Ch3/4 Band 10, Coherence Ch3/4 Band 80.
 - `decisions.tsv`: the original's Trigger and Note decisions (as `run8_decisions.tsv`).
 
 Nothing written here is committed: the output stays under the repo's `tmp/`.
@@ -103,10 +107,18 @@ def main():
         rows.append(f"{flags}\t{blk['code']}\t{now}\t{lap}\n")
         if blk["lap"] is not None:
             decs += [f"{now}\tTrigger\t{b}\n", f"{now}\tNote\t{blk['note']}\n"]
-    amps = ["-\n" if blk["amps"] is None else
-            " ".join("%08x" % struct.unpack("<I", struct.pack("<f", x))[0] for x in blk["amps"]) + "\n"
+    def words(values):
+        return " ".join("%08x" % struct.unpack("<I", struct.pack("<f", x))[0] for x in values)
+
+    amps = ["-\n" if blk["amps"] is None else words(blk["amps_ad"] + blk["amps"]) + "\n"
             for blk in blocks]
     (out / "amps.tsv").write_text("".join(amps))
+    series = mf.run8_evaluator_series(records)
+    if series:
+        order = ["Bal1n2B10", "Bal1n2B80", "Bal3n4B10", "Bal3n4B80", "Coh3n4B10", "Coh3n4B80"]
+        evals = ["-\n" if any(b not in series[n] for n in order) else
+                words([series[n][b] for n in order]) + "\n" for b in range(len(blocks))]
+        (out / "evaluator.tsv").write_text("".join(evals))
     (out / "blocks.tsv").write_text("".join(rows))
     (out / "decisions.tsv").write_text("".join(decs))
     print(f"logged_count {logged_count}, frames {len(frames)}, consumed {len(volts)}, "

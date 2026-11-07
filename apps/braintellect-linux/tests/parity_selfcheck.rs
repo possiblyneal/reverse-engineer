@@ -97,6 +97,17 @@ fn pass_flags_green_on_baseline_red_on_wrong() {
 }
 
 #[test]
+fn control_codes_green_on_baseline_red_on_wrong() {
+    let baseline: Vec<u32> = [111, 111, 12, 12, 82].repeat(3);
+    assertions::control_codes(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut wrong = baseline.clone();
+    wrong[7] = 13;
+    assert!(assertions::control_codes(&baseline, &wrong).is_err());
+    assert!(assertions::control_codes(&baseline, &baseline[1..]).is_err());
+}
+
+#[test]
 fn feedback_fixtures_are_well_formed() {
     let blocks = fixtures::feedback_blocks();
     assert!(blocks.windows(2).all(|w| w[1].time_ms >= w[0].time_ms));

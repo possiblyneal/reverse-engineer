@@ -165,6 +165,26 @@ EEG as `replay_s48` does (`S48_REPLAY_DIR=<extract> cargo test --release --test 
   The decision diff is unaffected because `replay_s48` feeds the original's consumed samples,
   but two apps reading one raw stream live would diverge at the first gap.
 
+## Result: the Evaluator inputs and bands A..D captured (#53, 2026-11-07)
+
+A replay of the run-8 rx stream with hooks on the Evaluator (each Balance and Coherence series value per block, the chosen code) and on bands A..D was captured on the third attempt; the findings are in `audio-feedback.md`, "Replay capture of the Evaluator inputs".
+
+- Static (observed, Ghidra `analyzeHeadless` over a copy of the `bt2` project): the series push
+  (`0x63d9c0`), the series evaluation (`0x63e540`), the Evaluator decision (`0x63eb70`, code at
+  object offset `+0x274`) and the Evaluator code setter (`0x63ea70`). A hook set for them,
+  `hook12.js` (`hook11.js` plus those four), was written and loaded under `frida-inject -f`
+  with the app connected to the emulator and idle on the Optimize tab.
+- Driving the guest GUI to Play (observed): HMP `mouse_move`, RFB pointer events and keystrokes do not reach the QEMU USB tablet's clickable windows, so an in-guest PowerShell clicker (`EnumWindows` title waits,
+  `SetCursorPos` plus `mouse_event`) started from the guest's Startup folder, with the files
+  placed on the stopped guest's NTFS disk (`ntfs-3g` loop mount at offset 269484032; after a
+  forced stop it needs `ntfsfix -d` on the loop device first). It reached user select, the
+  licence wizard, the gear dialog, OK and Play unattended. The app's title has two spaces
+  (`BRAINtellect 2  Version 5.1.57`), so a single-space `-like` pattern waits out its timeout.
+- The guest's slowness was the host's night turbo cap ("Host CPU clock" below). With turbo on, the capture ran in real time: 30004 blocks, `hook12.js` loaded, no Evaluator record dropped.
+- The log (`g-s53.bin`, 341 MB) stays in the main checkout's `tmp/s53/r3/`. `replay-extract.py`
+  turns it into the replay directory; `replay_s48` reads it through `S48_REPLAY_DIR` and
+  asserts the A..H amplitudes, the Balance values and the per-block codes.
+
 ## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
 
 The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00

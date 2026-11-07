@@ -7,8 +7,9 @@
 //! filter off, and the 45 Hz low-pass is switched in cold at the graph's second
 //! sample, which reproduces the app's logged Source output bit for bit.
 //!
-//! Inputs the clone does not derive are the logged ones: the Evaluator code, the
-//! counter timer's clock reads and the 16-tap-mean sum order of each band-pass call.
+//! Inputs the clone does not derive are the logged ones: the counter timer's clock reads and
+//! the 16-tap-mean sum order of each band-pass call. The Evaluator code is logged, except in
+//! the test that has the clone's Evaluator decide it.
 
 mod harness;
 
@@ -17,7 +18,8 @@ use braintellect_linux::feedback::BLOCK_LEN;
 use harness::assertions;
 use harness::fixtures::{self, Decision};
 use harness::run8::{
-    deviation, replay, replay_fixed, replay_switching_at, replay_with_flags, Deviation,
+    deviation, replay, replay_evaluated, replay_fixed, replay_switching_at, replay_with_flags,
+    Deviation,
 };
 
 fn expected(kind: &str) -> Vec<Decision> {
@@ -143,4 +145,19 @@ fn fixed_mode_switches_the_low_pass_at_the_first_graph_block() {
 fn fixed_mode_changes_24_trigger_and_24_note_decisions_of_run_8() {
     let d = deviation(replay(), replay_fixed());
     assert_eq!((d.triggers, d.notes), (24, 24));
+}
+
+/// The Evaluator, fed only the clone's band averages, reproduces run 8's logged code of every
+/// block: 111, then 12 from the second epoch end, then 82 (`audio-feedback.md`, "SMART-2
+/// Evaluator"). The A..D band-pass sum orders are run 8's stand-in ranks, which cannot
+/// move a Balance across its 0.15 threshold.
+#[test]
+fn the_evaluator_reproduces_run_8_codes_111_12_82() {
+    let run = replay_evaluated();
+    let logged: Vec<u32> = run.blocks.iter().map(|b| b.control).collect();
+    let evaluated: Vec<u32> = run.decisions.iter().map(|d| d.control).collect();
+    assertions::control_codes(&logged, &evaluated).expect("per-block Evaluator code parity");
+    let mut sequence = evaluated.clone();
+    sequence.dedup();
+    assert_eq!(sequence, [111, 12, 82]);
 }

@@ -7,11 +7,12 @@
 //! decoded EEG; [`Smart2Graph`] runs the rest from its output: band-pass
 //! `OutAmplitude`, Aggregator and `PeakFrequency`, then the two paths, which also
 //! take those stages' logged values directly.
-//! Not implemented: the Evaluator (its control code is an input), `OutAmplitude`
+//! Not implemented: the Evaluator's Coherence path (only Balance is), `OutAmplitude`
 //! of the sound element and the `SoundElement` note playback.
 
 mod band_pass;
 mod counter;
+mod evaluator;
 mod fir;
 mod graph;
 mod iir;
@@ -25,6 +26,7 @@ mod trigger_all;
 
 pub use band_pass::{BandPass, BandPassDesign};
 pub use counter::{BlockClock, Counter, TRIGGER_EPOCH_MS};
+pub use evaluator::{balances, Evaluator, BALANCES, DEFAULT_CODE};
 pub use graph::{
     BandPassSpec, BlockDecision, DesignError, PeakSpec, SampleOutput, Smart2Design, Smart2Graph,
     BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,
