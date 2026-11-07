@@ -143,3 +143,23 @@ read with a throwaway `mysql:5.7` container, blobs decoded as above.
   without writing to `braintellect.log`. Inferred, not verified: it resolves
   `C:\bsttest\configuration\log4j.properties` against the working directory, so launch
   it from `C:\bsttest`.
+
+## Observed: the clone's stored series do not reproduce the original's (#56)
+
+On 2026-11-07 the original's record for the #48 replay (exercise 138: the run-8 EEG stream plus 61
+frame-drop insertions, no wearer) was decoded as above and compared with the clone's
+`live.rs` series. Decoded XML is kept under `tmp/s56/`, never committed.
+
+Field map (clone -> original type 9):
+
+| Clone field | Original |
+|---|---|
+| `Channel<n>` | `exerciseDataChannel channelName="Channel1..4"` |
+| series `Band 10`, `Band 80` | `dataType="00-90"` series `Band-10`, `Band-80` |
+| point `x` (ms) | `xValue`, every 5000 ms from 5000 |
+| point `y` (µV) | `yValue`, 1e-6 volt units |
+| `duration_s` | `properties` / header duration, 240 s |
+
+- Shape differs: the original has 49 points per series (5000, 10000, ..., 240000, then a closing point at 240008, one block after the stop); the clone stores 48 and no closing point.
+- Values do not match. The clone's band amplitude is an instantaneous per-sample value that moves by tens of percent between blocks; the original's points are steady (Channel4 Band-80 holds 2.64..2.74 µV) and its first point is a startup transient (2.94, 2.25, 2.90, 2.85 for Band-80 Channel1..4 against 1.36, 1.25, 2.43, 2.73 at 10 s). No clone sample, 2500-sample window mean, or cumulative mean equals any original point; nearest instantaneous match is off by 0.07..0.6 µV summed over four channels. The original's stored series is therefore a smoothed or windowed quantity whose definition is not yet recovered, and the Band-10 ranks for Channels 1..4 (A..D) are unlogged stand-ins besides.
+- Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the `LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, the 256-point `FFT-Normal-Order` series, and the `flowDesign` (type 1) and `flowControlMessage` (type 5) blobs. Follow-up: recover the stored-series smoothing from the `Evaluator` or the type-9 writer, then add an exact harness assertion; until then no assertion can hold the clone to the original.
