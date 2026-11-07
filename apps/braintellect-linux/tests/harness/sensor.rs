@@ -5,6 +5,9 @@ use braintellect_linux::sensor::{
     ChannelLevels, SensorDesign, SensorMonitor, SensorStatus, SensorStatusEngine, BLOCK_SAMPLES,
 };
 
+use super::fixtures::SensorBlock;
+use super::tolerance::LEVEL_EPSILON_DB;
+
 pub type Levels = [ChannelLevels; 4];
 
 fn channel(line_noise: f32, bands: [f32; 3]) -> ChannelLevels {
@@ -72,12 +75,13 @@ fn sine(amplitude: f64, hz: f64, t: f64) -> f64 {
     amplitude * (2.0 * std::f64::consts::PI * hz * t).sin()
 }
 
-/// Per-channel mixes of the 12, 40, 60 and 70 Hz tones, microvolt-scale.
+/// Per-channel mixes of the 12, 40, 60 and 70 Hz tones, microvolt-scale, with the 60 Hz
+/// level above the 70 Hz control so the mains frequency is 60 Hz.
 pub fn tones_healthy(c: usize, t: f64) -> f64 {
     let k = c as f64 + 1.0;
     sine(1e-6 * k, 12.0, t)
         + sine(1e-6 * (5.0 - k), 40.0, t)
-        + sine(1e-6 * (1.0 + 0.3 * k), 60.0, t)
+        + sine(1e-6 * (10.0 + k), 60.0, t)
         + sine(1e-6 * (1.0 + 2.0 * k), 70.0, t)
 }
 
@@ -111,6 +115,55 @@ pub fn run_feed(samples: &[[f64; 4]]) -> Vec<SensorStatus> {
         .enumerate()
         .filter_map(|(n, volts)| monitor.push((n as i64 + 1) * 2, volts))
         .collect()
+}
+
+/// The levels and fault flag the monitor holds after each of `blocks`, fed the
+/// original's FFT inputs; the clock is irrelevant to both.
+pub fn replay_blocks(blocks: &[SensorBlock]) -> Vec<(Levels, bool)> {
+    let mut monitor = SensorMonitor::new(SensorDesign::bt_lod());
+    monitor.set_engine_running(true);
+    blocks
+        .iter()
+        .map(|block| {
+            for n in 0..BLOCK_SAMPLES {
+                let volts = std::array::from_fn(|c| f64::from(block.samples[c][n]));
+                monitor.push(0, &volts);
+            }
+            (monitor.levels().clone(), monitor.faulted())
+        })
+        .collect()
+}
+
+/// The levels within [`LEVEL_EPSILON_DB`] and the fault flag exactly, per block.
+pub fn expect_blocks(actual: &[(Levels, bool)], blocks: &[SensorBlock]) -> Result<(), String> {
+    if actual.len() != blocks.len() {
+        return Err(format!(
+            "{} blocks, expected {}",
+            actual.len(),
+            blocks.len()
+        ));
+    }
+    for ((levels, faulted), block) in actual.iter().zip(blocks) {
+        if *faulted != block.faulted {
+            return Err(format!(
+                "block {}: fault {faulted}, expected {}",
+                block.index, block.faulted
+            ));
+        }
+        for (c, (got, want)) in levels.iter().zip(&block.levels).enumerate() {
+            let got_all = std::iter::once(got.line_noise).chain(got.bands.iter().copied());
+            let want_all = std::iter::once(want.line_noise).chain(want.bands);
+            for (i, (g, w)) in got_all.zip(want_all).enumerate() {
+                if (g - w).abs() > LEVEL_EPSILON_DB {
+                    return Err(format!(
+                        "block {} channel {c} level {i}: {g} dB, expected {w} dB",
+                        block.index
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Exact match of the overlay state sequence.

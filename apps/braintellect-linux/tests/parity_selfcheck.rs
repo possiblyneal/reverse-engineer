@@ -213,11 +213,35 @@ fn sensor_feed_red_on_a_wrong_stream_result() {
     use braintellect_linux::sensor::SensorStatus::{AdjustFit, Ready};
     use harness::sensor;
 
-    let healthy = sensor::run_feed(&sensor::stream(2, sensor::tones_healthy));
-    sensor::expect(&healthy, &[Ready, Ready]).expect("healthy feed");
-    let outlier = sensor::run_feed(&sensor::stream(2, sensor::tones_outlier));
-    assert!(sensor::expect(&outlier, &[Ready, Ready]).is_err());
-    assert!(sensor::expect(&healthy, &[Ready, AdjustFit]).is_err());
-    let short = sensor::run_feed(&sensor::stream(1, sensor::tones_healthy));
-    assert!(sensor::expect(&short, &[Ready, Ready]).is_err());
+    let healthy = sensor::run_feed(&sensor::stream(4, sensor::tones_healthy));
+    sensor::expect(&healthy, &[Ready; 4]).expect("healthy feed");
+    let outlier = sensor::run_feed(&sensor::stream(4, sensor::tones_outlier));
+    assert!(sensor::expect(&outlier, &[Ready; 4]).is_err());
+    assert!(sensor::expect(&healthy, &[Ready, Ready, Ready, AdjustFit]).is_err());
+    let short = sensor::run_feed(&sensor::stream(3, sensor::tones_healthy));
+    assert!(sensor::expect(&short, &[Ready; 4]).is_err());
+}
+
+#[test]
+fn sensor_replay_red_on_a_wrong_level_or_fault() {
+    use harness::{fixtures, sensor, tolerance::LEVEL_EPSILON_DB};
+
+    let blocks = fixtures::sensor_blocks();
+    let actual = sensor::replay_blocks(&blocks);
+    sensor::expect_blocks(&actual, &blocks).expect("the clone against the original");
+
+    let mut within = actual.clone();
+    within[3].0[1].bands[2] += LEVEL_EPSILON_DB / 2.0;
+    sensor::expect_blocks(&within, &blocks).expect("inside the tolerance");
+
+    let mut wrong_band = actual.clone();
+    wrong_band[3].0[1].bands[2] += LEVEL_EPSILON_DB * 2.0;
+    assert!(sensor::expect_blocks(&wrong_band, &blocks).is_err());
+    let mut wrong_line = actual.clone();
+    wrong_line[0].0[0].line_noise = -44.7;
+    assert!(sensor::expect_blocks(&wrong_line, &blocks).is_err());
+    let mut wrong_fault = actual.clone();
+    wrong_fault[5].1 = !wrong_fault[5].1;
+    assert!(sensor::expect_blocks(&wrong_fault, &blocks).is_err());
+    assert!(sensor::expect_blocks(&actual[1..], &blocks).is_err());
 }

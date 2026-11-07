@@ -149,10 +149,11 @@ those findings, it cites them.
   carries it). `sensor::SensorMonitor` is the pre-session feed (512-sample FFT blocks per
   channel, five band levels, then the evaluator). `live::monitor` runs it on an
   opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check sensors" button,
-  `Command::CheckSensors`; the window shows the status). Its FFT scale and line-noise
-  frequency rule are unverified because the replay-capture parity for levels is open
-  (`sensor-status.md`, "Unresolved"). Tests: `tests/parity_sensor_status.rs` (synthetic fault
-  tests), `tests/parity_sensor_monitor.rs` (`live::monitor` over the in-memory stream). `ui::state::UiModel` is the
+  `Command::CheckSensors`; the window shows the status). Its levels (FFT scale, level offset, bin rule, line-noise
+  floor for two blocks then the 60 Hz level) and the evaluator fault flag are replay-checked
+  against the original; the 50 Hz branch of the line rule and the overlay timing on a captured
+  stream are not (`sensor-status.md`). Tests: `tests/parity_sensor_status.rs` (synthetic fault
+  tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`), `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the in-memory stream). `ui::state::UiModel` is the
   pure model (actions and events in, `View` out) and is tested in `tests/ui_state.rs`;
   `ui::app` only draws it, and `ui::worker` is the device glue (RFCOMM with a 1 s read
   timeout, ALSA, the default store, bank 1002); neither is unit-tested. The window offers the

@@ -6,7 +6,8 @@
 //! the channel's FFT spectrum); [`SensorStatusEngine`] applies the three fault tests
 //! with the `stateChangeDelay` debounce and the engine lifecycle (off while a session
 //! plays). [`SensorMonitor`] adds the FFT stage and level computation in front of it;
-//! its FFT scale and 50/60 Hz choice are unverified.
+//! the FFT scale, level offset, bin choice and the line-noise start-up were checked
+//! against a capture of the original; the choice of 50 Hz over 60 Hz was not.
 
 /// `lineNoiseDifference` of the BT-LOD `Sensors` element, in dB.
 pub const LINE_NOISE_DIFFERENCE: f32 = 15.5;
@@ -72,21 +73,26 @@ pub struct ChannelLevels {
 }
 
 /// The spectrum bin of `freq_hz` in a spectrum of `bins` values at `rate_hz`
-/// (`0x560f40`): the nearest bin, halves up.
+/// (`0x560f40`): the frequency over the bin width, truncated (the rounding term at
+/// `0x18943f0` reads as 0.0; captured: 40 Hz is bin 40, 70 Hz is bin 71).
 #[must_use]
 pub fn bin_index(freq_hz: f32, rate_hz: f32, bins: usize) -> usize {
     let width = rate_hz / (2 * bins) as f32;
-    (freq_hz / width + 0.5).floor().max(0.0) as usize
+    (freq_hz / width).max(0.0) as usize
 }
 
-/// `20 * log10(bin)`; a bin of exactly 0.0 skips the log and keeps `previous`
+/// A bin of 0.04 reads 0 dB: the captured levels are `20 * log10(bin)` plus
+/// 27.9588 dB, which is `20 * log10(1 / 0.04)`.
+const LEVEL_REFERENCE: f32 = 0.04;
+
+/// `20 * log10(bin / 0.04)`; a bin of exactly 0.0 skips the log and keeps `previous`
 /// (`0x560f40`).
 #[must_use]
 pub fn level_db(bin: f32, previous: f32) -> f32 {
     if bin == 0.0 {
         previous
     } else {
-        20.0 * bin.log10()
+        20.0 * (bin / LEVEL_REFERENCE).log10()
     }
 }
 
@@ -105,21 +111,25 @@ const PAIR_BAND_HZ: [f32; 3] = [12.0, 40.0, 70.0];
 /// Channels of the design.
 const CHANNELS: usize = 4;
 
+/// `DSPFFT::process` (`0x637940`) scales each magnitude by `+0x54 / +0x50`: 1/128
+/// (`+0x54`, as captured for the 512-point FFT) over the window's mean (`+0x50`).
+const SPECTRUM_GAIN: f64 = 1.0 / 128.0;
+
 /// The spectrum of one channel's block, as the FFT element emits it: Bartlett
-/// window, real FFT, magnitude of bins 0..N/2.
-///
-/// Unverified against the original: `DSPFFT::process` (`0x637940`) scales each
-/// magnitude by `+0x54 / +0x50`, whose values are not recovered; this uses 1.
+/// window, real FFT, magnitude of bins 0..N/2, scaled by `SPECTRUM_GAIN` over the
+/// window's mean.
 fn spectrum(block: &[f64]) -> Vec<f32> {
     let n = block.len();
-    let mut re: Vec<f64> = block
-        .iter()
-        .enumerate()
-        .map(|(i, &x)| x * (1.0 - (2.0 * i as f64 / (n - 1) as f64 - 1.0).abs()))
+    let window: Vec<f64> = (0..n)
+        .map(|i| 1.0 - (2.0 * i as f64 / (n - 1) as f64 - 1.0).abs())
         .collect();
+    let scale = SPECTRUM_GAIN / (window.iter().sum::<f64>() / n as f64);
+    let mut re: Vec<f64> = block.iter().zip(&window).map(|(x, w)| x * w).collect();
     let mut im = vec![0.0; n];
     fft(&mut re, &mut im);
-    (0..n / 2).map(|k| re[k].hypot(im[k]) as f32).collect()
+    (0..n / 2)
+        .map(|k| (re[k].hypot(im[k]) * scale) as f32)
+        .collect()
 }
 
 /// In-place radix-2 FFT; `re.len()` is a power of two.
@@ -184,15 +194,26 @@ impl BandLevels {
 /// The FFT stage and level computation in front of [`SensorStatusEngine`]: Source
 /// output in volts, one sample per channel at a time.
 ///
-/// Unverified against the original (open in `sensor-status.md`): the FFT scaling,
-/// the band scalers (taken as identity), and the line-noise frequency rule, which
-/// here picks the mains frequency with the higher mean level over the channels.
+/// Head2D picks the mains frequency to test once, after 8 channel updates (two
+/// blocks), and retries every 8 until it does (`0x565300`); until then the line-noise
+/// level is the -120 dB floor (`+0x70`). It takes 60 Hz when the channel-mean 60 Hz
+/// level exceeds the 70 Hz control level, else 50 Hz when the 50 Hz mean does. Only the
+/// 60 Hz outcome was captured; the 50 Hz branch and the operand order are from the
+/// decompile (`sensor-status.md`).
 #[derive(Debug, Clone)]
 pub struct SensorMonitor {
     engine: SensorStatusEngine,
     block: [Vec<f64>; CHANNELS],
     levels: [BandLevels; CHANNELS],
+    updates: usize,
+    line: Option<usize>,
+    current: [ChannelLevels; CHANNELS],
 }
+
+/// The line-noise level before a mains frequency is chosen (`+0x70`).
+const LINE_NOISE_FLOOR_DB: f32 = -120.0;
+/// Channel updates between line-noise decisions (`+0x398`).
+const LINE_NOISE_TEST_DELAY: usize = 8;
 
 impl SensorMonitor {
     #[must_use]
@@ -201,6 +222,39 @@ impl SensorMonitor {
             engine: SensorStatusEngine::new(design),
             block: std::array::from_fn(|_| Vec::with_capacity(BLOCK_SAMPLES)),
             levels: std::array::from_fn(|_| BandLevels::default()),
+            updates: 0,
+            line: None,
+            current: std::array::from_fn(|_| ChannelLevels {
+                line_noise: LINE_NOISE_FLOOR_DB,
+                bands: vec![0.0; PAIR_BAND_HZ.len()],
+            }),
+        }
+    }
+
+    /// The levels after the last completed block.
+    #[must_use]
+    pub fn levels(&self) -> &[ChannelLevels; CHANNELS] {
+        &self.current
+    }
+
+    /// Whether the evaluator's three tests fail on the levels after the last block.
+    #[must_use]
+    pub fn faulted(&self) -> bool {
+        self.engine.faulted(&self.current)
+    }
+
+    /// The mains frequency choice from the channel means (50 Hz, 60 Hz, 70 Hz control).
+    fn choose_line(&self) -> Option<usize> {
+        let mean = |level: fn(&BandLevels) -> f32| {
+            self.levels.iter().map(level).sum::<f32>() / CHANNELS as f32
+        };
+        let control = mean(|l| l.pair[2]);
+        if mean(|l| l.mains[1]) > control {
+            Some(1)
+        } else if mean(|l| l.mains[0]) > control {
+            Some(0)
+        } else {
+            None
         }
     }
 
@@ -222,13 +276,17 @@ impl SensorMonitor {
             levels.update(&spectrum(block));
             block.clear();
         }
-        let mean = |i: usize| self.levels.iter().map(|l| l.mains[i]).sum::<f32>() / CHANNELS as f32;
-        let line = usize::from(mean(1) >= mean(0));
-        let channels: [ChannelLevels; CHANNELS] = std::array::from_fn(|c| ChannelLevels {
-            line_noise: self.levels[c].mains[line],
+        self.current = std::array::from_fn(|c| ChannelLevels {
+            line_noise: self
+                .line
+                .map_or(LINE_NOISE_FLOOR_DB, |i| self.levels[c].mains[i]),
             bands: self.levels[c].pair.to_vec(),
         });
-        Some(self.engine.update(now_ms, &channels))
+        self.updates += CHANNELS;
+        if self.line.is_none() && self.updates.is_multiple_of(LINE_NOISE_TEST_DELAY) {
+            self.line = self.choose_line();
+        }
+        Some(self.engine.update(now_ms, &self.current))
     }
 }
 

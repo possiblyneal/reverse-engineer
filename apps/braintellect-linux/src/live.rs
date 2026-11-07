@@ -288,7 +288,7 @@ pub fn monitor<T: Read + Write>(
                         std::array::from_fn(|c| source[c].push(frame.channels[c][n] * 1e-6));
                     samples += 1;
                     // The clock is read only for the sample that completes a block.
-                    let now_ms = if samples % BLOCK_SAMPLES == 0 {
+                    let now_ms = if samples.is_multiple_of(BLOCK_SAMPLES) {
                         clock()
                     } else {
                         0
