@@ -48,7 +48,12 @@ hook13 capture `tmp/s57/s57.bin` (`--src57`, never committed; run 8's no-wearer 
 the original on the Optimize tab): for a few of the 105 blocks, each channel's 512 float32 FFT
 input, and the levels and fault flag the original's Head2D and evaluator produced from it.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src57 FILE] [--src58 DIR] [--baseline DIR] [--out DIR]
+The all-channel acquisition fixtures (`consumed_stream.txt`, `consumed_volts.tsv`) come from the
+ticket-55 replay log `tmp/s55/s55.bin` (`--src55`, never committed; `hook13.js` output of the
+original fed run 8's no-wearer stream by `emulate`): the first `S55_FRAMES` frames the original
+consumed, and its logged volts for channels 0 to 3 of each consumed sample as float64 bit patterns.
+
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src57 FILE] [--src58 DIR] [--src55 FILE] [--baseline DIR] [--out DIR]
 """
 import argparse
 import collections
@@ -670,7 +675,7 @@ RUN8_FILE_LIMIT = 9000  # EEG frames or block rows per file; keeps every file un
 RUN8_BAND_RANKS = (14, 3, 2, 8, 9, 16, 12, 0)
 
 
-RUN8_TAGS = frozenset((1, 2, 3, 4, 5, 7, 11, 12, 20, 21))  # serial RX, block, clocks, graph calls, note, amplitudes, volts, Evaluator series input and key
+RUN8_TAGS = frozenset((1, 2, 3, 4, 5, 7, 11, 12, 13, 20, 21))  # serial RX, block, clocks, graph calls, note, amplitudes, ch0 volts, ch1..3 volts, Evaluator series input and key
 
 
 def run8_records(path):
@@ -684,12 +689,13 @@ def run8_records(path):
             i += length
 
 
-def run8_frames(records):
+def run8_frames(records, raw=None):
     """Received frames and the volts the app consumed, from the serial RX records.
 
     A frame is `AC BC CC 03`, a 16-bit counter and 8 x 24-bit samples; `03 03` in
     the counter position is accepted only when it continues the counter.
-    Returns (frames as 8 raw ints, consumed ch0 volts in order).
+    Returns (frames as 8 raw ints, consumed ch0 volts in order). `raw`, if given, collects
+    each frame's 32 bytes.
     """
     buf, frames, volts = bytearray(), [], []
     prev = None
@@ -712,12 +718,14 @@ def run8_frames(records):
                     continue
                 prev = counter
                 frames.append([i24(buf[8 + 3 * k:11 + 3 * k]) for k in range(8)])
+                if raw is not None:
+                    raw.append(bytes(buf[:FRAME_LEN]))
                 del buf[:FRAME_LEN]
     return frames, volts
 
 
-def run8_consumed_frames(frames, volts):
-    """The received frames holding the samples the app consumed, in order.
+def run8_consumed_indices(frames, volts):
+    """Indices of the received frames holding the samples the app consumed, in order.
 
     Each consumed ch0 volt is matched forward (within 400 samples) to the received
     ch0 slot 0 / slot 4 sequence; frames the app never consumed (counter jumps) drop out.
@@ -733,7 +741,40 @@ def run8_consumed_frames(frames, volts):
             raise SystemExit("consumed sample has no received counterpart")
         used.add(q // 2)
         pos = q + 1
-    return [frames[k] for k in sorted(used)]
+    return sorted(used)
+
+
+def run8_consumed_frames(frames, volts):
+    """The received frames holding the samples the app consumed, in order."""
+    return [frames[k] for k in run8_consumed_indices(frames, volts)]
+
+
+S55_FRAMES = 150  # consumed frames kept in the committed all-channel acquisition fixture
+
+
+def s55_consumed(path):
+    """The frames the original consumed and its logged volts for channels 0 to 3.
+
+    `path` is a `hook13.js` log (tag 12: channel 0, tag 13: channels 1 to 3) of the original
+    fed a no-wearer stream by `emulate`. Returns (consumed frames as 32 raw bytes, volts rows
+    of [ch0, ch1, ch2, ch3] per consumed sample), both cut to the samples every channel logged.
+    """
+    records = list(run8_records(path))
+    raw, volts0 = [], []
+    frames, volts0 = run8_frames(records, raw)
+    volts = [volts0] + [[] for _ in range(3)]
+    for tag, v in records:
+        if tag == 13:
+            volts[int(v[3])].append(v[5])
+    used = run8_consumed_indices(frames, volts0)
+    n = min(len(c) for c in volts) // 2 * 2
+    n = min(n, 2 * len(used))
+    return [raw[k] for k in used[:n // 2]], [[volts[c][i] for c in range(4)] for i in range(n)]
+
+
+def s55_row(row):
+    """One consumed sample: the four logged volts as float64 bit patterns."""
+    return "\t".join("%016x" % struct.unpack("<Q", struct.pack("<d", x))[0] for x in row) + "\n"
 
 
 def run8_blocks(records):
@@ -881,6 +922,7 @@ def main():
     ap.add_argument("--src8", type=pathlib.Path, default=root / "tmp/s43/run8/run8.bin")
     ap.add_argument("--src57", type=pathlib.Path, default=root / "tmp/s57/s57.bin")
     ap.add_argument("--src58", type=pathlib.Path, default=root / "tmp/s58")
+    ap.add_argument("--src55", type=pathlib.Path, default=root / "tmp/s55/s55.bin")
     ap.add_argument("--baseline", type=pathlib.Path, default=root / "tmp/s43/baseline")
     ap.add_argument(
         "--out", type=pathlib.Path,
@@ -947,6 +989,15 @@ def main():
         (args.out / name).write_text(text)
     for name, text in sensor_blocks(args.src57).items():
         (args.out / name).write_text(text)
+
+    frames55, rows55 = s55_consumed(args.src55)
+    if len(frames55) < S55_FRAMES:
+        raise SystemExit("ticket-55 replay log holds too few consumed frames")
+    counters = [(f[4] << 8) | f[5] for f in frames55[:S55_FRAMES]]
+    if any(b != (a + 1) & 0xFFFF for a, b in zip(counters, counters[1:])):
+        raise SystemExit("ticket-55 replay dropped a frame inside the committed window")
+    (args.out / "consumed_stream.txt").write_text("".join(f.hex() + "\n" for f in frames55[:S55_FRAMES]))
+    (args.out / "consumed_volts.tsv").write_text("".join(s55_row(r) for r in rows55[:2 * S55_FRAMES]))
 
 
 if __name__ == "__main__":

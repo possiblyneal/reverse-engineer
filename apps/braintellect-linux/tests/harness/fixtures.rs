@@ -144,6 +144,34 @@ pub fn expected_microvolts() -> Vec<(u16, Vec<f64>)> {
         .collect()
 }
 
+/// The frames the original consumed from the replayed no-wearer stream
+/// (`consumed_stream.txt`, one 32-byte frame per line), as the transport's chunks.
+pub fn consumed_stream_chunks() -> Vec<Vec<u8>> {
+    read("consumed_stream.txt").lines().map(unhex).collect()
+}
+
+/// Parse volts rows (`consumed_volts.tsv`: per consumed sample, the original's logged volts of
+/// channels 0 to 3 as float64 bit patterns) into microvolts per channel, `[channel][sample]`.
+/// The `* 1e6` is the clone's own last step (`stream.rs`); the logged volts are the independent
+/// value.
+pub fn consumed_microvolts_from(text: &str) -> Vec<Vec<f64>> {
+    let mut channels = vec![Vec::new(); 4];
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols.len(), 4, "four channels per consumed sample");
+        for (c, col) in cols.iter().enumerate() {
+            let bits = u64::from_str_radix(col, 16).expect("float64 bits");
+            channels[c].push(f64::from_bits(bits) * 1e6);
+        }
+    }
+    channels
+}
+
+/// The original's logged consumed microvolts for the committed window, `[channel][sample]`.
+pub fn consumed_microvolts() -> Vec<Vec<f64>> {
+    consumed_microvolts_from(&read("consumed_volts.tsv"))
+}
+
 /// Baseline stored-record fields (`key -> value`).
 #[derive(Clone)]
 pub struct StoredRecord(pub BTreeMap<String, String>);
