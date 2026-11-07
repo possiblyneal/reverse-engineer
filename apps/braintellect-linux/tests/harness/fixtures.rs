@@ -6,7 +6,7 @@ use std::fs;
 use std::path::PathBuf;
 
 use braintellect_linux::feedback::circle_balance::{
-    Anchor, Axis, CircleBalanceDesign, Graph, LmhBand, Meter, MeterInput, TimeWindow,
+    Anchor, Axis, CircleBalanceDesign, Graph, Lmh, LmhBand, LmhPoint, Meter, MeterInput, TimeWindow,
 };
 use braintellect_linux::feedback::{
     BandPassDesign, BandPassSpec, CoherenceSpec, Interference1, Interference2, PeakDesign,
@@ -747,4 +747,61 @@ pub fn circle_balance_design() -> CircleBalanceDesign {
         })
         .collect();
     CircleBalanceDesign { inputs }
+}
+
+/// A stored exercise's LMH series from `scripts/lmh-extract.py`'s TSV (a `duration` row in seconds,
+/// then `channel band x_ms y` rows) and the exercise length.
+pub fn parse_lmh(text: &str) -> (Lmh, u32) {
+    let mut duration_s = None;
+    let mut lmh = Lmh::default();
+    for line in text.lines() {
+        let c: Vec<&str> = line.split('\t').collect();
+        if c[0] == "duration" {
+            duration_s = Some(c[1].parse().expect("duration"));
+            continue;
+        }
+        let band = match c[1] {
+            "High" => LmhBand::High,
+            "Low" => LmhBand::Low,
+            other => panic!("band {other}"),
+        };
+        lmh.series_mut(c[0].parse().expect("channel"), band)
+            .push(LmhPoint {
+                x_ms: c[2].parse().expect("x"),
+                y: c[3].parse::<f64>().expect("y") as f32,
+            });
+    }
+    (lmh, duration_s.expect("duration row"))
+}
+
+/// The no-wearer exercise 146's stored LMH series (`circle_balance_lmh.tsv`).
+pub fn circle_balance_lmh() -> (Lmh, u32) {
+    parse_lmh(&read("circle_balance_lmh.tsv"))
+}
+
+/// The values the original's chart inputs received over that exercise, in the original's
+/// call order (`circle_balance_chart.tsv`, float32 bit patterns): Emotional then Activation,
+/// each Before then After, each top (High) then bottom (Low).
+pub fn circle_balance_chart() -> Vec<f32> {
+    read("circle_balance_chart.tsv")
+        .lines()
+        .map(|l| f32::from_bits(u32::from_str_radix(l, 16).expect("chart bits")))
+        .collect()
+}
+
+/// The clone's report over `lmh`, reordered from the design's input order into the order the
+/// original's report adds values to its charts.
+pub fn circle_balance_report_in_call_order(lmh: &Lmh, duration_s: u32) -> Vec<Option<f32>> {
+    let design = CircleBalanceDesign::circle_balance();
+    let report = design.report(lmh, duration_s);
+    let rank = |i: &MeterInput| {
+        (
+            i.meter != Meter::Emotional,
+            i.graph != Graph::Before,
+            i.axis != Axis::Top,
+        )
+    };
+    let mut order: Vec<usize> = (0..report.len()).collect();
+    order.sort_by_key(|&k| rank(&design.inputs[k]));
+    order.into_iter().map(|k| report[k]).collect()
 }

@@ -138,16 +138,19 @@ impl Lmh {
     }
 }
 
-/// The `absolute` Aggregator over the points a window keeps: a `float32` running sum, then
-/// sum / count (receive 0x649cc0, accumulator vtable 0x18bf978, mean 0x649850). `None` when
+/// The `absolute` Aggregator over the points a window keeps: a double running sum, then
+/// sum / count rounded to `float32` (receive 0x649cc0, accumulator vtable 0x18bf978, mean
+/// 0x649850; bit-exact against the original's chart inputs). `None` when
 /// the window keeps no point, as the aggregator then has nothing to emit.
 #[must_use]
 pub fn window_mean(points: &[LmhPoint], window: TimeWindow, duration_s: u32) -> Option<f32> {
     let (sum, count) = points
         .iter()
         .filter(|p| window.keeps(p.x_ms, duration_s))
-        .fold((0.0_f32, 0_u32), |(sum, count), p| (sum + p.y, count + 1));
-    (count > 0).then(|| sum / count as f32)
+        .fold((0.0_f64, 0_u32), |(sum, count), p| {
+            (sum + f64::from(p.y), count + 1)
+        });
+    (count > 0).then(|| (sum / f64::from(count)) as f32)
 }
 
 /// [`BALANCE_EXPRESSION`] over the two window means: evaluated in double precision (muParser,
