@@ -11,6 +11,7 @@
 //! playback.
 
 mod band_pass;
+pub mod circle_balance;
 mod coherence;
 mod counter;
 mod evaluator;

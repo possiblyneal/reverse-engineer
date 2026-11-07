@@ -100,6 +100,15 @@ those findings, it cites them.
   `end_to_end_note_decisions_match_the_baseline` (`tests/parity_smart2_stages.rs`)
   fails because run 6 did not log the counter lap read. Parity tests pick the logged or
   the evaluated code with `harness::run8::Codes`.
+- **Circle-Balance report** (`src/feedback/circle_balance.rs`). `B-2-Circle-Balance-fromBAGSD-v5.1.1`
+  is a post-session report (`BAGSD.report`) over a stored exercise's `High`/`Low` LMH series, not a
+  live design, so it is not in the session window. `CircleBalanceDesign::circle_balance` is its
+  wiring, asserted against `tests/fixtures/circle_balance_design.tsv` (`make-fixtures.py --src64`,
+  `tests/parity_circle_balance.rs`); `report` runs the `TimeFilter` window, the `absolute` mean
+  and the Balance Meter expression. Its values are reported only: no capture of the original's
+  chart inputs exists, and the clone stores no LMH series. The ignored `tests/replay_s62.rs`
+  prints them over `S62_LMH` (`scripts/lmh-extract.py` output from a decoded type-9 XML, under
+  `tmp/`). Evidence and the capture needed: `audio-feedback.md`, "Circle-Balance design".
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
   database (`rusqlite`, bundled SQLite), at `$XDG_DATA_HOME/braintellect-linux/sessions.db`,
   else `~/.local/share/braintellect-linux/sessions.db` (a relative

@@ -5,6 +5,9 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+use braintellect_linux::feedback::circle_balance::{
+    Anchor, Axis, CircleBalanceDesign, Graph, LmhBand, Meter, MeterInput, TimeWindow,
+};
 use braintellect_linux::feedback::{
     BandPassDesign, BandPassSpec, CoherenceSpec, Interference1, Interference2, PeakDesign,
     PeakSpec, Smart2Design, SourceDesign,
@@ -673,4 +676,53 @@ pub fn sensor_blocks() -> Vec<SensorBlock> {
             }
         })
         .collect()
+}
+
+/// The Circle-Balance design's chart inputs, read from the design XML by `make-fixtures.py`
+/// (`circle_balance_design.tsv`, one row per input).
+pub fn circle_balance_design() -> CircleBalanceDesign {
+    let inputs = read("circle_balance_design.tsv")
+        .lines()
+        .map(|line| {
+            let c: Vec<&str> = line.split('\t').collect();
+            let num = |i: usize| -> u32 { c[i].parse().expect("design number") };
+            MeterInput {
+                meter: match c[0] {
+                    "Emotional State" => Meter::Emotional,
+                    "Activation State" => Meter::Activation,
+                    other => panic!("chart {other}"),
+                },
+                graph: match c[1] {
+                    "Before" => Graph::Before,
+                    "After" => Graph::After,
+                    other => panic!("graph {other}"),
+                },
+                axis: match c[2] {
+                    "top" => Axis::Top,
+                    "bottom" => Axis::Bottom,
+                    other => panic!("axis {other}"),
+                },
+                band: match c[3] {
+                    "High" => LmhBand::High,
+                    "Low" => LmhBand::Low,
+                    other => panic!("band {other}"),
+                },
+                window: TimeWindow {
+                    anchor: match c[4] {
+                        "Start" => Anchor::Start,
+                        "End" => Anchor::End,
+                        other => panic!("anchor {other}"),
+                    },
+                    begin_s: num(5),
+                    end_s: num(6),
+                },
+                channels: (
+                    c[7].parse().expect("channel A"),
+                    c[8].parse().expect("channel B"),
+                ),
+                expression: c[9].to_owned(),
+            }
+        })
+        .collect();
+    CircleBalanceDesign { inputs }
 }
