@@ -11,10 +11,13 @@
 //! Inputs the clone does not derive, and what a live run uses for each:
 //! - The Evaluator is not implemented; every block runs under its documented
 //!   `defaultControlValue`, [`DEFAULT_CONTROL`].
-//! - The IPP scalar-head flags stay at the graph's default (all `false`).
-//! - The counter timer starts at the clock reading taken as the graph is built, and
-//!   both of its clock reads per block are the block's reading
-//!   (`audio-feedback.md`, "Counter timer").
+//! - The IPP scalar-head flags are all `true`: the original's order follows heap alignment
+//!   per process, and all-scalar-head departs less from its logged order than all-SIMD
+//!   (`audio-feedback.md`, "Live sum order").
+//! - The counter timer starts one epoch ([`TRIGGER_EPOCH_MS`]) before the clock reading
+//!   taken as the graph is built, so the first block is already eligible to fire, as in
+//!   the original (`audio-feedback.md`, "Counter timer start"); both of its clock reads
+//!   per block are the block's reading.
 
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
@@ -30,7 +33,7 @@ use crate::audio::player::Player;
 use crate::audio::sink::{AlsaSink, SinkError};
 use crate::feedback::{
     Interference1, Interference2, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
-    BLOCK_LEN, CHANNELS, RATE_HZ,
+    BLOCK_LEN, CHANNELS, RATE_HZ, TRIGGER_EPOCH_MS,
 };
 use crate::storage::{Channel, Header, Point, Series, SessionRecord, Store};
 
@@ -285,8 +288,10 @@ impl<'a> Engine<'a> {
             .map(|_| SourceFilters::new(&design.source, RATE_HZ))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        let graph = Smart2Graph::new(design.clone(), start_ms).map_err(|e| e.to_string())?;
+        let mut graph = Smart2Graph::new(design.clone(), start_ms - TRIGGER_EPOCH_MS)
+            .map_err(|e| e.to_string())?;
         let bands = design.band_passes.len();
+        graph.set_scalar_heads(&vec![true; bands]);
         Ok(Self {
             design,
             source,

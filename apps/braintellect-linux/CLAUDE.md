@@ -115,9 +115,17 @@ those findings, it cites them.
   per-channel RMS microvolts over the last second, triggers) through `Environment::report`;
   the transport, sink, clock and stop flag are all injected. Live inputs the clone does not
   derive: every block runs under the Evaluator's `defaultControlValue`
-  (`live::DEFAULT_CONTROL`, 111; the Evaluator is unimplemented), the IPP scalar-head flags
-  stay all `false`, and the counter timer starts at the clock reading taken as the graph is
-  built, both of its reads being the block's. The clinician sets the Source device settings
+  (`live::DEFAULT_CONTROL`, 111; the Evaluator is unimplemented). The IPP scalar-head
+  flags are all `true`: the original's sum order follows heap alignment per process and
+  cannot be derived, so a live run fixes the order that departs less from run 8's logged
+  one. Measured on run 8 and its replay, all-scalar-head differs from the logged order in
+  about 13.0 % of band amplitudes (last `float32` bit) against 13.1 % to 13.3 % for all-SIMD,
+  and changes no Trigger or Note decision (`audio-feedback.md`, "Live sum order"; pinned by
+  `tests/parity_smart2_exercise.rs`). The counter timer starts one epoch
+  (`feedback::TRIGGER_EPOCH_MS`, 500 ms) before the clock reading taken as the graph is
+  built, so the first block is already eligible, as in the original, where the timer was
+  3.7 to 21 s old at block 0 (`audio-feedback.md`, "Counter timer start"); both of its
+  reads per block are the block's. The clinician sets the Source device settings
   (`SessionProperties`, default the run-8 baseline) and the length; the design is
   `Smart2Design::smart2`, checked against the design fixture in `tests/parity_feedback.rs`.
   The stored series are one point per band-pass amplitude (microvolts) every 5 s of stream

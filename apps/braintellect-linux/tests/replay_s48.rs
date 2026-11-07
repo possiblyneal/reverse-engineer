@@ -20,7 +20,7 @@ use std::path::PathBuf;
 
 use braintellect_linux::feedback::BLOCK_LEN;
 use harness::fixtures::Run8Block;
-use harness::run8::{replay_from, Replay};
+use harness::run8::{deviation, replay_from, Replay};
 
 fn dir() -> PathBuf {
     std::env::var_os("S48_REPLAY_DIR").map_or_else(
@@ -357,6 +357,20 @@ fn clone_decisions_on_the_replayed_stream_against_the_originals() {
             want.get(i),
             got.get(i)
         ),
+    }
+    // The live sum-order policies against the logged order (`audio-feedback.md`, "Live sum
+    // order"). A..D flags stand in (run 8's ranks), so the figures cover E..H exactly and A..D
+    // by stand-in.
+    for (name, scalar_head) in [("all-SIMD", false), ("all-scalar-head", true)] {
+        let policy: Vec<Run8Block> = blocks_under(&logged, ranks, usize::MAX)
+            .into_iter()
+            .map(|b| Run8Block {
+                scalar_heads: [scalar_head; 8],
+                ..b
+            })
+            .collect();
+        let other = replay_at(&eeg, meta.eeg_base, policy, graph_start, switch);
+        println!("sum order {name}: {:?}", deviation(&run, &other));
     }
     assert_eq!(mismatch, None, "logged E..H amplitudes differ");
     assert!(

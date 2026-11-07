@@ -38,6 +38,65 @@ pub fn replay() -> &'static Replay {
     RUN.get_or_init(build)
 }
 
+/// How far one replay's output departs from another's over the same blocks.
+#[derive(Debug, PartialEq, Eq)]
+pub struct Deviation {
+    /// Band amplitudes (every band, every sample) whose `float32` bits differ.
+    pub amplitudes: usize,
+    pub amplitudes_total: usize,
+    /// Blocks holding at least one differing amplitude.
+    pub blocks: usize,
+    pub blocks_total: usize,
+    /// Blocks whose Trigger decision differs.
+    pub triggers: usize,
+    /// Blocks whose note at a trigger differs.
+    pub notes: usize,
+}
+
+/// What `other` changes against `base`: amplitudes, blocks and decisions.
+pub fn deviation(base: &Replay, other: &Replay) -> Deviation {
+    let mut d = Deviation {
+        amplitudes: 0,
+        amplitudes_total: 0,
+        blocks: 0,
+        blocks_total: base.decisions.len(),
+        triggers: 0,
+        notes: 0,
+    };
+    for (a, b) in base.decisions.iter().zip(&other.decisions) {
+        let before = d.amplitudes;
+        for (x, y) in a.samples.iter().zip(&b.samples) {
+            for (p, q) in x.bands.iter().zip(&y.bands) {
+                d.amplitudes_total += 1;
+                d.amplitudes += usize::from(p.to_bits() != q.to_bits());
+            }
+        }
+        d.blocks += usize::from(d.amplitudes > before);
+        d.triggers += usize::from(a.trigger != b.trigger);
+        d.notes += usize::from(a.note_at_trigger != b.note_at_trigger);
+    }
+    d
+}
+
+/// The replay with every band-pass call's 16-tap-mean flag set to `scalar_head`, in place
+/// of the logged ones (the live sum-order policies; `audio-feedback.md`, "Live sum order").
+pub fn replay_with_flags(scalar_head: bool) -> Replay {
+    let blocks = fixtures::run8_blocks()
+        .into_iter()
+        .map(|b| Run8Block {
+            scalar_heads: [scalar_head; 8],
+            ..b
+        })
+        .collect();
+    replay_from(
+        &fixtures::run8_eeg(),
+        GRAPH_START - PREROLL,
+        GRAPH_START,
+        GRAPH_START + 1,
+        blocks,
+    )
+}
+
 fn build() -> Replay {
     replay_from(
         &fixtures::run8_eeg(),

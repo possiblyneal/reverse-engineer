@@ -16,7 +16,7 @@ use braintellect_linux::feedback::BLOCK_LEN;
 
 use harness::assertions;
 use harness::fixtures::{self, Decision};
-use harness::run8::replay;
+use harness::run8::{deviation, replay, replay_with_flags, Deviation};
 
 fn expected(kind: &str) -> Vec<Decision> {
     fixtures::run8_decisions()
@@ -83,4 +83,39 @@ fn band_amplitudes_match_the_logged_values_bit_for_bit_from_the_first_block() {
             }
         }
     }
+}
+
+/// The live sum-order choice (`audio-feedback.md`, "Live sum order"): the original's order
+/// depends on heap alignment per process, so a live run fixes one order for every band-pass
+/// call. Measured against the logged order of run 8 (120462 of 240008 band-pass calls take
+/// the scalar head), all-scalar-head departs less than all-SIMD, and neither changes a
+/// Trigger or a Note decision.
+#[test]
+fn the_live_sum_order_choice_moves_amplitudes_but_no_decision() {
+    let logged = replay();
+    let simd = deviation(logged, &replay_with_flags(false));
+    let scalar = deviation(logged, &replay_with_flags(true));
+    assert_eq!(
+        simd,
+        Deviation {
+            amplitudes: 126_070,
+            amplitudes_total: 960_032,
+            blocks: 28_702,
+            blocks_total: 30_001,
+            triggers: 0,
+            notes: 0,
+        }
+    );
+    assert_eq!(
+        scalar,
+        Deviation {
+            amplitudes: 125_013,
+            amplitudes_total: 960_032,
+            blocks: 28_655,
+            blocks_total: 30_001,
+            triggers: 0,
+            notes: 0,
+        }
+    );
+    assert!(scalar.amplitudes < simd.amplitudes);
 }

@@ -48,6 +48,18 @@ fn exercise(
     properties: &SessionProperties,
     stop_when: Option<fn(&Snapshot) -> bool>,
 ) -> Outcome {
+    exercise_stepping(name, frames, stall, properties, stop_when, 8)
+}
+
+/// [`exercise`] with a clock that advances `step_ms` per reading.
+fn exercise_stepping(
+    name: &str,
+    frames: usize,
+    stall: bool,
+    properties: &SessionProperties,
+    stop_when: Option<fn(&Snapshot) -> bool>,
+    step_ms: i64,
+) -> Outcome {
     let rows: Vec<[i32; 8]> = fixtures::run8_eeg().into_iter().take(frames).collect();
     let mut transport = ReplayTransport::new(fixtures::wire(), frames_from_counts(&rows));
     if stall {
@@ -67,7 +79,7 @@ fn exercise(
     let mut readings = -1i64;
     let mut clock = move || {
         readings += 1;
-        readings * 8
+        readings * step_ms
     };
     let mut reports: Vec<Snapshot> = Vec::new();
     let mut report = |s: &Snapshot| {
@@ -171,6 +183,36 @@ fn triggers_reach_the_sink_as_audio_and_are_counted() {
     let blocks = THIRTY_SECONDS / 2;
     assert_eq!(run.sink.frames.len(), blocks * (RATE_HZ as usize / 125));
     assert!(run.sink.frames.iter().any(|&f| f != 0));
+}
+
+/// The block in which the first note sounds, on a clock that advances `step_ms` a reading.
+fn first_sounding_block(step_ms: i64) -> usize {
+    let run = exercise_stepping(
+        "first-fire",
+        THIRTY_SECONDS,
+        false,
+        &SessionProperties::default(),
+        None,
+        step_ms,
+    );
+    let frames_per_block = RATE_HZ as usize / 125;
+    run.sink
+        .frames
+        .iter()
+        .position(|&f| f != 0)
+        .map(|at| at / frames_per_block)
+        .expect("a note sounds")
+}
+
+/// The original's counter timer starts long before the first graph block (3707 to 21018 ms
+/// before it in three logged runs; `audio-feedback.md`, "Counter timer start"), so the first
+/// block is already past the 500 ms epoch and the first pass fires. At 8 ms a reading the
+/// first pass is past one epoch anyway; at 1 ms a reading the first 500 blocks fall inside the
+/// epoch of a timer started when the graph is built, which would hold the first fire back to
+/// block 500. The first fire must be the same block on both clocks.
+#[test]
+fn the_first_counter_fire_does_not_wait_one_epoch_after_the_graph_is_built() {
+    assert_eq!(first_sounding_block(1), first_sounding_block(8));
 }
 
 #[test]
