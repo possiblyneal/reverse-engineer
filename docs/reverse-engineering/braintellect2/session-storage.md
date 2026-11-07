@@ -161,5 +161,30 @@ Field map (clone -> original type 9):
 | `duration_s` | `properties` / header duration, 240 s |
 
 - Shape differs: the original has 49 points per series (5000, 10000, ..., 240000, then a closing point at 240008, one block after the stop); the clone stores 48 and no closing point.
-- Values do not match. The clone's band amplitude is an instantaneous per-sample value that moves by tens of percent between blocks; the original's points are steady (Channel4 Band-80 holds 2.64..2.74 µV) and its first point is a startup transient (2.94, 2.25, 2.90, 2.85 for Band-80 Channel1..4 against 1.36, 1.25, 2.43, 2.73 at 10 s). No clone sample, 2500-sample window mean, or cumulative mean equals any original point; nearest instantaneous match is off by 0.07..0.6 µV summed over four channels. The original's stored series is therefore a smoothed or windowed quantity whose definition is not yet recovered, and the Band-10 ranks for Channels 1..4 (A..D) are unlogged stand-ins besides.
-- Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the `LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, the 256-point `FFT-Normal-Order` series, and the `flowDesign` (type 1) and `flowControlMessage` (type 5) blobs. Follow-up: recover the stored-series smoothing from the `Evaluator` or the type-9 writer, then add an exact harness assertion; until then no assertion can hold the clone to the original.
+- Values differ: the clone stores an instantaneous per-sample band value that moves by tens of percent between blocks; the original's points are steady (Channel4 Band-80 holds 2.64..2.74 µV) and its first point is a startup transient (2.94, 2.25, 2.90, 2.85 for Band-80 Channel1..4 against 1.36, 1.25, 2.43, 2.73 at 10 s).
+
+### Recovered mechanism (offline fit, not exact)
+
+The type-9 `00-90` series come from the BAGSD flow design "Session Assess 3.4-v3.3" (`flowDesign` blob): `Source` Out1..4 feed `Band-NN` BandPassFilter elements (Band-10 1..3 Hz, Band-80 23..36 Hz; Butterworth, `infinite`, order 1) to OutAmplitude, then an AggregatorFilter ("discrete", averageEpoch 5 s, 2500 samples), then x1e6.
+
+Reproduced offline against b138 from the #48 replay inputs (`tmp/s48/replay/eeg.txt`, 4 x 24-bit counts per sample, volts = counts / `ChannelCalibration::new(12.0, 10.0).divisor(F12)`; fit program kept at `tmp/s56/fit56.rs`):
+
+- Source chain in volts: 25 Hz notch, 150 Hz low-pass, 1.5 Hz high-pass, warm from sample 0 with the 45 Hz low-pass switched in at sample 25644. Without the notch the Band-10 error is ten times larger and Band-80 far worse.
+- Band-pass: standard bilinear order-1 Butterworth band-pass, tan prewarp, unit gain at the digital centre `2*atan(sqrt(tan(w1/2)*tan(w2/2)))`, applied in transposed direct form II (decompiled design: kind 2 at 0x653220, prototype 0x652ac0).
+- OutAmplitude: sliding max of |y| over W samples (Band-10 W = 83, Band-80 W = 6, the clone's `max(rate/(2*high), 4)` rule), then the 16-tap mean with gain 2/16 (the clone's FIR `BandPass` tail).
+- Aggregate: plain mean of 2500 OutAmplitude samples times 1e6; window k covers samples s0 + 2500k .. s0 + 2500(k+1), s0 about 25639..25642 (the SMART-2 graph start is 25640).
+
+Fit quality on points 1..48: mean absolute error 1.2e-3..3e-3 µV (relative about 6e-4..1e-3), maximum 3e-3..0.3 µV on the transient first point; the best start sample differs per channel by up to three samples. A first-order highpass-times-lowpass cascade instead of the bilinear band-pass is ruled out (error 0.7..1.2 µV).
+
+### Blocker
+
+The fit does not reach the harness record tolerance (`RECORD_EPSILON` = 1e-6), so no stored-series value assertion exists and none is added. Not yet recovered:
+
+- the exact band-pass coefficients (about 1e-3 relative residual remains; f32 rounding of stages cannot explain it, so the design arithmetic or the notch/low-pass taps differ slightly);
+- the exact aggregation start per channel and the first (transient) point's cold or warm filter state;
+- what the closing point at 240008 is (a flush of a partial window on stop is the leading hypothesis);
+- the Band-10 ranks for Channels 1..4 (A..D) are unlogged stand-ins.
+
+Code located: BAGSD run 0x44b700; GeneralDataCollector 0x5c1300, 0x5c1c80, 0x5c2070; IIR design 0x66dc00, 0x6536a0, 0x653220, 0x652e90, 0x652ac0, 0x652020, 0x650a20; aggregator message handler 0x649cc0.
+
+Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the `LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, the 256-point `FFT-Normal-Order` series, and the `flowDesign` (type 1) and `flowControlMessage` (type 5) blobs. Follow-up: finish the coefficient and start-sample recovery above, build the IIR band-pass and 5 s aggregator in `src/feedback/`, then add an exact harness assertion with a `parity_selfcheck` red case.
