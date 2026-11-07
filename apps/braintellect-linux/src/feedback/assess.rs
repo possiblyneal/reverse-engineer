@@ -134,7 +134,7 @@ impl BandSeries {
 /// The Source output as the session stores it (`dataStorageStyle` `filtered`) and BAGSD
 /// reads it back: truncated toward zero to whole ADC counts, then volts as `f32`. Bit
 /// exact on every BAGSD band-pass input the #56 capture logged.
-fn stored_volts(volts: f64, counts_per_volt: f64) -> f64 {
+pub(super) fn stored_volts(volts: f64, counts_per_volt: f64) -> f64 {
     f64::from(((volts * counts_per_volt).trunc() / counts_per_volt) as f32)
 }
 

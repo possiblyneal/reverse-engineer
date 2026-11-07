@@ -22,15 +22,38 @@ chain is `Source -> filter -> AggregatorFilter -> GeneralDataCollector`; the FFT
 `Source -> FFT -> VectorAggregator -> collector`. Raw property dump: the decoded XML is
 sensitive-free but large, so it is not committed.
 
-## Discrete-FFT element
+## Run by the original after the exercise
 
-An `FFT` element with `fftStyle=discrete`: a 2^9 = 512-point transform with a Bartlett window
-and scaling 1.0, one spectrum per 512-sample block (1.024 s at 500 Hz), followed by a
-`VectorAggregator` that averages 3 absolute spectra.
+`designRole` `BAGSD.generate` marks a post-session generator: the original runs it over the
+stored Source data after every SMART-2 exercise (#56 captured that run), so the session window
+cannot select it and a live session cannot run it. Same finding as Circle-Balance (#62); the
+clone has no selector for it and none is invented. Its outputs are the stored series of
+`session-storage.md`: the aggregator bands (#56) and one `FFT-Normal-Order` vector per channel.
 
-## Not yet recovered
+## Discrete-FFT element (observed, static)
 
-The runtime algorithms (IIR band-pass amplitude, discrete aggregation, discrete FFT and
-`VectorAggregator` absolute) are unverified here, and no replay capture of the original running
-this design exists: the RTTI scan found no class names for these elements, so their vtables
-were not located, and the guest could not be driven to select the design.
+- Receive `0x6382d0`: a 512-float buffer (`+0x72` size, `+0x73` trigger count). A type-7 block
+  appends, or slides the buffer if it would overflow. Discrete (`+0x74` nonzero) transforms
+  only once the count reaches `+0x73`, then zeroes the buffer. A start or stop message (type 2
+  or 0xc) transforms a partial buffer, zero padded, when its count is neither 0 nor `+0x73`.
+- `DSPFFT::process` `0x637940`: `float32` Bartlett window, the IPP order-9 real FFT
+  (`ipp_fft.rs`), magnitude of bins 0..255, scaled by `1/128` over the window mean
+  (0.499022156).
+- Stored output: one 256-value vector per channel at x = 240016 ms (the stop), consistent with
+  the absolute `VectorAggregator` emitting the mean of the block spectra once, at the stop. The
+  input is the Source output as stored (`f32(trunc(x*d)/d)`): 120008 samples from the graph
+  start, 234 whole blocks plus a 200-sample partial.
+
+## Clone and parity
+
+`feedback::FftSpectrum` implements the above over the stored Source output.
+`tests/replay_s59.rs` (ignored; `S59_REPLAY_DIR`, default `tmp/s56`) runs exercise 146's
+consumed volts through it and reports the deviation from the stored vectors. The capture is
+#56's stored type-9 record; no run of this ticket logged `DSPFFT` inputs and outputs.
+
+Reported figure, not parity: mean relative deviation over bins 0..48 is 2 to 3 percent, and the
+high-bin floor is a third of the original's (bin 200: 0.00016 against 0.0005 uV on channel 1).
+Ruled out offline: window shape, with and without the partial block, contiguous block subsets
+or the last 1 and 3 blocks, input quantization, and the 45 Hz low-pass switch (without it the
+spectrum is far off). `assertions::fft_spectra` holds the stage to `RECORD_EPSILON` once an
+input/output log of `DSPFFT::process` (rig hook tag 30 of `s57/hook13.js`) explains the floor.
