@@ -185,6 +185,26 @@ A replay of the run-8 rx stream with hooks on the Evaluator (each Balance and Co
   turns it into the replay directory; `replay_s48` reads it through `S48_REPLAY_DIR` and
   asserts the A..H amplitudes, the Balance values and the per-block codes.
 
+## Result: all four channels' consumed volts (#55, 2026-11-07)
+
+Run 8's rx stream replayed with `hook13.js` (`hook11.js` plus tag 13: the converted volts of
+channels 1 to 3 at the same site as tag 12's channel 0), host at 3.8 GHz.
+
+- Launch (observed): no gear, OK or Play is needed, as the app consumes the stream from Start.
+  A Startup-folder `.cmd` started the app under `frida-inject -f` and a clicker that clicked user
+  select and both EULA pages, waited 150 s on the main window and ran `taskkill /F`. The log was
+  then copied off the stopped guest's NTFS disk, with no output image.
+- Logged: 73,792 consumed samples on each of the four channels, 0 records dropped.
+  `scripts/consumed-extract.py <s55.bin>` reduces the log to `tmp/s55/replay/`, and the ignored
+  `tests/replay_s55.rs` decodes the consumed frames with the clone. All four channels match bit
+  for bit over the whole range. The fixtures `consumed_stream.txt` and `consumed_volts.tsv`
+  (`make-fixtures.py --src55`) hold the first 150 frames, and `tests/parity_acquisition.rs`
+  asserts them.
+- The original again skipped received frames, as in #33: 11 gaps totalling 26 frames among the
+  first 36,922, the first after consumed frame 1149. The clone counts each gap as a packet
+  counter error.
+- The log (`s55.bin`, 80 MB) stays in the main checkout's `tmp/s55/`.
+
 ## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
 
 The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00

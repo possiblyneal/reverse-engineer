@@ -347,7 +347,15 @@ match no other slot permutation. Confirmed in run 8: the app's logged
 per-sample ch0 volts equal `raw / DIV` of slot 0 then slot 4 of the received
 frames exactly for all 272,793 logged samples (`audio-feedback.md`, "Run 8
 whole-exercise capture"), and the replay reproduces the Ch3 and Ch4 band amplitudes (E..H)
-bit for bit. Not verified against a known test signal, since the session ran with sensors off.
+bit for bit.
+
+Confirmed on all four channels (observed, #55, 2026-11-07): run 8's no-wearer stream replayed
+into the original (`replay-rig.md`, "Result: all four channels' consumed volts") with the
+converted volts of every channel logged after `_convertValue` (`0x557f65`, channel index at
+`[esi]`, value at `[esp+0x18]`). Over all 36,896 frames the original consumed (73,792 samples per
+channel), the clone's slot order and the volts formula above (family 12, the run's gains) equal
+the logged values bit for bit on channels 0 to 3, so the order and the conversion hold on every
+channel. Not verified against a known test signal, since the stream is sensors-off.
 
 ## Unresolved
 

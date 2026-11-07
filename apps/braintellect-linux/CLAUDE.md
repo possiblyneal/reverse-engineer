@@ -32,7 +32,11 @@ those findings, it cites them.
   oldest first); the device family is read from the 110 reply (`StreamConfig.family`
   only overrides it; an unaccepted code is `Error::UnknownFamily`), the gains are
   supplied by the caller. `tests/parity_handshake.rs` replays the live handshakes
-  (`handshake_live_{a,b}.txt`) and asserts decoded fields only.
+  (`handshake_live_{a,b}.txt`) and asserts decoded fields only. All four channels'
+  microvolts are held bit exact to the original's logged volts (`assertions::channel_microvolts`):
+  over the committed `consumed_*` fixtures in `tests/parity_acquisition.rs`, and over the
+  whole #55 replay in the ignored `tests/replay_s55.rs` (`scripts/consumed-extract.py`
+  output, `tmp/s55/replay`, `S55_REPLAY_DIR`).
 - **Transport boundary.** Protocol logic runs over `Read + Write`; only
   `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
   (`scripts/run braintellect-linux -- ui --mac <MAC>`, or `-- --mac <MAC>` for a raw frame dump) uses the server's BlueZ, the adapter's only

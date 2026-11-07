@@ -9,7 +9,7 @@ use braintellect_linux::acquisition::decode::ChannelCalibration;
 use braintellect_linux::acquisition::session::{Error, Session};
 use braintellect_linux::acquisition::stream::{SampleFrame, StreamConfig, StreamStats};
 use harness::transport::ReplayTransport;
-use harness::{assertions, fixtures};
+use harness::{assertions, channels, fixtures};
 
 const STOP: &[u8] = b"!*#48,0,0,0,0,0,0\r\n";
 
@@ -143,4 +143,18 @@ fn handshake_reply_for_the_wrong_request_is_rejected() {
     wire[2].bytes[8] = 0x6e; // serial reply echoes 110
     let result = Session::open(ReplayTransport::new(wire, Vec::new()), config());
     assert!(matches!(result, Err(Error::BadReply { code: 101 })));
+}
+
+#[test]
+fn all_four_channels_match_the_originals_consumed_volts() {
+    // The frames the original consumed from a replayed no-wearer stream, and the volts it
+    // logged for channels 0 to 3 of each consumed sample (ticket #55, `consumed_*` fixtures).
+    let (actual, stats) = channels::decode(fixtures::consumed_stream_chunks());
+    assert_eq!(
+        stats,
+        StreamStats::default(),
+        "no counter or validation errors"
+    );
+    let expected = fixtures::consumed_microvolts();
+    assertions::channel_microvolts(&expected, &actual).expect("all-channel microvolts parity");
 }
