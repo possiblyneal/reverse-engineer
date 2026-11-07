@@ -29,18 +29,7 @@ use braintellect_linux::feedback::{Mode, DEFAULT_CODE};
 use braintellect_linux::live::{self, Environment, GraphStart, Phase, SessionProperties, Snapshot};
 use braintellect_linux::storage::Store;
 use harness::audio::{small_bank, RecordingSink};
-use harness::{assertions, fixtures};
-
-fn path(var: &str, default: &str) -> PathBuf {
-    std::env::var_os(var).map_or_else(
-        || {
-            PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-                .join("../..")
-                .join(default)
-        },
-        PathBuf::from,
-    )
-}
+use harness::{assertions, fixtures, inputs};
 
 /// The capture read back in order; whatever the session writes is dropped.
 struct Replayed(Cursor<Vec<u8>>);
@@ -120,9 +109,8 @@ fn code_runs(codes: &[u32]) -> Vec<(usize, u32)> {
 #[test]
 #[ignore = "needs the #33 capture and the original's extract, which stay outside Git"]
 fn the_live_engine_on_the_33_capture_against_the_original() {
-    let raw = fs::read(path("S33_CAPTURE", "tmp/s33/b2.rx")).expect("capture");
-    let dir = path("S33_REPLAY_DIR", "tmp/s33/replay");
-    let read = |name: &str| fs::read_to_string(dir.join(name)).expect(name);
+    let raw = fs::read(inputs::path("S33_CAPTURE", "tmp/s33/b2.rx")).expect("capture");
+    let read = |name: &str| inputs::read("S33_REPLAY_DIR", "tmp/s33/replay", name);
 
     // Each block's code, its clock read, and the lap read the counter took when it fired.
     let blocks: Vec<(u32, i64, Option<i64>)> = read("blocks.tsv")

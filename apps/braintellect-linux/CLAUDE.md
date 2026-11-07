@@ -62,7 +62,8 @@ those findings, it cites them.
   (`tests/parity_<layer>.rs`) go through its loaders and per-layer assertions
   (command bytes, microvolts, note/trigger decisions, stored record) and assert
   observable behavior only. `tests/harness/transport.rs` is the fixture-fed
-  in-memory transport; `tests/parity_selfcheck.rs` proves each assertion is green on
+  in-memory transport; `tests/harness/inputs.rs` finds the ignored replays' out-of-Git inputs
+  (an environment variable, else the repository's `tmp/`); `tests/parity_selfcheck.rs` proves each assertion is green on
   the baseline and red on a wrong output.
 - **Exact match only** (operator decision). Tolerances (`SAMPLE_EPSILON_UV`,
   `TIMING_WINDOW_MS`, `RECORD_EPSILON`) are defined once in
@@ -80,8 +81,9 @@ those findings, it cites them.
   output (`process_evaluated_block`, or `process_filtered_block` with a logged code):
   `BandPass`, `PeakFrequency`, the `continuous` Aggregator, the `Evaluator`
   (`evaluator.rs`: the four Balance and two Coherence series from the Aggregators'
-  averages, the decision at each 60 s epoch end by the Coherence then the Balance rule,
-  default 111), the Ch3/Ch4 `Coherence` elements (`coherence.rs`, on the port of the
+  averages, the decision in the block that ends each Aggregator epoch, the design's
+  `aggregator_epoch_s`, by the Coherence then the Balance rule, default 111; a Balance
+  that is not finite never wins), the Ch3/Ch4 `Coherence` elements (`coherence.rs`, on the port of the
   original's IPP order-9 real FFT in `ipp_fft.rs`, pinned bit for bit by
   `tests/fixtures/ipp_real_fft_512.txt`, the original kernel's output under Unicorn on a
   synthetic vector), `ExprTriggerAll`
@@ -97,9 +99,7 @@ those findings, it cites them.
   `iir.rs`) runs the app's own two-biquad taps (transposed direct form II), not a
   designed filter, so it serves only the 23.5/25.75 Hz setting at 500 Hz and
   `SourceFilters::new` refuses it at another rate; its run-8
-  amplitudes are asserted bit for bit over blocks 0 to 6599. The ignored
-  `end_to_end_note_decisions_match_the_baseline` (`tests/parity_smart2_stages.rs`)
-  fails because run 6 did not log the counter lap read. Parity tests pick the logged or
+  amplitudes are asserted bit for bit over blocks 0 to 6599. Parity tests pick the logged or
   the evaluated code with `harness::run8::Codes`.
 - **Circle-Balance report** (`src/feedback/circle_balance.rs`). `B-2-Circle-Balance-fromBAGSD-v5.1.1`
   is a post-session report (`BAGSD.report`) over a stored exercise's `High`/`Low` LMH series, not a
@@ -141,75 +141,77 @@ those findings, it cites them.
   set-up order, the original banks 1002 (`DEFAULT_TONE`, index 0), 1001 and 1003, then recorded
   Harp, Acoustic guitar and Xylophone. `braintellect-linux import-soundfont <file.sf2>` renders
   the recorded ones from General MIDI programs 46, 24 and 13 into
-  `tone-<key>.bank` beside the banks (notes 40..76, 96 kHz, 0.8 s; nothing is written unless
-  every tone renders). `Tone::availability` reports a never-imported tone as unavailable, and
+  `tone-<key>.bank` beside the banks (notes 40..76, 96 kHz, 0.8 s; every file is written under
+  a temporary name and renamed into place only once all render and write; a SoundFont sample
+  with no rate is refused). `Tone::availability` reports a never-imported tone as unavailable, and
   the window disables it instead of failing the session; `UiModel::select_tone` refuses an
   unavailable tone or a change while a session runs. The SoundFont is not committed
   (`tests/harness/synthetic_soundfont.rs` builds a synthetic one; `tests/audio_tone.rs`). Recovered behavior: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
-- **Live session and UI** (`src/live.rs`, `src/ui/`; ADR 0005). `live::run` is the session
-  engine: `Session` over `Read + Write` -> `SourceFilters` -> `Smart2Graph` -> `audio::Player`
-  -> an `AudioSink` (a trait; `AlsaSink` stays the only device code) -> `Store::save` when the
-  session ends (stop, the length reached, the device closing the stream, or the window closing, which
-  stops the worker and waits for the store). It stores only
-  if a frame arrived, and an error (link, audio, store) ends it unstored. It blocks, so it
-  runs off the UI thread and reports a `Snapshot` (phase, link health, frames, `StreamStats`,
-  per-channel RMS microvolts over the last second, triggers, the control code) through
-  `Environment::report`, every 25 blocks and in the frame a trigger or a code change happens;
-  the transport, sink, clock, stop flag and graph start (`Environment::graph`, a
-  `GraphStart`) are all injected. Before the graph's first block the Source filters run
-  `GraphStart::warmup_samples` of the stream with the interference filter off, as the original's
-  did from connect to Play; a live session (`GraphStart::LIVE`) is fixed mode after 500 samples
-  (1 s), and the session length counts from the first block. Live inputs the clone does not
-  derive: the control code comes from the Evaluator, both paths (111 until its first
-  full epoch pair; `Snapshot.control` reports it and the session window shows it). The IPP scalar-head
-  flags are all `true` in either mode: the original's sum order follows heap alignment per process and
-  cannot be derived, so a live run fixes the order that departs less from run 8's logged
-  one. Measured on run 8 and its replay, all-scalar-head differs from the logged order in
-  about 13.0 % of band amplitudes (last `float32` bit) against 13.1 % to 13.3 % for all-SIMD,
-  and changes no Trigger or Note decision (`audio-feedback.md`, "Live sum order"; pinned by
+- **Live session engine** (`src/live.rs`; ADR 0005). `live::run`: `Session` over
+  `Read + Write` -> `SourceFilters` -> `Smart2Graph` -> `audio::Player` -> an `AudioSink` (a
+  trait; `AlsaSink` stays the only device code) -> `Store::save` when the session ends (stop,
+  the length reached, the device closing the stream, or the window closing, which stops the
+  worker and waits for the store). It stores only if a frame arrived; an error (link, audio,
+  store) ends it unstored. It blocks, so it runs off the UI thread and reports a `Snapshot`
+  (phase, link health, frames, `StreamStats`, per-channel RMS microvolts over the last second,
+  triggers, the control code) through `Environment::report`, every 25 blocks and in the frame a
+  trigger or a code change happens. The transport, sink, clock, stop flag and graph start
+  (`Environment::graph`, a `GraphStart`) are injected; the clock is read only as the graph is
+  built, once per block, on a counter fire and per quiet read, and any frame counts as data
+  for the no-data health.
+- **Live graph start and inputs.** Before the graph's first block the Source filters run
+  `GraphStart::warmup_samples` of the stream with the interference filter off, as the
+  original's did from connect to Play; a live session (`GraphStart::LIVE`) is fixed mode after
+  500 samples (1 s), and the session length counts from the first block. The control code
+  comes from the Evaluator (111 until its first full epoch pair; `Snapshot.control`, shown in
+  the session window). The IPP scalar-head flags are all `true` in either mode: the original's
+  sum order cannot be derived, so a live run fixes the order that departs less from run 8's
+  logged one (`audio-feedback.md`, "Live sum order"; pinned by
   `tests/parity_smart2_exercise.rs`). The counter timer starts one epoch
-  (`feedback::TRIGGER_EPOCH_MS`, 500 ms) before the clock reading taken as the graph is
-  built, so the first block is already eligible, as in the original, where the timer was
-  3.7 to 21 s old at block 0 (`audio-feedback.md`, "Counter timer start"); it reads the
-  clock once per block and again in a block where it fires. The clinician sets the Source device settings
-  (`SessionProperties`, default the run-8 baseline) and the length; the design is
-  `Smart2Design::smart2`, checked against the design fixture in `tests/parity_feedback.rs`.
-  The stored series are `feedback::StoredSeries` (`assess.rs`), the original's BAGSD design
-  fed the Source output from the graph's first sample, after the warm-up: per channel `Band 10` and `Band 80`, one
-  microvolt point every 5 s of stream time and a closing point at the stop
-  (`session-storage.md`, "Stored series (#56)"). The ignored `tests/replay_s56.rs` holds them to
-  the original's exercise 146 record within `RECORD_EPSILON` (`assertions::stored_series`;
-  inputs `vol146.txt` and `b146/series.tsv` in `tmp/s56`, `S56_REPLAY_DIR`). The same BAGSD design's discrete FFT is `feedback::FftSpectrum`; the
-  ignored `tests/replay_s59.rs` only reports its deviation from the stored `FFT-Normal-Order`
-  vectors (not bit exact yet; `bagsd-design.md`). BAGSD is a post-session design, so the
-  session window does not offer it. The UI shows signal level and stream health, plus the sensor status
-  (`src/sensor.rs`: the Head2D evaluator's three fault tests, the `stateChangeDelay` debounce
-  and the engine lifecycle, off while a session connects or runs; `ui::state::Event::Sensor`
-  carries it). `sensor::SensorMonitor` is the pre-session feed (512-sample FFT blocks per
-  channel, five band levels, then the evaluator). `live::monitor` runs it on an
-  opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check sensors" button,
-  `Command::CheckSensors`; the window shows the status). Its levels (FFT scale, level offset, bin rule, line-noise
-  floor for two blocks then the 60 Hz level) are replay-reported against the original (the
-  max deviation is printed, not asserted: the FFT is not bit exact) and the evaluator fault
-  flag is replay-asserted exactly; the 50 Hz branch of the line rule and the overlay timing on a captured
-  stream are not (`sensor-status.md`). Tests: `tests/parity_sensor_status.rs` (synthetic fault
-  tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`), `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the in-memory stream). `ui::state::UiModel` is the
-  pure model (actions and events in, `View` out) and is tested in `tests/ui_state.rs`;
-  `ui::app` only draws it, and `ui::worker` is the device glue (RFCOMM with a 1 s read
-  timeout, ALSA, the default store, the chosen tone); neither is unit-tested. The window offers the
-  ADR 0004 import when `load_instrument` reports `Missing`. Entry point:
+  (`feedback::TRIGGER_EPOCH_MS`) before the clock reading taken as the graph is built, so the
+  first block is already eligible, as in the original (`audio-feedback.md`, "Counter timer
+  start"). The clinician sets the Source device settings (`SessionProperties`, default the
+  run-8 baseline) and the length; the design is `Smart2Design::smart2`, checked against the
+  design fixture in `tests/parity_feedback.rs`.
+- **Stored series and BAGSD** (`feedback::StoredSeries`, `assess.rs`): the original's BAGSD
+  design fed the Source output from the graph's first sample, after the warm-up: per channel
+  `Band 10` and `Band 80`, one microvolt point every 5 s of stream time and a closing point at
+  the stop (`session-storage.md`, "Stored series (#56)"). The ignored `tests/replay_s56.rs`
+  holds them to the original's exercise 146 record within `RECORD_EPSILON`
+  (`assertions::stored_series`; inputs `vol146.txt` and `b146/series.tsv` in `tmp/s56`,
+  `S56_REPLAY_DIR`). The design's discrete FFT is `feedback::FftSpectrum`; the ignored
+  `tests/replay_s59.rs` only reports its deviation from the stored `FFT-Normal-Order` vectors
+  (`bagsd-design.md`, "Clone and parity"). BAGSD is a post-session design, so the session
+  window does not offer it.
+- **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
+  `stateChangeDelay` debounce and the engine lifecycle, off while a session connects or runs
+  (`ui::state::Event::Sensor` carries it). `sensor::SensorMonitor` is the pre-session feed
+  (512-sample FFT blocks per channel, five band levels, then the evaluator). `live::monitor`
+  runs it on an opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check
+  sensors" button, `Command::CheckSensors`), needs no tone, and returns why it could not run or
+  broke off, which ends the check with that reason in the notice. Its levels are
+  replay-reported against the original, not asserted, and the evaluator fault flag is
+  replay-asserted exactly (`sensor-status.md`). Tests: `tests/parity_sensor_status.rs`
+  (synthetic fault tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`),
+  `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the
+  in-memory stream).
+- **Session UI** (`src/ui/`). `ui::state::UiModel` is the pure model (actions and events in,
+  `View` out), tested in `tests/ui_state.rs`; `ui::app` only draws it, and `ui::worker` is the
+  device glue (RFCOMM with a 1 s read timeout, ALSA, the default store, the chosen tone);
+  neither is unit-tested. The window offers the ADR 0004 import when the default tone
+  (`DEFAULT_TONE`, found by key) is not imported. Entry point:
   `scripts/run braintellect-linux -- ui --mac <MAC>`; the window needs a display and loads
-  X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages).
-  On Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`;
-  the B-2 must be paired, bonded and trusted in BlueZ first (`btmgmt bondable on` before pairing,
-  or the bond is not kept).
-  `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG framed by
-  `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank. The ignored
-  `tests/replay_live.rs` reads the #33 capture back through `live::run` (`S33_CAPTURE`,
-  `S33_REPLAY_DIR`) in original mode with the original's graph start, switch and clock and
-  lap reads, and asserts the original's per-block codes and the block and note of all 367
-  triggers exactly (`assertions::trigger_notes`; `audio-feedback.md`, "Live replay of the #33
-  capture").
+  X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages). On
+  Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`; the
+  B-2 must be paired, bonded and trusted in BlueZ first (`btmgmt bondable on` before pairing, or
+  the bond is not kept).
+- **Live tests.** `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG
+  framed by `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank. The
+  ignored `tests/replay_live.rs` reads the #33 capture back through `live::run`
+  (`S33_CAPTURE`, `S33_REPLAY_DIR`) in original mode with the original's graph start, switch
+  and clock and lap reads, and asserts the original's per-block codes and the block and note
+  of every trigger exactly (`assertions::trigger_notes`; `audio-feedback.md`, "Live replay of
+  the #33 capture").
 - **B-2 emulator and capture** (`src/emulate.rs`, `src/capture.rs`). The live session tees its raw
   RX to `<data dir>/captures/b2-<secs>.rx` (`capture::Recording`). `braintellect-linux emulate
   <capture> <socket>` plays a B-2 over a Unix socket (the QEMU serial chardev): `Command::decode`

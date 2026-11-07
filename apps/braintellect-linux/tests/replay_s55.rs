@@ -13,18 +13,10 @@
 
 mod harness;
 
-use std::fs;
-use std::path::PathBuf;
-
-use harness::{assertions, channels, fixtures};
+use harness::{assertions, channels, fixtures, inputs};
 
 fn read(name: &str) -> String {
-    let dir = std::env::var_os("S55_REPLAY_DIR").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/s55/replay"),
-        PathBuf::from,
-    );
-    let path = dir.join(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    inputs::read("S55_REPLAY_DIR", "tmp/s55/replay", name)
 }
 
 #[test]

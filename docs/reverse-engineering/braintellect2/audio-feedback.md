@@ -443,8 +443,8 @@ Observed. The 16-tap-mean sum order (the IPP scalar-head flag, from the destinat
 | --- | --- | --- | --- | --- |
 | Run 8 | all-SIMD | 126070 of 960032 (13.1 %) | 28702 of 30001 | 0 of 830 |
 | Run 8 | all-scalar-head | 125013 of 960032 (13.0 %) | 28655 of 30001 | 0 of 830 |
-| Run 8 replay (`rep8.bin`; A..D flags are run 8's, so E..H are exact and A..D stand in) | all-SIMD | 127499 of 960032 | 28317 of 30001 | 0 of 874 |
-| Run 8 replay | all-scalar-head | 125236 of 960032 | 28163 of 30001 | 0 of 874 |
+| Run 8 replay (`rep8.bin`; A..D flags are run 8's, so E..H are exact and A..D stand in) | all-SIMD | 127499 of 960032 (13.3 %) | 28317 of 30001 | 0 of 874 |
+| Run 8 replay | all-scalar-head | 125236 of 960032 (13.0 %) | 28163 of 30001 | 0 of 874 |
 
 - Chosen policy: all-scalar-head, the smaller deviation on both streams (rule: smaller measured deviation, a tie goes to all-SIMD). The gap is under 2 % of the differing amplitudes, so the choice is nearly a coin flip.
 - Every difference is the last `float32` bit of an amplitude; no decision changes. Only the first two outputs of a block can differ (`BandPass::set_scalar_head`), so the last sample of each block, which the live session stores, is identical under either order.

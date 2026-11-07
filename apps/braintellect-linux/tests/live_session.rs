@@ -52,23 +52,29 @@ fn exercise(
     properties: &SessionProperties,
     stop_when: Option<fn(&Snapshot) -> bool>,
 ) -> Outcome {
-    exercise_stepping(name, frames, stall, properties, stop_when, 8)
+    let link = if stall {
+        ReplayTransport::stalling
+    } else {
+        std::convert::identity
+    };
+    exercise_stepping(name, frames, link, properties, stop_when, 8)
 }
 
-/// [`exercise`] with a clock that advances `step_ms` per reading.
+/// [`exercise`] over the link `link` makes of the fixture transport, with a clock that
+/// advances `step_ms` per reading.
 fn exercise_stepping(
     name: &str,
     frames: usize,
-    stall: bool,
+    link: fn(ReplayTransport) -> ReplayTransport,
     properties: &SessionProperties,
     stop_when: Option<fn(&Snapshot) -> bool>,
     step_ms: i64,
 ) -> Outcome {
     let rows: Vec<[i32; 8]> = fixtures::run8_eeg().into_iter().take(frames).collect();
-    let mut transport = ReplayTransport::new(fixtures::wire(), frames_from_counts(&rows));
-    if stall {
-        transport = transport.stalling();
-    }
+    let transport = link(ReplayTransport::new(
+        fixtures::wire(),
+        frames_from_counts(&rows),
+    ));
     let config = StreamConfig {
         calibration: ChannelCalibration::new(12.0, 10.0).expect("calibration"),
         family: None,
@@ -196,7 +202,7 @@ fn first_sounding_block(step_ms: i64) -> usize {
     let run = exercise_stepping(
         "first-fire",
         THIRTY_SECONDS,
-        false,
+        std::convert::identity,
         &SessionProperties::default(),
         None,
         step_ms,
@@ -314,6 +320,23 @@ fn the_clinicians_filter_settings_are_stored_in_the_header() {
     assert_eq!(header.interference_filter, "Off");
     assert_eq!(header.device_low_pass_cutoff, 100.0);
     assert_eq!(header.device_high_pass_cutoff, 0.5);
+}
+
+/// A read timeout before each frame of the warm-up, 16 ms of clock apart: frames keep
+/// arriving, so the link never reads as quiet, though no block has read the clock yet.
+#[test]
+fn frames_arriving_between_read_timeouts_in_the_warm_up_are_not_no_data() {
+    let run = exercise_stepping(
+        "late",
+        WARMUP_FRAMES,
+        ReplayTransport::late,
+        &SessionProperties::default(),
+        None,
+        16,
+    );
+
+    assert_eq!(run.last.frames, WARMUP_FRAMES as u64);
+    assert!(run.reports.iter().all(|s| s.health != Health::NoData));
 }
 
 #[test]

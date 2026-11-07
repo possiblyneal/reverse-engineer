@@ -18,8 +18,16 @@ const FRAMES: usize = 7500;
 const BLOCK_MS: i64 = 1024;
 
 fn session() -> Session<ReplayTransport> {
+    session_over(std::convert::identity)
+}
+
+/// [`session`] over the link `link` makes of the fixture transport.
+fn session_over(link: fn(ReplayTransport) -> ReplayTransport) -> Session<ReplayTransport> {
     let rows: Vec<[i32; 8]> = fixtures::run8_eeg().into_iter().take(FRAMES).collect();
-    let transport = ReplayTransport::new(fixtures::wire(), frames_from_counts(&rows));
+    let transport = link(ReplayTransport::new(
+        fixtures::wire(),
+        frames_from_counts(&rows),
+    ));
     Session::open(transport, live::stream_config().expect("config")).expect("handshake")
 }
 
@@ -60,7 +68,8 @@ fn the_monitor_reports_the_status_of_the_filtered_stream_per_block() {
     let mut seen = Vec::new();
     live::monitor(session(), &properties, &stop, &mut clock, &mut |s| {
         seen.push(s);
-    });
+    })
+    .expect("the stream ends cleanly");
     sensor::expect(&seen, &reference(&properties)).unwrap();
     assert_eq!(seen.len(), FRAMES * 2 / 512);
     assert!(!seen.contains(&SensorStatus::NotAvailable));
@@ -75,6 +84,21 @@ fn the_monitor_ends_when_stopped() {
     live::monitor(session(), &properties, &stop, &mut clock, &mut |_| {
         seen += 1;
         stop.store(true, Ordering::Relaxed);
-    });
+    })
+    .expect("a stop is not a failure");
     assert_eq!(seen, 1);
+}
+
+#[test]
+fn a_link_that_fails_mid_check_ends_it_with_the_reason() {
+    let stop = AtomicBool::new(false);
+    let mut clock = || 0;
+    let result = live::monitor(
+        session_over(ReplayTransport::breaking),
+        &SessionProperties::default(),
+        &stop,
+        &mut clock,
+        &mut |_| {},
+    );
+    assert!(result.is_err(), "{result:?}");
 }

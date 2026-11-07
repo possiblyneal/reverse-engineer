@@ -19,24 +19,16 @@
 
 mod harness;
 
-use std::fs;
-use std::path::PathBuf;
-
 use braintellect_linux::feedback::{Mode, BLOCK_LEN};
-use harness::assertions;
 use harness::fixtures::Run8Block;
 use harness::run8::{deviation, replay_from, Codes, Replay};
+use harness::{assertions, inputs};
 
-fn dir() -> PathBuf {
-    std::env::var_os("S48_REPLAY_DIR").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/s48/replay"),
-        PathBuf::from,
-    )
-}
+const DIR_VAR: &str = "S48_REPLAY_DIR";
+const DIR_DEFAULT: &str = "tmp/s48/replay";
 
 fn read(name: &str) -> String {
-    let path = dir().join(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    inputs::read(DIR_VAR, DIR_DEFAULT, name)
 }
 
 /// Graph-call objects whose 16-tap-mean flags `blocks.tsv` holds, in address-rank order.
@@ -447,7 +439,10 @@ fn clone_decisions_on_the_replayed_stream_against_the_originals() {
 /// The clone's Evaluator against the original's: every logged Balance and Coherence value
 /// bit for bit (when the log has them), and the code of every block.
 fn assert_evaluator(run: &Replay) {
-    if dir().join("evaluator.tsv").exists() {
+    if inputs::path(DIR_VAR, DIR_DEFAULT)
+        .join("evaluator.tsv")
+        .exists()
+    {
         let series = evaluator_series();
         let (mut logged, mut clone) = (Vec::new(), Vec::new());
         for (decision, values) in run.decisions.iter().zip(&series) {

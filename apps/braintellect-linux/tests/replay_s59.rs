@@ -8,13 +8,13 @@
 //! under `tmp/`. Run with `cargo test --release --test replay_s59 -- --ignored --nocapture`;
 //! `S59_REPLAY_DIR` overrides the default directory (`tmp/s56` at the repository root).
 
-use std::fs;
-use std::path::PathBuf;
+mod harness;
 
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::feedback::{
     FftSpectrum, Interference1, Interference2, SourceDesign, SourceFilters, CHANNELS, RATE_HZ,
 };
+use harness::inputs;
 
 /// Consumed sample the exercise's graph starts at, and its length: 240 016 ms.
 const GRAPH_START: usize = 107_504;
@@ -23,12 +23,7 @@ const SAMPLES: usize = 120_008;
 const INTERFERENCE_SWITCH: [usize; CHANNELS] = [107_508, 107_507, 107_507, 107_507];
 
 fn read(name: &str) -> String {
-    let dir = std::env::var_os("S59_REPLAY_DIR").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/s56"),
-        PathBuf::from,
-    );
-    let path = dir.join(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    inputs::read("S59_REPLAY_DIR", "tmp/s56", name)
 }
 
 /// The `FFT-Normal-Order` vector of each channel, in microvolts.

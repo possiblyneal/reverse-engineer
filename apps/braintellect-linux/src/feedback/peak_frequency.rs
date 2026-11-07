@@ -6,6 +6,8 @@
 use std::collections::VecDeque;
 use std::f64::consts::PI;
 
+use super::fft::radix2;
+
 /// Constant `4.0` of the amplitude formula (`0x1895398`).
 const AMPLITUDE_SCALE: f64 = 4.0;
 
@@ -74,7 +76,7 @@ impl PeakFrequency {
             .map(|(a, w)| a * w)
             .collect();
         let mut im = vec![0.0; self.n];
-        fft(&mut re, &mut im);
+        radix2(&mut re, &mut im);
         let mut best = (self.low_bin, f64::NEG_INFINITY);
         for k in self.low_bin..=self.high_bin {
             let magnitude = re[k].hypot(im[k]);
@@ -89,38 +91,6 @@ impl PeakFrequency {
                 (AMPLITUDE_SCALE / self.n as f64) as f32 * best.1 as f32 / self.window_mean as f32,
             ),
         }
-    }
-}
-
-/// In-place radix-2 FFT of a power-of-two length.
-fn fft(re: &mut [f64], im: &mut [f64]) {
-    let n = re.len();
-    let mut j = 0;
-    for i in 1..n {
-        let mut bit = n >> 1;
-        while j & bit != 0 {
-            j ^= bit;
-            bit >>= 1;
-        }
-        j |= bit;
-        if i < j {
-            re.swap(i, j);
-            im.swap(i, j);
-        }
-    }
-    let mut len = 2;
-    while len <= n {
-        let step = -2.0 * PI / len as f64;
-        for start in (0..n).step_by(len) {
-            for k in 0..len / 2 {
-                let (wr, wi) = ((step * k as f64).cos(), (step * k as f64).sin());
-                let (a, b) = (start + k, start + k + len / 2);
-                let (tr, ti) = (re[b] * wr - im[b] * wi, re[b] * wi + im[b] * wr);
-                (re[b], im[b]) = (re[a] - tr, im[a] - ti);
-                (re[a], im[a]) = (re[a] + tr, im[a] + ti);
-            }
-        }
-        len <<= 1;
     }
 }
 
@@ -179,7 +149,7 @@ mod tests {
         let mut re: Vec<f64> = (0..16).map(|i| ((i * 7 % 5) as f64) - 2.0).collect();
         let mut im = vec![0.0; 16];
         let input = re.clone();
-        fft(&mut re, &mut im);
+        radix2(&mut re, &mut im);
         for k in 0..16 {
             let (mut dr, mut di) = (0.0, 0.0);
             for (n, x) in input.iter().enumerate() {

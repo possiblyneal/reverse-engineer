@@ -115,8 +115,7 @@ fn check(
     let mut clock = move || i64::try_from(origin.elapsed().as_millis()).unwrap_or(i64::MAX);
     live::monitor(session, properties, stop, &mut clock, &mut |status| {
         send(Event::Sensor(status));
-    });
-    Ok(())
+    })
 }
 
 fn session(

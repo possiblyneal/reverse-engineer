@@ -216,7 +216,7 @@ impl Smart2Graph {
                 .collect(),
             trigger: TriggerPath::smart2(timer_start_ms, mode),
             notes: NoteSelection::smart2(mode),
-            evaluator: Evaluator::default(),
+            evaluator: Evaluator::new(window),
             design,
         })
     }

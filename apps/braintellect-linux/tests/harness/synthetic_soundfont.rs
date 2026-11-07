@@ -86,10 +86,20 @@ fn u32le(v: usize) -> [u8; 4] {
 
 /// The bytes of a SoundFont holding `presets`.
 pub fn soundfont(presets: &[Preset]) -> Vec<u8> {
+    soundfont_after_unused_samples(presets, 0)
+}
+
+/// Like [`soundfont`], with `unused` empty sample headers ahead of the presets'
+/// samples, so their `sampleID`s start at `unused`.
+pub fn soundfont_after_unused_samples(presets: &[Preset], unused: usize) -> Vec<u8> {
     let (mut smpl, mut shdr) = (Vec::new(), Vec::new());
     let (mut phdr, mut pbag, mut pgen) = (Vec::new(), Vec::new(), Vec::new());
     let (mut inst, mut ibag, mut igen) = (Vec::new(), Vec::new(), Vec::new());
-    let mut sample_count = 0usize;
+    for _ in 0..unused {
+        shdr.extend(name20("unused"));
+        shdr.extend([0u8; 26]);
+    }
+    let mut sample_count = unused;
     for (n, preset) in presets.iter().enumerate() {
         phdr.extend(name20("Synthetic"));
         phdr.extend(preset.program.to_le_bytes());

@@ -7,11 +7,11 @@ use std::path::PathBuf;
 use eframe::egui;
 
 use crate::audio::import;
-use crate::audio::tone::{Availability, TONES};
+use crate::audio::tone::{self, Availability, TONES};
 use crate::feedback::{Interference1, Interference2};
 use crate::storage;
 
-use super::state::{Command, Event, Instrument, UiModel};
+use super::state::{Command, Event, UiModel};
 use super::worker::Worker;
 
 /// Open the window for the B-2 at `mac` and run until it is closed.
@@ -42,7 +42,7 @@ struct App {
 impl App {
     fn new(mac: String) -> Self {
         let tones = tone_availability();
-        let mut model = UiModel::new(mac.clone(), tones[0].clone());
+        let mut model = UiModel::new(mac.clone(), tones[tone::default_index()].clone());
         model.set_tones(tones);
         Self {
             mac,
@@ -100,7 +100,7 @@ impl App {
 }
 
 /// Which of the tones are in the instruments directory.
-fn tone_availability() -> Vec<Instrument> {
+fn tone_availability() -> Vec<Availability> {
     match import::default_dir() {
         Some(dir) => TONES.iter().map(|t| t.availability(&dir)).collect(),
         None => vec![Availability::Missing(storage::NO_DATA_DIR.to_owned()); TONES.len()],

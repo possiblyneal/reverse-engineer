@@ -298,26 +298,42 @@ pub fn run<T: Read + Write>(
 }
 
 /// The sensor status before a session (`sensor-status.md`): the Source output of an
-/// opened B-2 runs through the BT-LOD design beside no SMART-2 graph, and `report`
-/// gets the overlay state after each 512-sample block. Ends when `stop` is raised,
-/// the link closes or errors; the stream is stopped on the way out. `clock` is read
+/// opened B-2 runs through the BT-LOD design alone, with no SMART-2 graph and no audio,
+/// and `report` gets the overlay state after each 512-sample block. Ends when `stop` is
+/// raised or the link closes; the stream is stopped on the way out. `clock` is read
 /// once per block, for the `stateChangeDelay` debounce.
+///
+/// # Errors
+/// Why the check could not run or broke off: the Source filters cannot be built, the
+/// stream does not start, or the link fails.
 pub fn monitor<T: Read + Write>(
     mut session: Session<T>,
     properties: &SessionProperties,
     stop: &AtomicBool,
     clock: &mut dyn FnMut() -> i64,
     report: &mut dyn FnMut(SensorStatus),
-) {
-    let Ok(mut source) = (0..CHANNELS)
+) -> Result<(), String> {
+    let mut source = (0..CHANNELS)
         .map(|_| SourceFilters::new(&properties.source(), RATE_HZ))
         .collect::<Result<Vec<_>, _>>()
-    else {
-        return;
-    };
-    if session.start(STREAM_CHANNELS as u8).is_err() {
-        return;
-    }
+        .map_err(|e| e.to_string())?;
+    session
+        .start(STREAM_CHANNELS as u8)
+        .map_err(|e| e.to_string())?;
+    let ended = sensor_loop(&mut session, &mut source, stop, clock, report);
+    // A link too broken to take Stop has nothing more to lose.
+    let _ = session.disconnect();
+    ended
+}
+
+/// The monitor's frame loop, until a stop, the end of the stream or a link failure.
+fn sensor_loop<T: Read + Write>(
+    session: &mut Session<T>,
+    source: &mut [SourceFilters],
+    stop: &AtomicBool,
+    clock: &mut dyn FnMut() -> i64,
+    report: &mut dyn FnMut(SensorStatus),
+) -> Result<(), String> {
     let mut sensors = SensorMonitor::new(SensorDesign::bt_lod());
     sensors.set_engine_running(true);
     let mut samples = 0usize;
@@ -337,19 +353,18 @@ pub fn monitor<T: Read + Write>(
                     if let Some(status) = sensors.push(now_ms, &volts) {
                         report(status);
                         if stop.load(Ordering::Relaxed) {
-                            break;
+                            return Ok(());
                         }
                     }
                 }
             }
-            Ok(None) => break,
+            Ok(None) => return Ok(()),
             Err(SessionError::Io(e))
                 if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
-            Err(_) => break,
+            Err(e) => return Err(e.to_string()),
         }
     }
-    // A link too broken to take Stop has nothing more to lose.
-    let _ = session.disconnect();
+    Ok(())
 }
 
 fn finish(env: &mut Environment<'_>, mut snapshot: Snapshot, phase: Phase) -> Snapshot {
@@ -475,6 +490,8 @@ impl<'a> Engine<'a> {
                 self.process_block(env, snapshot)?;
             }
         }
+        // The latest clock reading, so a frame in the warm-up, which reads no clock, also counts.
+        self.last_frame_ms = self.now_ms;
         // A new code or a trigger is drawn in the frame it happens; the rest every few blocks.
         if resumed
             || snapshot.control != control
@@ -494,7 +511,6 @@ impl<'a> Engine<'a> {
         snapshot: &mut Snapshot,
     ) -> Result<(), String> {
         self.now_ms = (env.clock)();
-        self.last_frame_ms = self.now_ms;
         if self.blocks == 0 {
             self.start_ms = self.now_ms;
         }

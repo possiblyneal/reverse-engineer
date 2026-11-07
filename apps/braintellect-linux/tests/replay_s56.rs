@@ -17,16 +17,13 @@
 
 mod harness;
 
-use std::fs;
-use std::path::PathBuf;
-
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::feedback::{
     Interference1, Interference2, SourceDesign, SourceFilters, StoredSeries, CHANNELS, RATE_HZ,
 };
 use braintellect_linux::storage::{Channel, Point, Series};
 
-use harness::assertions;
+use harness::{assertions, inputs};
 
 /// Consumed sample the exercise's graph, and the stored series, start at.
 const GRAPH_START: usize = 107_504;
@@ -37,12 +34,7 @@ const INTERFERENCE_SWITCH: [usize; CHANNELS] = [107_508, 107_507, 107_507, 107_5
 const BANDS: [(&str, &str); 2] = [("Band 10", "Band-10"), ("Band 80", "Band-80")];
 
 fn read(name: &str) -> String {
-    let dir = std::env::var_os("S56_REPLAY_DIR").map_or_else(
-        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/s56"),
-        PathBuf::from,
-    );
-    let path = dir.join(name);
-    fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
+    inputs::read("S56_REPLAY_DIR", "tmp/s56", name)
 }
 
 /// The original's Band-10 and Band-80 series, under the clone's names.

@@ -8,12 +8,10 @@
 //! series of the same band with the largest latest magnitude. Otherwise the Balance rule
 //! decides, and otherwise the default stands.
 
-use super::{BandAmplitudes, RATE_HZ};
+use super::BandAmplitudes;
 
 /// `defaultControlValue`.
 pub const DEFAULT_CODE: u32 = 111;
-/// `averageEpoch`, in seconds.
-const EPOCH_S: usize = 60;
 /// `valuesToCheck`: how many epoch values a series holds and must all pass.
 const VALUES_TO_CHECK: usize = 2;
 /// `balanceThreshold`.
@@ -50,7 +48,11 @@ pub fn balances(aggregates: BandAmplitudes) -> [f32; BALANCES] {
 }
 
 pub struct Evaluator {
+    /// `averageEpoch`, in samples: the Aggregators' window.
+    epoch: usize,
     samples: usize,
+    /// The sample count at which the current epoch ends.
+    epoch_end: usize,
     /// Per Balance series, the last `VALUES_TO_CHECK` epoch values, oldest first.
     balances: [Vec<f32>; BALANCES],
     /// Per Coherence series, likewise.
@@ -58,18 +60,20 @@ pub struct Evaluator {
     code: u32,
 }
 
-impl Default for Evaluator {
-    fn default() -> Self {
+impl Evaluator {
+    /// An Evaluator deciding at the end of each `epoch` samples, the Aggregators' window.
+    #[must_use]
+    pub fn new(epoch: usize) -> Self {
         Self {
+            epoch,
             samples: 0,
+            epoch_end: epoch,
             balances: std::array::from_fn(|_| Vec::new()),
             coherences: std::array::from_fn(|_| Vec::new()),
             code: DEFAULT_CODE,
         }
     }
-}
 
-impl Evaluator {
     /// The current control code.
     #[must_use]
     pub fn code(&self) -> u32 {
@@ -86,9 +90,10 @@ impl Evaluator {
         coherences: [f32; COHERENCES],
     ) {
         self.samples += len;
-        if !self.samples.is_multiple_of(EPOCH_S * RATE_HZ) {
+        if self.samples < self.epoch_end {
             return;
         }
+        self.epoch_end += self.epoch;
         let values = balances.into_iter().chain(coherences);
         for (series, value) in self
             .balances
@@ -124,11 +129,14 @@ impl Evaluator {
     }
 
     /// The code of the Balance series among `candidates` with the largest latest magnitude
-    /// (the first on a tie).
+    /// (the first on a tie). A latest value that is not finite (a 0/0 Balance) is skipped.
     fn largest_latest(&self, candidates: &[usize]) -> Option<u32> {
         let mut winner: Option<(f32, u32)> = None;
         for &k in candidates {
             let latest = self.balances[k][VALUES_TO_CHECK - 1];
+            if !latest.is_finite() {
+                continue;
+            }
             if winner.is_none_or(|(best, _)| latest.abs() > best) {
                 winner = Some((
                     latest.abs(),
@@ -143,6 +151,7 @@ impl Evaluator {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::feedback::RATE_HZ;
 
     const INCOHERENT: [f32; COHERENCES] = [0.5, 0.5];
     /// Band 80 Ch1/Ch2 has the largest Balance; Band 10 Ch3/Ch4 a small one below
@@ -162,12 +171,40 @@ mod tests {
         }
     }
 
+    /// The design's `averageEpoch`, in samples.
+    const EPOCH: usize = 60 * RATE_HZ;
+
     fn epochs(values: &[([f32; BALANCES], [f32; COHERENCES])]) -> u32 {
-        let mut evaluator = Evaluator::default();
+        let mut evaluator = Evaluator::new(EPOCH);
         for &(balances, coherences) in values {
-            evaluator.end_block(EPOCH_S * RATE_HZ, balances, coherences);
+            evaluator.end_block(EPOCH, balances, coherences);
         }
         evaluator.code()
+    }
+
+    #[test]
+    fn the_epoch_is_the_one_it_is_built_with() {
+        let latest = balances(amplitudes(1.0, 2.0));
+        let mut evaluator = Evaluator::new(30 * RATE_HZ);
+        evaluator.end_block(30 * RATE_HZ, latest, INCOHERENT);
+        evaluator.end_block(30 * RATE_HZ, latest, INCOHERENT);
+        assert_eq!(evaluator.code(), 13);
+    }
+
+    #[test]
+    fn an_epoch_ends_in_the_block_that_crosses_it() {
+        let latest = balances(amplitudes(1.0, 2.0));
+        let mut evaluator = Evaluator::new(EPOCH);
+        for _ in 0..(2 * EPOCH).div_ceil(7) {
+            evaluator.end_block(7, latest, INCOHERENT);
+        }
+        assert_eq!(evaluator.code(), 13);
+    }
+
+    #[test]
+    fn a_balance_that_is_not_a_number_never_wins() {
+        let undefined = [f32::NAN, 3.0, -0.1, 0.0];
+        assert_eq!(epochs(&[(undefined, [0.9, 0.2]); 2]), 112);
     }
 
     #[test]

@@ -1,6 +1,5 @@
 //! `ThresholdCounter`: type `timeHigh`, trigger epoch 500 ms (handler `0x642ed0`).
 
-/// `triggerEpoch` of the design, in milliseconds.
 /// The design's `triggerEpoch`: the time that must pass on the timer before a pass fires.
 pub const TRIGGER_EPOCH_MS: i64 = 500;
 

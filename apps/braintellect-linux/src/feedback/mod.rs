@@ -17,6 +17,7 @@ pub mod circle_balance;
 mod coherence;
 mod counter;
 mod evaluator;
+pub(crate) mod fft;
 mod fft_spectrum;
 mod fir;
 mod graph;

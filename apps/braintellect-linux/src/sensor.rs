@@ -9,6 +9,8 @@
 //! the FFT scale, level offset, bin choice and the line-noise start-up were checked
 //! against a capture of the original; the choice of 50 Hz over 60 Hz was not.
 
+use crate::feedback::fft::{bartlett, radix2, spectrum_scale};
+
 /// `lineNoiseDifference` of the BT-LOD `Sensors` element, in dB.
 pub const LINE_NOISE_DIFFERENCE: f32 = 15.5;
 /// `lineNoiseChannelPairDifference`, in dB.
@@ -111,59 +113,19 @@ const PAIR_BAND_HZ: [f32; 3] = [12.0, 40.0, 70.0];
 /// Channels of the design.
 const CHANNELS: usize = 4;
 
-/// `DSPFFT::process` (`0x637940`) scales each magnitude by `+0x54 / +0x50`: 1/128
-/// (`+0x54`, as captured for the 512-point FFT) over the window's mean (`+0x50`).
-const SPECTRUM_GAIN: f64 = 1.0 / 128.0;
-
 /// The spectrum of one channel's block, as the FFT element emits it: Bartlett
-/// window, real FFT, magnitude of bins 0..N/2, scaled by `SPECTRUM_GAIN` over the
-/// window's mean.
+/// window, real FFT, magnitude of bins 0..N/2, scaled over the window's mean
+/// (`DSPFFT::process`, `0x637940`).
 fn spectrum(block: &[f64]) -> Vec<f32> {
     let n = block.len();
-    let window: Vec<f64> = (0..n)
-        .map(|i| 1.0 - (2.0 * i as f64 / (n - 1) as f64 - 1.0).abs())
-        .collect();
-    let scale = SPECTRUM_GAIN / (window.iter().sum::<f64>() / n as f64);
+    let window = bartlett(n);
+    let scale = spectrum_scale(&window);
     let mut re: Vec<f64> = block.iter().zip(&window).map(|(x, w)| x * w).collect();
     let mut im = vec![0.0; n];
-    fft(&mut re, &mut im);
+    radix2(&mut re, &mut im);
     (0..n / 2)
         .map(|k| (re[k].hypot(im[k]) * scale) as f32)
         .collect()
-}
-
-/// In-place radix-2 FFT; `re.len()` is a power of two.
-fn fft(re: &mut [f64], im: &mut [f64]) {
-    let n = re.len();
-    let mut j = 0;
-    for i in 1..n {
-        let mut bit = n >> 1;
-        while j & bit != 0 {
-            j ^= bit;
-            bit >>= 1;
-        }
-        j |= bit;
-        if i < j {
-            re.swap(i, j);
-            im.swap(i, j);
-        }
-    }
-    let mut len = 2;
-    while len <= n {
-        let angle = -2.0 * std::f64::consts::PI / len as f64;
-        for start in (0..n).step_by(len) {
-            for k in 0..len / 2 {
-                let (s, c) = (angle * k as f64).sin_cos();
-                let (a, b) = (start + k, start + k + len / 2);
-                let (tr, ti) = (re[b] * c - im[b] * s, re[b] * s + im[b] * c);
-                re[b] = re[a] - tr;
-                im[b] = im[a] - ti;
-                re[a] += tr;
-                im[a] += ti;
-            }
-        }
-        len <<= 1;
-    }
 }
 
 /// One channel's Head2D level state: the last level of each of the 50, 60, 12,

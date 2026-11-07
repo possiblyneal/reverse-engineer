@@ -9,6 +9,7 @@
 //! agrees at low bins to a few percent and its high-bin floor is a third of the original's.
 
 use super::assess::stored_volts;
+use super::fft::{bartlett, spectrum_scale};
 use super::ipp_fft::RealFft512;
 
 const BLOCK: usize = 512;
@@ -20,7 +21,7 @@ const MICROVOLTS: f64 = 1e6;
 pub struct FftSpectrum {
     fft: RealFft512,
     window: [f32; BLOCK],
-    /// `1/128` over the window mean, applied to each magnitude.
+    /// The `DSPFFT` scale over the `float32` window's mean, applied to each magnitude.
     scale: f64,
     counts_per_volt: f64,
     block: Vec<f32>,
@@ -30,14 +31,12 @@ pub struct FftSpectrum {
 
 impl FftSpectrum {
     pub fn new(counts_per_volt: f64) -> Self {
-        let n = (BLOCK - 1) as f64;
-        let window: [f32; BLOCK] =
-            std::array::from_fn(|i| (1.0 - (2.0 * i as f64 / n - 1.0).abs()) as f32);
-        let mean = window.iter().map(|&w| f64::from(w)).sum::<f64>() / BLOCK as f64;
+        let bartlett = bartlett(BLOCK);
+        let window: [f32; BLOCK] = std::array::from_fn(|i| bartlett[i] as f32);
         Self {
             fft: RealFft512::new(),
+            scale: spectrum_scale(&window.map(f64::from)),
             window,
-            scale: 1.0 / (128.0 * mean),
             counts_per_volt,
             block: Vec::with_capacity(BLOCK),
             sum: [0.0; BINS],
@@ -54,10 +53,14 @@ impl FftSpectrum {
         }
     }
 
-    /// The mean spectrum in microvolts at the stop, the partial block included.
+    /// The mean spectrum in microvolts at the stop, the partial block included; all
+    /// zeros when no sample arrived.
     pub fn finish(mut self) -> Vec<f64> {
         if !self.block.is_empty() {
             self.transform();
+        }
+        if self.blocks == 0 {
+            return vec![0.0; BINS];
         }
         self.sum
             .iter()
@@ -92,6 +95,11 @@ mod tests {
         assert_eq!(spectrum.len(), BINS);
         assert!((spectrum[0] - 40.0).abs() < 1e-3, "{}", spectrum[0]);
         assert!(spectrum[64..].iter().all(|&v| v < 0.1));
+    }
+
+    #[test]
+    fn a_stop_before_any_sample_is_a_zero_spectrum() {
+        assert_eq!(FftSpectrum::new(COUNTS_PER_VOLT).finish(), vec![0.0; BINS]);
     }
 
     #[test]

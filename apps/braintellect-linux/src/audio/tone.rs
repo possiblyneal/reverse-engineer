@@ -81,6 +81,15 @@ pub static TONES: [Tone; 6] = [
     },
 ];
 
+/// Where [`DEFAULT_TONE`] is in [`TONES`].
+#[must_use]
+pub fn default_index() -> usize {
+    TONES
+        .iter()
+        .position(|t| t.key == DEFAULT_TONE.key)
+        .expect("TONES lists the default tone")
+}
+
 /// Whether a tone can be played now.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Availability {
@@ -182,8 +191,8 @@ impl From<SoundFontError> for ToneImportError {
 }
 
 /// Render every SoundFont tone of [`TONES`] from `soundfont` (the bytes of a
-/// `.sf2` file) into `dest`, created when new. Nothing is written unless every
-/// tone renders. Returns the files written.
+/// `.sf2` file) into `dest`, created when new. No tone file is written unless every
+/// tone renders and every file writes. Returns the files written.
 ///
 /// # Errors
 /// [`ToneImportError::Font`] for an unreadable font or a missing program,
@@ -212,11 +221,25 @@ pub fn import_soundfont(soundfont: &[u8], dest: &Path) -> Result<Vec<PathBuf>, T
         rendered.push((tone, Bank::from_samples(samples)));
     }
     fs::create_dir_all(dest)?;
-    rendered
+    // Each file is written under a temporary name beside its own, and all are
+    // renamed into place only once every one is written.
+    let mut written: Vec<(PathBuf, PathBuf)> = Vec::new();
+    for (tone, bank) in rendered {
+        let path = tone.path(dest);
+        let part = path.with_extension("bank.part");
+        if let Err(e) = fs::write(&part, encode(&bank)) {
+            let _ = fs::remove_file(&part);
+            for (part, _) in &written {
+                let _ = fs::remove_file(part);
+            }
+            return Err(e.into());
+        }
+        written.push((part, path));
+    }
+    written
         .into_iter()
-        .map(|(tone, bank)| {
-            let path = tone.path(dest);
-            fs::write(&path, encode(&bank))?;
+        .map(|(part, path)| {
+            fs::rename(&part, &path)?;
             Ok(path)
         })
         .collect()

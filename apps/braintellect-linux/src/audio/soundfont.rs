@@ -236,8 +236,8 @@ impl SoundFont {
                 .find(|(o, _)| *o == op)
                 .map(|(_, v)| *v)
         };
-        let id = usize::try_from(get(GEN_SAMPLE_ID).unwrap_or(0))
-            .map_err(|_| SoundFontError::Malformed("a sample index is negative"))?;
+        // `sampleID` is unsigned, as `instrument` is.
+        let id = usize::from(get(GEN_SAMPLE_ID).unwrap_or(0) as u16);
         let record =
             self.shdr
                 .get(id * SHDR_LEN..(id + 1) * SHDR_LEN)
@@ -265,6 +265,10 @@ impl SoundFont {
             let [lo, hi] = v.to_le_bytes();
             (lo, hi)
         });
+        let rate_hz = u32::try_from(le32(record, 36)).unwrap_or(0);
+        if rate_hz == 0 {
+            return Err(SoundFontError::Malformed("a sample has no rate"));
+        }
         let header_pitch = record[40];
         let root_key = get(GEN_ROOT_KEY)
             .filter(|k| (0..=127).contains(k))
@@ -280,7 +284,7 @@ impl SoundFont {
             );
         Ok(Some(Zone {
             keys,
-            rate_hz: u32::try_from(le32(record, 36)).unwrap_or(0),
+            rate_hz,
             root_key,
             cents: i32::from(get(GEN_COARSE_TUNE).unwrap_or(0)) * 100
                 + i32::from(get(GEN_FINE_TUNE).unwrap_or(0))

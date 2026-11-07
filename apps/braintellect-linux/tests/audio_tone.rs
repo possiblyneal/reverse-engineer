@@ -8,16 +8,18 @@ use std::fs;
 use std::path::PathBuf;
 
 use braintellect_linux::audio::bank::Sample;
-use braintellect_linux::audio::soundfont::SoundFontError;
+use braintellect_linux::audio::soundfont::{SoundFont, SoundFontError};
 use braintellect_linux::audio::tone::{
     import_soundfont, load_tone, Availability, Tone, ToneImportError, DEFAULT_TONE, TONES,
 };
 use braintellect_linux::audio::InstrumentError;
 use braintellect_linux::live::OUTPUT_RATE_HZ;
 use harness::synthetic_bank;
-use harness::synthetic_soundfont::{soundfont, Preset, Zone};
+use harness::synthetic_soundfont::{soundfont, soundfont_after_unused_samples, Preset, Zone};
 
 const NOTES: std::ops::RangeInclusive<i32> = 40..=76;
+/// A rendered note's relative pitch bound, outside the parity contract (not a `tolerance.rs` item).
+const PITCH_RELATIVE_ERROR: f64 = 0.003;
 
 fn scratch(name: &str) -> PathBuf {
     let dir = PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join(format!("audio-tone-{name}"));
@@ -104,7 +106,7 @@ fn assert_pitch(sample: &Sample, expected: f64, what: &str) {
     let steady = &sample.pcm[..sample.pcm.len() - 1000];
     let got = fundamental_hz(steady, sample.rate_hz);
     assert!(
-        (got / expected - 1.0).abs() < 0.003,
+        (got / expected - 1.0).abs() < PITCH_RELATIVE_ERROR,
         "{what}: {got} Hz, expected {expected} Hz"
     );
 }
@@ -202,6 +204,55 @@ fn a_soundfont_without_a_required_instrument_is_refused_and_writes_nothing() {
         Err(ToneImportError::Font(SoundFontError::MissingPreset(24)))
     ));
     assert_eq!(fs::read_dir(&dir).expect("dir").count(), 0);
+}
+
+#[test]
+fn a_write_that_fails_leaves_no_tone_behind() {
+    let dir = scratch("write-fails");
+    // A directory where the guitar's file is written makes that write fail.
+    fs::create_dir(dir.join("tone-guitar.bank.part")).expect("obstacle");
+
+    assert!(matches!(
+        import_soundfont(&font(), &dir),
+        Err(ToneImportError::Io(_))
+    ));
+    let left: Vec<_> = fs::read_dir(&dir)
+        .expect("dir")
+        .map(|e| e.expect("entry").file_name())
+        .collect();
+    assert_eq!(left, ["tone-guitar.bank.part"]);
+}
+
+#[test]
+fn a_sample_index_above_32767_is_read() {
+    let font = soundfont_after_unused_samples(
+        &[Preset {
+            program: 46,
+            global_loop: true,
+            zones: vec![zone((0, 127), 44_100, 100, 69)],
+        }],
+        32_768,
+    );
+
+    let zones = SoundFont::parse(&font)
+        .expect("parse")
+        .zones(46)
+        .expect("zones");
+    assert_eq!(zones.len(), 1);
+}
+
+#[test]
+fn a_sample_without_a_rate_is_refused() {
+    let font = soundfont(&[Preset {
+        program: 46,
+        global_loop: true,
+        zones: vec![zone((0, 127), 0, 100, 69)],
+    }]);
+
+    assert!(matches!(
+        SoundFont::parse(&font).expect("parse").zones(46),
+        Err(SoundFontError::Malformed("a sample has no rate"))
+    ));
 }
 
 #[test]

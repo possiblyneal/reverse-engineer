@@ -2,12 +2,12 @@
 //! shows out. No window is drawn.
 
 use braintellect_linux::acquisition::stream::StreamStats;
-use braintellect_linux::audio::tone::{Tone, DEFAULT_TONE, TONES};
+use braintellect_linux::audio::tone::{Availability, Tone, DEFAULT_TONE, TONES};
 use braintellect_linux::live::{Health, Phase, SessionProperties, Snapshot};
-use braintellect_linux::ui::state::{Command, Event, Instrument, Stage, UiModel};
+use braintellect_linux::ui::state::{Command, Event, Stage, UiModel};
 
 fn ready() -> UiModel {
-    UiModel::new("00:11:22:33:44:55".to_owned(), Instrument::Ready)
+    UiModel::new("00:11:22:33:44:55".to_owned(), Availability::Ready)
 }
 
 fn snapshot(phase: Phase, health: Health) -> Snapshot {
@@ -31,7 +31,7 @@ fn snapshot(phase: Phase, health: Health) -> Snapshot {
 fn a_session_cannot_start_until_the_instrument_is_imported() {
     let mut model = UiModel::new(
         "00:11:22:33:44:55".to_owned(),
-        Instrument::Missing("the instrument bank is missing".to_owned()),
+        Availability::Missing("the instrument bank is missing".to_owned()),
     );
 
     assert!(!model.view().can_start);
@@ -44,8 +44,16 @@ fn a_session_cannot_start_until_the_instrument_is_imported() {
 }
 
 #[test]
+fn the_sensors_can_be_checked_before_any_tone_is_imported() {
+    let mut model = UiModel::new("m".to_owned(), Availability::Missing("missing".to_owned()));
+
+    assert!(model.view().can_check);
+    assert_eq!(model.check_sensors(), Some(Command::CheckSensors));
+}
+
+#[test]
 fn a_failed_import_says_why_and_keeps_the_offer() {
-    let mut model = UiModel::new("m".to_owned(), Instrument::Missing("missing".to_owned()));
+    let mut model = UiModel::new("m".to_owned(), Availability::Missing("missing".to_owned()));
     model.apply(Event::ImportFailed("no banks in /x".to_owned()));
 
     assert!(model.view().needs_import);
@@ -250,8 +258,8 @@ fn with_harp() -> UiModel {
         TONES
             .iter()
             .map(|t| match t.key {
-                "strings" | "harp" => Instrument::Ready,
-                _ => Instrument::Missing(format!("{} is not imported", t.label)),
+                "strings" | "harp" => Availability::Ready,
+                _ => Availability::Missing(format!("{} is not imported", t.label)),
             })
             .collect(),
     );
@@ -301,9 +309,9 @@ fn an_available_tone_can_be_chosen_and_an_unavailable_one_is_refused() {
 
 #[test]
 fn a_session_can_start_on_a_recorded_tone_while_the_original_bank_is_missing() {
-    let mut model = UiModel::new("m".to_owned(), Instrument::Missing("missing".to_owned()));
-    let mut states = vec![Instrument::Missing("missing".to_owned()); TONES.len()];
-    states[3] = Instrument::Ready;
+    let mut model = UiModel::new("m".to_owned(), Availability::Missing("missing".to_owned()));
+    let mut states = vec![Availability::Missing("missing".to_owned()); TONES.len()];
+    states[3] = Availability::Ready;
     model.set_tones(states);
 
     assert!(!model.view().can_start);
