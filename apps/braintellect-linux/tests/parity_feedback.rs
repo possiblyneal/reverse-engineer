@@ -7,7 +7,7 @@
 mod harness;
 
 use braintellect_linux::feedback::{
-    trigger_all, BandAmplitudes, NoteSelection, PeakFrequencies, TriggerPath,
+    trigger_all, BandAmplitudes, NoteSelection, PeakFrequencies, Smart2Design, TriggerPath,
 };
 use harness::assertions;
 use harness::fixtures::{self, Decision, NoteBlock, TriggerBlock};
@@ -209,4 +209,10 @@ fn trigger_all_decodes_every_evaluator_code_of_the_design() {
     for (code, value) in want {
         assert_eq!(trigger_all(code, amp), value, "code {code}");
     }
+}
+
+#[test]
+fn the_built_in_design_is_the_one_decoded_from_the_real_apps_records() {
+    let decoded = fixtures::smart2_design();
+    assert_eq!(Smart2Design::smart2(decoded.source.clone()), decoded);
 }

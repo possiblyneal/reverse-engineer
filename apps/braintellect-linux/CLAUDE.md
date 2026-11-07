@@ -32,7 +32,7 @@ those findings, it cites them.
   oldest first); the device family and gains are supplied by the caller, not read from the device.
 - **Transport boundary.** Protocol logic runs over `Read + Write`; only
   `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
-  (`scripts/run braintellect-linux -- --mac <MAC>`) needs the adapter free of the
+  (`scripts/run braintellect-linux -- ui --mac <MAC>`, or `-- --mac <MAC>` for a raw frame dump) needs the adapter free of the
   Windows VM (pairing on the host invalidates the VM's bond) and is manual.
 - **Do not copy the original's bugs.** Reproduce intended behavior, not defects.
   Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
@@ -102,6 +102,51 @@ those findings, it cites them.
   it and nothing plays audio. The bank bytes are never committed: `tests/parity_audio.rs` and
   the audio tests use synthetic banks (`tests/harness/synthetic_bank.rs`); the ignored real-bank
   test reads `BT_BANK_1002_DLL`. Recovered behavior: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
+- **Live session and UI** (`src/live.rs`, `src/ui/`; ADR 0005). `live::run` is the session
+  engine: `Session` over `Read + Write` -> `SourceFilters` -> `Smart2Graph` -> `audio::Player`
+  -> an `AudioSink` (a trait; `AlsaSink` stays the only device code) -> `Store::save` when the
+  session ends (stop, the length reached, the device closing the stream, or the window closing, which
+  stops the worker and waits for the store). It stores only
+  if a frame arrived, and an error (link, audio, store) ends it unstored. It blocks, so it
+  runs off the UI thread and reports a `Snapshot` (phase, link health, frames, `StreamStats`,
+  per-channel RMS microvolts over the last second, triggers) through `Environment::report`;
+  the transport, sink, clock and stop flag are all injected. Live inputs the clone does not
+  derive: every block runs under the Evaluator's `defaultControlValue`
+  (`live::DEFAULT_CONTROL`, 111; the Evaluator is unimplemented), the IPP scalar-head flags
+  stay all `false`, and the counter timer starts at the clock reading taken as the graph is
+  built, both of its reads being the block's. The clinician sets the Source device settings
+  (`SessionProperties`, default the run-8 baseline) and the length; the design is
+  `Smart2Design::smart2`, checked against the design fixture in `tests/parity_feedback.rs`.
+  The stored series are one point per band-pass amplitude (microvolts) every 5 s of stream
+  time under `Channel<n>` / the band label; which signals the original's 16 stored series
+  hold is unresolved. The UI shows signal level and stream health, never the original's
+  "Ready"/"Adjust Fit" verdict (`sensor-status.md`, "Unresolved"). `ui::state::UiModel` is the
+  pure model (actions and events in, `View` out) and is tested in `tests/ui_state.rs`;
+  `ui::app` only draws it, and `ui::worker` is the device glue (RFCOMM with a 1 s read
+  timeout, ALSA, the default store, bank 1002); neither is unit-tested. The window offers the
+  ADR 0004 import when `load_instrument` reports `Missing`. Entry point:
+  `scripts/run braintellect-linux -- ui --mac <MAC>`; the window needs a display and loads
+  X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages).
+  On Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`;
+  the B-2 must be paired, bonded and trusted in BlueZ first (`btmgmt bondable on` before pairing,
+  or the bond is not kept).
+  `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG framed by
+  `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank.
+- **B-2 emulator and capture** (`src/emulate.rs`, `src/capture.rs`). The live session tees its raw
+  RX to `<data dir>/captures/b2-<secs>.rx` (`capture::Recording`). `braintellect-linux emulate
+  <capture> <socket>` plays a B-2 over a Unix socket (the QEMU serial chardev): `Command::decode`
+  recognises the app's requests and `PowerOff`, replies are replayed byte for byte, frames recorded
+  before the last reply (a B-2 left streaming) are dropped, the rest stream from Start at 250/s and stop on Stop, and nothing is sent on power-off. It is tested over
+  `Read + Write` with `tests/harness/peer.rs` (`tests/emulator.rs`); the VM rig and the run-8
+  replay result are in `docs/reverse-engineering/braintellect2/replay-rig.md`.
+  `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
+  `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/`, and the ignored
+  `tests/replay_s48.rs` diffs the clone's decisions on that stream against the original's
+  (via `harness::run8::replay_from`) and asserts the logged E..H amplitudes bit for bit; it locates
+  the unlogged graph start, 45 Hz low-pass switch sample and E..H band to band-pass object ranks
+  from those amplitudes (`audio-feedback.md`, "Replay start-up"; the extract keeps all 18 objects'
+  flags and the complete logged block prefix, up to 30001); inputs are vendor-derived and stay
+  outside Git.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and

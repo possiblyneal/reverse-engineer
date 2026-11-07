@@ -26,6 +26,16 @@ pub enum DeviceFamily {
 }
 
 impl DeviceFamily {
+    /// The family number the app stores (`deviceFamily`: 11, 12 or 99).
+    #[must_use]
+    pub fn code(self) -> u32 {
+        match self {
+            Self::F11 => 11,
+            Self::F12 => 12,
+            Self::F99 => 99,
+        }
+    }
+
     /// Reference voltage `D1`, in volts (`.rdata` `2.4`/`4.0`).
     #[must_use]
     pub fn vref(self) -> f64 {

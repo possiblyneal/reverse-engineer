@@ -261,3 +261,49 @@ fn band_index(design: &Smart2Design, channel: usize, label: &str) -> Option<usiz
         .iter()
         .position(|b| b.channel == channel && b.label == label)
 }
+
+impl Smart2Design {
+    /// The `BT-SMART-2-v5.1.2` design with the clinician's Source settings:
+    /// eight 128-tap Hamming band-passes (Band 10 at 1-3 Hz, Band 80 at 23-36 Hz,
+    /// per channel), a Hann `PeakFrequency` per channel (6-14 Hz on channels 1
+    /// and 2, 7-15 Hz on 3 and 4) and the `continuous` Aggregator with a 60 s
+    /// epoch, at 500 Hz. `tests/parity_feedback.rs` checks it against the design
+    /// fixture decoded from the real app's records.
+    #[must_use]
+    pub fn smart2(source: SourceDesign) -> Self {
+        let band = |label: &str, low_hz, high_hz, channel| BandPassSpec {
+            channel,
+            label: label.to_owned(),
+            design: BandPassDesign {
+                low_hz,
+                high_hz,
+                order: 128,
+            },
+        };
+        let peak = |channel, low_hz, high_hz| PeakSpec {
+            channel,
+            design: PeakDesign {
+                fft_order: 9,
+                low_hz,
+                high_hz,
+            },
+        };
+        Self {
+            rate_hz: RATE_HZ,
+            source,
+            band_passes: [(BAND_LOW, 1.0, 3.0), (BAND_HIGH, 23.0, 36.0)]
+                .into_iter()
+                .flat_map(|(label, low, high)| {
+                    (0..CHANNELS).map(move |channel| band(label, low, high, channel))
+                })
+                .collect(),
+            peaks: vec![
+                peak(0, 6.0, 14.0),
+                peak(1, 6.0, 14.0),
+                peak(2, 7.0, 15.0),
+                peak(3, 7.0, 15.0),
+            ],
+            aggregator_epoch_s: 60,
+        }
+    }
+}
