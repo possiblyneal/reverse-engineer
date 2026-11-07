@@ -10,7 +10,8 @@
 //! band-pass object ranks are not logged; all three are located from the original's logged
 //! A..H amplitudes. The replay then runs twice: under the original's logged Evaluator codes
 //! (the decisions and amplitudes are asserted) and under the clone's own Evaluator (its
-//! Balance values against `evaluator.tsv`, and its code of every block, are asserted).
+//! Balance and Coherence values against `evaluator.tsv` bit for bit, and its code of every
+//! block, are asserted).
 //!
 //! Ignored: the inputs are vendor-derived and live outside Git. Run with
 //! `cargo test --test replay_s48 -- --ignored --nocapture`; `S48_REPLAY_DIR` overrides the
@@ -21,7 +22,7 @@ mod harness;
 use std::fs;
 use std::path::PathBuf;
 
-use braintellect_linux::feedback::{Mode, BLOCK_LEN, RATE_HZ};
+use braintellect_linux::feedback::{Mode, BLOCK_LEN};
 use harness::assertions;
 use harness::fixtures::Run8Block;
 use harness::run8::{deviation, replay_from, Codes, Replay};
@@ -38,8 +39,6 @@ fn read(name: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// The Evaluator's `averageEpoch`, in seconds.
-const EPOCH_S: usize = 60;
 /// Graph-call objects whose 16-tap-mean flags `blocks.tsv` holds, in address-rank order.
 const OBJECTS: usize = 18;
 /// Blocks over which each A..H rank must reproduce the logged amplitudes bit for bit.
@@ -445,67 +444,46 @@ fn clone_decisions_on_the_replayed_stream_against_the_originals() {
     assert_evaluator(&evaluated);
 }
 
-/// The clone's Evaluator against the original's: every logged Balance value bit for bit
-/// (when the log has them), and the code of every block, except the epochs the Coherence
-/// path decides, which the clone does not compute. Those epochs are listed from the logged
-/// Coherence series, or reported unknown when the log has none.
+/// The clone's Evaluator against the original's: every logged Balance and Coherence value
+/// bit for bit (when the log has them), and the code of every block.
 fn assert_evaluator(run: &Replay) {
-    let epoch_blocks = EPOCH_S * RATE_HZ / BLOCK_LEN;
-    let series = dir().join("evaluator.tsv").exists().then(evaluator_series);
-    if let Some(series) = &series {
-        let mut compared = 0;
-        for (b, (decision, logged)) in run.decisions.iter().zip(series).enumerate() {
-            let Some(logged) = logged else { continue };
-            for (k, &got) in decision.balances.iter().enumerate() {
-                assert_eq!(
-                    got.to_bits(),
-                    logged[k].to_bits(),
-                    "block {b} Balance series {k}: clone {got:e}, original {:e}",
-                    logged[k]
-                );
-                compared += 1;
-            }
+    if dir().join("evaluator.tsv").exists() {
+        let series = evaluator_series();
+        let (mut logged, mut clone) = (Vec::new(), Vec::new());
+        for (decision, values) in run.decisions.iter().zip(&series) {
+            let Some(values) = values else { continue };
+            logged.extend(values);
+            clone.extend(decision.balances.iter().chain(&decision.coherences));
         }
-        println!("Balance values bit for bit: {compared}");
+        // Six values per logged block: four Balance series, then two Coherence series.
+        assertions::float32_bits("Evaluator value", &logged, &clone)
+            .expect("Balance and Coherence values bit for bit");
+        println!(
+            "Balance and Coherence values bit for bit: {} blocks",
+            logged.len() / 6
+        );
+        let coherent: Vec<usize> = (0..series.len())
+            .filter(|&b| series[b].is_some_and(|s| s[4].abs() > 0.80 || s[5].abs() > 0.80))
+            .collect();
+        println!(
+            "blocks with a Coherence value above the threshold: {} (first {:?})",
+            coherent.len(),
+            coherent.first()
+        );
     }
-    // Epochs end at blocks epoch_blocks - 1, 2 * epoch_blocks - 1, ...; the code decided
-    // there applies from that block.
-    let coherence_decided =
-        |epoch_end: usize| -> Option<bool> {
-            let series = series.as_ref()?;
-            let at = |e: usize| series[e].map(|s| [s[4], s[5]]);
-            let (now, before) = (
-                at(epoch_end)?,
-                epoch_end.checked_sub(epoch_blocks).and_then(at),
-            );
-            Some(before.is_some_and(|before| {
-                (0..2).any(|k| before[k].abs() > 0.80 && now[k].abs() > 0.80)
-            }))
-        };
-    let mut decided_by_coherence = Vec::new();
-    let (mut logged_codes, mut clone_codes) = (Vec::new(), Vec::new());
-    for (b, (decision, block)) in run.decisions.iter().zip(&run.blocks).enumerate() {
-        let epoch = (b + 1) / epoch_blocks;
-        let epoch_end = (epoch * epoch_blocks).checked_sub(1);
-        // The block's code is from the last epoch end at or before it.
-        let coherence = epoch_end.and_then(coherence_decided);
-        if coherence == Some(true) {
-            if !decided_by_coherence.contains(&epoch) {
-                decided_by_coherence.push(epoch);
-            }
-            continue;
-        }
-        logged_codes.push(block.control);
-        clone_codes.push(decision.control);
-    }
-    println!(
-        "epochs the Coherence path decided: {}",
-        match (&series, decided_by_coherence.as_slice()) {
-            (None, _) => "not logged".to_owned(),
-            (_, []) => "none".to_owned(),
-            (_, epochs) => format!("{epochs:?}"),
-        }
-    );
-    assertions::control_codes(&logged_codes, &clone_codes)
-        .expect("per-block Evaluator code parity outside the Coherence epochs");
+    let codes = |control: &dyn Fn(usize) -> u32| (0..run.decisions.len()).map(control).collect();
+    let logged: Vec<u32> = codes(&|b| run.blocks[b].control);
+    let clone: Vec<u32> = codes(&|b| run.decisions[b].control);
+    println!("codes: {:?}", code_runs(&logged));
+    assertions::control_codes(&logged, &clone).expect("per-block Evaluator code parity");
+}
+
+/// `(first block, code)` of each run of equal codes.
+fn code_runs(codes: &[u32]) -> Vec<(usize, u32)> {
+    codes
+        .iter()
+        .enumerate()
+        .filter(|&(b, &c)| b == 0 || codes[b - 1] != c)
+        .map(|(b, &c)| (b, c))
+        .collect()
 }

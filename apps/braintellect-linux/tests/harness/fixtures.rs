@@ -6,8 +6,8 @@ use std::fs;
 use std::path::PathBuf;
 
 use braintellect_linux::feedback::{
-    BandPassDesign, BandPassSpec, Interference1, Interference2, PeakDesign, PeakSpec, Smart2Design,
-    SourceDesign,
+    BandPassDesign, BandPassSpec, CoherenceSpec, Interference1, Interference2, PeakDesign,
+    PeakSpec, Smart2Design, SourceDesign,
 };
 
 fn read(name: &str) -> String {
@@ -335,6 +335,7 @@ pub fn smart2_design() -> Smart2Design {
             high_pass_hz: 0.0,
         },
         band_passes: vec![],
+        coherences: vec![],
         peaks: vec![],
         aggregator_epoch_s: 0,
     };
@@ -364,6 +365,19 @@ pub fn smart2_design() -> Smart2Design {
                         low_hz: num(3),
                         high_hz: num(4),
                         order: c[6].parse().expect("order"),
+                    },
+                });
+            }
+            "coherence" => {
+                assert_eq!((c[6], c[8]), ("Hamming", "Relaxed"));
+                let channel = |i: usize| c[i].parse::<usize>().expect("channel") - 1;
+                design.coherences.push(CoherenceSpec {
+                    channels: [channel(1), channel(2)],
+                    label: c[3].to_owned(),
+                    design: BandPassDesign {
+                        low_hz: num(4),
+                        high_hz: num(5),
+                        order: c[7].parse().expect("order"),
                     },
                 });
             }

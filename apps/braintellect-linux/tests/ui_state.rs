@@ -21,7 +21,7 @@ fn snapshot(phase: Phase, health: Health) -> Snapshot {
         rms_uv: [1.5, 2.5, 3.5, 4.5],
         triggers: 7,
         last_note: Some(52),
-        control: 111,
+        control: 12,
         elapsed_s: 42,
     }
 }
@@ -105,6 +105,7 @@ fn a_running_session_shows_the_signal_and_stream_health() {
         "500 frames, 2 counter errors, 1 validation error"
     );
     assert_eq!(view.feedback, "7 notes, last note 52");
+    assert_eq!(view.control, "Control code 12");
     assert_eq!(view.elapsed, "0:42 of 4:00");
 }
 

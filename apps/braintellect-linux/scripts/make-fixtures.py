@@ -344,7 +344,8 @@ def local(tag):
 def design_rows(src, header):
     """The design properties of the upstream elements, as tab-separated rows.
 
-    Element names (`BPF Ch1 Band 10`, `PeakFreq Ch1`) give channel and band label;
+    Element names (`BPF Ch1 Band 10`, `Coherence Ch3n4 Band 10`, `PeakFreq Ch1`) give
+    channels and band label;
     the Source filter settings come from the session header and the app log.
     """
     root = ET.fromstring((src / "130-t1.xml").read_text())
@@ -366,6 +367,10 @@ def design_rows(src, header):
         if m := re.fullmatch(r"BPF Ch(\d) (Band \d+)", name):
             rows.append(("bandpass", m[1], m[2], props["lowFrequency"], props["highFrequency"],
                          props["windowType"], props["filterOrder"]))
+        elif m := re.fullmatch(r"Coherence Ch(\d)n(\d) (Band \d+)", name):
+            rows.append(("coherence", m[1], m[2], m[3], props["lowFrequency"],
+                         props["highFrequency"], props["windowType"], props["filterOrder"],
+                         props["processingStyle"]))
         elif m := re.fullmatch(r"PeakFreq Ch(\d)", name):
             rows.append(("peak", m[1], props["fftOrder"], props["lowFrequency"],
                          props["highFrequency"], props["windowType"]))

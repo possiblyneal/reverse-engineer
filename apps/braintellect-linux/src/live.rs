@@ -8,10 +8,11 @@
 //! process is injected: the transport (inside the `Session`), the sink, the
 //! clock and the stop flag.
 //!
+//! The control code is the Evaluator's (Balance and Coherence paths): the documented
+//! `defaultControlValue` (111) until the first 60 s epoch end decides one; the
+//! [`Snapshot`] reports the current code.
+//!
 //! Inputs the clone does not derive, and what a live run uses for each:
-//! - The Evaluator's Coherence path is not implemented. The control code comes from its
-//!   Balance path, which starts at the documented `defaultControlValue` (111) and is
-//!   decided at each 60 s epoch end; the [`Snapshot`] reports the current code.
 //! - The IPP scalar-head flags are all `true`: the original's order follows heap alignment
 //!   per process, and all-scalar-head departs less from its logged order than all-SIMD
 //!   (`audio-feedback.md`, "Live sum order").
@@ -333,7 +334,7 @@ impl<'a> Engine<'a> {
         snapshot.frames += 1;
         let resumed = snapshot.health != Health::Streaming;
         snapshot.health = Health::Streaming;
-        let mut report = resumed;
+        let (blocks, control, triggers) = (self.blocks, snapshot.control, snapshot.triggers);
         for n in 0..frame.channels[0].len() {
             let mut volts = [0.0; CHANNELS];
             for (c, chain) in self.source.iter_mut().enumerate() {
@@ -347,10 +348,14 @@ impl<'a> Engine<'a> {
             self.block.push(volts);
             if self.block.len() == BLOCK_LEN {
                 self.process_block(env, snapshot)?;
-                report |= self.blocks.is_multiple_of(REPORT_EVERY_BLOCKS);
             }
         }
-        if report {
+        // A new code or a trigger is drawn in the frame it happens; the rest every few blocks.
+        if resumed
+            || snapshot.control != control
+            || snapshot.triggers != triggers
+            || self.blocks != blocks && self.blocks.is_multiple_of(REPORT_EVERY_BLOCKS)
+        {
             snapshot.rms_uv = self.window.each_ref().map(rms);
             snapshot.elapsed_s = self.elapsed_s();
             (env.report)(snapshot);

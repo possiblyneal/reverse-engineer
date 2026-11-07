@@ -138,6 +138,29 @@ pub fn control_codes(expected: &[u32], actual: &[u32]) -> Parity {
     }
 }
 
+/// Logged `float32` values (Balance, Coherence) match bit for bit: they are the app's own
+/// float32 results, so no tolerance applies.
+pub fn float32_bits(what: &str, expected: &[f32], actual: &[f32]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "{what} count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected
+        .iter()
+        .zip(actual)
+        .position(|(e, a)| e.to_bits() != a.to_bits())
+    {
+        Some(i) => mismatch(format!(
+            "{what} {i}: expected {:e}, got {:e}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Threshold pass flags match sample for sample (boolean: no tolerance applies).
 pub fn pass_flags(expected: &[bool], actual: &[bool]) -> Parity {
     if expected.len() != actual.len() {

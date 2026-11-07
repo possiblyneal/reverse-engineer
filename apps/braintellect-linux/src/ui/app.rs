@@ -190,6 +190,7 @@ impl eframe::App for App {
             });
             ui.label(&view.frames);
             ui.label(&view.feedback);
+            ui.label(&view.control);
             ui.label(&view.elapsed);
             ui.separator();
             ui.label(&view.notice);

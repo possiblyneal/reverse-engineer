@@ -220,6 +220,37 @@ fn the_snapshot_reports_the_code_the_evaluator_decides() {
     );
 
     assert_eq!(run.last.control, 82);
+    // The code is reported in the frame that closes the deciding epoch's last block.
+    let first = run
+        .reports
+        .iter()
+        .find(|s| s.control != 111)
+        .expect("a code change");
+    assert_eq!((first.frames, first.control), (2 * 15_000, 82));
+}
+
+/// Every trigger is reported with its note in the frame that closes its block, so the
+/// session window and a replay see each one when it happens.
+#[test]
+fn every_trigger_is_reported_as_it_happens() {
+    let run = exercise(
+        "each-trigger",
+        THIRTY_SECONDS,
+        false,
+        &SessionProperties::default(),
+        None,
+    );
+
+    let mut seen: Vec<u32> = run.reports.iter().map(|s| s.triggers).collect();
+    seen.dedup();
+    assert_eq!(seen, (0..=run.last.triggers).collect::<Vec<_>>());
+    let first = run
+        .reports
+        .iter()
+        .find(|s| s.triggers == 1)
+        .expect("a trigger");
+    let block = first_sounding_block(8);
+    assert_eq!(first.frames, 2 * (block as u64 + 1));
 }
 
 /// The original's counter timer starts long before the first graph block (3707 to 21018 ms
