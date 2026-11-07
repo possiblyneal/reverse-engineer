@@ -3,6 +3,7 @@
 use std::path::PathBuf;
 
 use crate::live::{Health, Phase, SessionProperties, Snapshot};
+use crate::sensor::SensorStatus;
 
 /// The channel names of the montage `FP1FP2T3T4`, in the engine's channel order.
 const CHANNEL_LABELS: [&str; 4] = ["FP1", "FP2", "T3", "T4"];
@@ -20,6 +21,10 @@ pub enum Instrument {
 pub enum Event {
     /// The running session's state, including its final state.
     Update(Snapshot),
+    /// The sensor status the engine reports while no session runs.
+    Sensor(SensorStatus),
+    /// The sensor check ended: on a stop (`None`) or because it could not run.
+    SensorCheckEnded(Option<String>),
     /// The session could not start, and why.
     Failed(String),
     /// A stop ended the session before it streamed.
@@ -33,6 +38,9 @@ pub enum Event {
 pub enum Command {
     Start(SessionProperties),
     Stop,
+    /// Show the sensor status from the B-2 stream before a session.
+    CheckSensors,
+    StopCheck,
     /// Copy the instrument banks from the original's `lib` directory.
     Import(PathBuf),
 }
@@ -58,10 +66,15 @@ pub struct ChannelView {
 pub struct View {
     pub can_start: bool,
     pub can_stop: bool,
+    pub can_check: bool,
+    /// The sensor check is streaming.
+    pub checking: bool,
     pub needs_import: bool,
     /// The latest outcome or problem; empty when there is none.
     pub notice: String,
     pub connection: String,
+    /// "Ready", "Adjust Fit" or "Not Available".
+    pub sensor: String,
     pub channels: Vec<ChannelView>,
     pub frames: String,
     pub feedback: String,
@@ -75,6 +88,8 @@ pub struct UiModel {
     pub properties: SessionProperties,
     stage: Stage,
     snapshot: Option<Snapshot>,
+    sensor: SensorStatus,
+    checking: bool,
     notice: String,
 }
 
@@ -91,6 +106,8 @@ impl UiModel {
             properties: SessionProperties::default(),
             stage: Stage::Setup,
             snapshot: None,
+            sensor: SensorStatus::NotAvailable,
+            checking: false,
             notice,
         }
     }
@@ -115,6 +132,22 @@ impl UiModel {
         Some(Command::Start(self.properties.clone()))
     }
 
+    /// Start showing the sensor status from the B-2 stream.
+    pub fn check_sensors(&mut self) -> Option<Command> {
+        if !self.startable() {
+            return None;
+        }
+        self.checking = true;
+        self.notice.clear();
+        Some(Command::CheckSensors)
+    }
+
+    /// Stop the sensor check.
+    #[must_use]
+    pub fn stop_check(&self) -> Option<Command> {
+        self.checking.then_some(Command::StopCheck)
+    }
+
     /// Stop the session that is connecting or running.
     #[must_use]
     pub fn stop(&self) -> Option<Command> {
@@ -137,6 +170,14 @@ impl UiModel {
                 }
                 self.snapshot = Some(snapshot);
             }
+            Event::Sensor(status) => self.sensor = status,
+            Event::SensorCheckEnded(why) => {
+                self.checking = false;
+                self.sensor = SensorStatus::NotAvailable;
+                if let Some(why) = why {
+                    self.notice = format!("Sensor check stopped: {why}");
+                }
+            }
             Event::Failed(why) => self.fail(&why),
             Event::Cancelled => {
                 self.stage = Stage::Setup;
@@ -156,9 +197,12 @@ impl UiModel {
         View {
             can_start: self.startable(),
             can_stop: matches!(self.stage, Stage::Connecting | Stage::Running),
+            can_check: self.startable(),
+            checking: self.checking,
             needs_import: matches!(self.instrument, Instrument::Missing(_)),
             notice: self.notice.clone(),
             connection: self.connection(),
+            sensor: self.sensor_label().to_owned(),
             channels: CHANNEL_LABELS
                 .iter()
                 .enumerate()
@@ -190,8 +234,18 @@ impl UiModel {
         }
     }
 
+    /// The engine is off while a session connects or runs (`sensor-status.md`).
+    fn sensor_label(&self) -> &'static str {
+        match self.stage {
+            Stage::Setup | Stage::Done => self.sensor.label(),
+            Stage::Connecting | Stage::Running => SensorStatus::NotAvailable.label(),
+        }
+    }
+
     fn startable(&self) -> bool {
-        self.instrument == Instrument::Ready && matches!(self.stage, Stage::Setup | Stage::Done)
+        self.instrument == Instrument::Ready
+            && !self.checking
+            && matches!(self.stage, Stage::Setup | Stage::Done)
     }
 
     fn fail(&mut self, why: &str) {

@@ -37,6 +37,29 @@ impl Worker {
         properties: SessionProperties,
         wake: impl Fn() + Send + 'static,
     ) -> Self {
+        Self::spawn_job(wake, move |flag, send| {
+            session(&mac, &properties, flag, send)
+        })
+    }
+
+    /// Connect to the B-2 at `mac` and report the sensor status until stopped; the
+    /// events end with [`Event::SensorCheckEnded`].
+    pub fn spawn_check(
+        mac: String,
+        properties: SessionProperties,
+        wake: impl Fn() + Send + 'static,
+    ) -> Self {
+        Self::spawn_job(wake, move |flag, send| {
+            let result = check(&mac, &properties, flag, send);
+            send(Event::SensorCheckEnded(result.err()));
+            Ok(())
+        })
+    }
+
+    fn spawn_job(
+        wake: impl Fn() + Send + 'static,
+        job: impl FnOnce(&AtomicBool, &dyn Fn(Event)) -> Result<(), String> + Send + 'static,
+    ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
         let (send, events) = channel();
         let flag = Arc::clone(&stop);
@@ -46,7 +69,7 @@ impl Worker {
                 let _ = send.send(event);
                 wake();
             };
-            if let Err(why) = session(&mac, &properties, &flag, &send) {
+            if let Err(why) = job(&flag, &send) {
                 send(Event::Failed(why));
             }
         });
@@ -71,6 +94,27 @@ impl Drop for Worker {
             let _ = thread.join();
         }
     }
+}
+
+/// The sensor status before a session: no audio, no store, no capture file.
+fn check(
+    mac: &str,
+    properties: &SessionProperties,
+    stop: &AtomicBool,
+    send: &dyn Fn(Event),
+) -> Result<(), String> {
+    let stream = RfcommStream::connect(mac, DEFAULT_CHANNEL)
+        .map_err(|e| format!("cannot connect to {mac}: {e}"))?;
+    stream
+        .set_read_timeout(READ_TIMEOUT)
+        .map_err(|e| e.to_string())?;
+    let session = Session::open(stream, live::stream_config()?).map_err(|e| e.to_string())?;
+    let origin = Instant::now();
+    let mut clock = move || i64::try_from(origin.elapsed().as_millis()).unwrap_or(i64::MAX);
+    live::monitor(session, properties, stop, &mut clock, &mut |status| {
+        send(Event::Sensor(status));
+    });
+    Ok(())
 }
 
 fn session(

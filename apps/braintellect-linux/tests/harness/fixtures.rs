@@ -584,3 +584,51 @@ pub fn run8_amplitudes() -> Vec<[f32; 16]> {
         })
         .collect()
 }
+
+/// What the original's Head2D held for one channel after a block: the line-noise
+/// level (`+0x5c`) and the 12, 40 and 70 Hz band levels, in dB.
+#[derive(Clone, Debug)]
+pub struct SensorLevels {
+    pub line_noise: f32,
+    pub bands: [f32; 3],
+}
+
+/// One block of the sensors-off replay into the original (`sensor_*.tsv`): each
+/// channel's 512 float32 FFT input, the levels the original derived from it, and
+/// the evaluator's fault flag after the block. Blocks are numbered from the start
+/// of the capture; only some are kept.
+#[derive(Clone, Debug)]
+pub struct SensorBlock {
+    pub index: usize,
+    pub samples: [Vec<f32>; 4],
+    pub levels: [SensorLevels; 4],
+    pub faulted: bool,
+}
+
+pub fn sensor_blocks() -> Vec<SensorBlock> {
+    let inputs = read("sensor_inputs.tsv");
+    let levels = read("sensor_levels.tsv");
+    let rows = |text: &str| -> Vec<Vec<String>> {
+        text.lines()
+            .map(|l| l.split('\t').map(String::from).collect())
+            .collect()
+    };
+    let (inputs, levels) = (rows(&inputs), rows(&levels));
+    assert_eq!(inputs.len(), levels.len(), "one row per block and channel");
+    inputs
+        .chunks(4)
+        .zip(levels.chunks(4))
+        .map(|(inp, lev)| {
+            let num = |s: &str| s.parse::<f32>().expect("float");
+            SensorBlock {
+                index: inp[0][0].parse().expect("block"),
+                samples: std::array::from_fn(|c| inp[c][2].split(' ').map(num).collect()),
+                levels: std::array::from_fn(|c| SensorLevels {
+                    line_noise: num(&lev[c][2]),
+                    bands: [num(&lev[c][3]), num(&lev[c][4]), num(&lev[c][5])],
+                }),
+                faulted: lev[0][6] == "1",
+            }
+        })
+        .collect()
+}

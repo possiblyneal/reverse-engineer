@@ -43,7 +43,12 @@ first connection after the B-2 was switched on, `hs_B.txt` a reconnect), laid ou
 `wire.txt` with the commands the clone writes (stop, a query pass, mode, injection, a second
 query pass) and the 101 serial scrubbed.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src58 DIR] [--baseline DIR] [--out DIR]
+The sensor-status fixtures (`sensor_inputs.tsv`, `sensor_levels.tsv`) come from the 2026-11-07
+hook13 capture `tmp/s57/s57.bin` (`--src57`, never committed; run 8's no-wearer stream replayed into
+the original on the Optimize tab): for a few of the 105 blocks, each channel's 512 float32 FFT
+input, and the levels and fault flag the original's Head2D and evaluator produced from it.
+
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src57 FILE] [--src58 DIR] [--baseline DIR] [--out DIR]
 """
 import argparse
 import collections
@@ -827,6 +832,45 @@ def run8(path):
     return out
 
 
+SENSOR_BLOCKS = (0, 1, 2, 3, 15, 16, 17, 20, 31, 58, 77)  # the line-noise decision, the fault blocks and their neighbours
+
+
+def sensor_blocks(path):
+    """Tags 30 (FFT input), 32 (Head2D levels) and 35 (evaluator fault flag), four channels per block."""
+    import array
+
+    raw = pathlib.Path(path).read_bytes()
+    a = array.array("d")
+    a.frombytes(raw[:len(raw) // 8 * 8])
+    ffts, heads, flags = [], [], []  # flags: per block, the fault flag after its last evaluator call
+    i = 0
+    while i + 3 <= len(a):
+        tag, size = int(a[i]), int(a[i + 1])
+        if size < 3 or i + size > len(a):
+            break
+        r = a[i:i + size]
+        if tag == 30:
+            ffts.append((list(r[12:12 + 512]), list(r[12 + 512:12 + 768])))
+        elif tag == 32:
+            if len(heads) % 4 == 0:
+                flags.append(None)
+            heads.append((list(r[21:21 + 256]), r[9], r[12], r[13], r[14]))
+        elif tag == 35 and flags:
+            flags[-1] = int(r[4])
+        i += size
+    blocks = len(heads) // 4
+    assert blocks == len(ffts) // 4 and None not in flags, "capture is not whole blocks"
+    inputs, levels = [], []
+    for b in SENSOR_BLOCKS:
+        for c in range(4):
+            samples, spectrum = ffts[4 * b + c]
+            head = heads[4 * b + c]
+            assert head[0] == spectrum, "Head2D spectrum is the FFT output"
+            inputs.append(f"{b}\t{c}\t" + " ".join(f"{x:.9g}" for x in samples) + "\n")
+            levels.append(f"{b}\t{c}\t" + "\t".join(f"{x:.9g}" for x in head[1:]) + f"\t{flags[b]}\n")
+    return {"sensor_inputs.tsv": "".join(inputs), "sensor_levels.tsv": "".join(levels)}
+
+
 def main():
     root =pathlib.Path(__file__).resolve().parents[3]
     ap = argparse.ArgumentParser()
@@ -835,6 +879,7 @@ def main():
     ap.add_argument("--src4", type=pathlib.Path, default=root / "tmp/s26/run4")
     ap.add_argument("--src5", type=pathlib.Path, default=root / "tmp/s43/live")
     ap.add_argument("--src8", type=pathlib.Path, default=root / "tmp/s43/run8/run8.bin")
+    ap.add_argument("--src57", type=pathlib.Path, default=root / "tmp/s57/s57.bin")
     ap.add_argument("--src58", type=pathlib.Path, default=root / "tmp/s58")
     ap.add_argument("--baseline", type=pathlib.Path, default=root / "tmp/s43/baseline")
     ap.add_argument(
@@ -899,6 +944,8 @@ def main():
         "\t".join(r) + "\n" for r in design_rows(args.src4, header4)))
 
     for name, text in run8(args.src8).items():
+        (args.out / name).write_text(text)
+    for name, text in sensor_blocks(args.src57).items():
         (args.out / name).write_text(text)
 
 

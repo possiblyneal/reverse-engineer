@@ -36,6 +36,7 @@ use crate::feedback::{
     Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
     BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
 };
+use crate::sensor::{SensorDesign, SensorMonitor, SensorStatus, BLOCK_SAMPLES};
 use crate::storage::{Channel, Header, Point, Series, SessionRecord, Store};
 
 /// Output rate of the sink: the sample rate of instrument bank 1002
@@ -253,6 +254,61 @@ pub fn run<T: Read + Write>(
         },
     };
     finish(&mut env, snapshot, phase)
+}
+
+/// The sensor status before a session (`sensor-status.md`): the Source output of an
+/// opened B-2 runs through the BT-LOD design beside no SMART-2 graph, and `report`
+/// gets the overlay state after each 512-sample block. Ends when `stop` is raised,
+/// the link closes or errors; the stream is stopped on the way out. `clock` is read
+/// once per block, for the `stateChangeDelay` debounce.
+pub fn monitor<T: Read + Write>(
+    mut session: Session<T>,
+    properties: &SessionProperties,
+    stop: &AtomicBool,
+    clock: &mut dyn FnMut() -> i64,
+    report: &mut dyn FnMut(SensorStatus),
+) {
+    let Ok(mut source) = (0..CHANNELS)
+        .map(|_| SourceFilters::new(&properties.source(), RATE_HZ))
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return;
+    };
+    if session.start(STREAM_CHANNELS as u8).is_err() {
+        return;
+    }
+    let mut sensors = SensorMonitor::new(SensorDesign::bt_lod());
+    sensors.set_engine_running(true);
+    let mut samples = 0usize;
+    while !stop.load(Ordering::Relaxed) {
+        match session.next_frame() {
+            Ok(Some(frame)) => {
+                for n in 0..frame.channels[0].len() {
+                    let volts: [f64; CHANNELS] =
+                        std::array::from_fn(|c| source[c].push(frame.channels[c][n] * 1e-6));
+                    samples += 1;
+                    // The clock is read only for the sample that completes a block.
+                    let now_ms = if samples.is_multiple_of(BLOCK_SAMPLES) {
+                        clock()
+                    } else {
+                        0
+                    };
+                    if let Some(status) = sensors.push(now_ms, &volts) {
+                        report(status);
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(SessionError::Io(e))
+                if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
+            Err(_) => break,
+        }
+    }
+    // A link too broken to take Stop has nothing more to lose.
+    let _ = session.disconnect();
 }
 
 fn finish(env: &mut Environment<'_>, mut snapshot: Snapshot, phase: Phase) -> Snapshot {
