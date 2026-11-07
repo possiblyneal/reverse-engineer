@@ -8,7 +8,9 @@
 /// - the 45 Hz interference low-pass is switched in at the first graph sample, not at a
 ///   thread-timed one;
 /// - every band-pass uses the scalar-head 16-tap-mean sum order (the "Live sum order"
-///   policy), not the heap-alignment-dependent one.
+///   policy), not the heap-alignment-dependent one;
+/// - the note selection reads Evaluator code 112 as channel 3 and 113 as channel 4, not the
+///   channel 3 and 4 average the design's 102/103 typo leaves them.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Mode {
     Original,
