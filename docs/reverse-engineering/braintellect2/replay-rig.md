@@ -162,38 +162,28 @@ EEG as `replay_s48` does (`S48_REPLAY_DIR=<extract> cargo test --release --test 
   The decision diff is unaffected because `replay_s48` feeds the original's consumed samples,
   but two apps reading one raw stream live would diverge at the first gap.
 
-## Attempt: capturing the Evaluator inputs and bands A..D (#53, 2026-11-07, not completed)
+## Result: the Evaluator inputs and bands A..D captured (#53, 2026-11-07)
 
-The goal was a replay of the run-8 rx stream with hooks on the Evaluator (each Balance and
-Coherence series value per epoch, the chosen code) and on bands A..D. The capture was not made.
+A replay of the run-8 rx stream with hooks on the Evaluator (each Balance and Coherence series value per block, the chosen code) and on bands A..D was captured on the third attempt; the findings are in `audio-feedback.md`, "Replay capture of the Evaluator inputs".
 
 - Static (observed, Ghidra `analyzeHeadless` over a copy of the `bt2` project): the series push
   (`0x63d9c0`), the series evaluation (`0x63e540`), the Evaluator decision (`0x63eb70`, code at
   object offset `+0x274`) and the Evaluator code setter (`0x63ea70`). A hook set for them,
   `hook12.js` (`hook11.js` plus those four), was written and loaded under `frida-inject -f`
   with the app connected to the emulator and idle on the Optimize tab.
-- The blocker is driving the guest GUI to Play (gear, OK, Play). With the guest on the QEMU
-  USB tablet: HMP `mouse_move` moves only the PS/2 mouse (relative, accelerated, not
-  addressable), an RFB pointer event moves nothing, and the keyboard reaches the focused
-  window only (Tab and Enter did not open the gear dialog; Alt+Tab focuses the injector's
-  console). A hot-added helper image with a PowerShell `SetCursorPos`/`mouse_event` clicker run
-  from the Win+R dialog is the untried-to-completion route: the screen lags the guest by
-  several seconds and HMP `sendkey` text drops characters when typed at 0.12 s per key, so the
-  Run dialog did not launch it reliably.
-- GUI driving is solved (observed): an in-guest PowerShell clicker (`EnumWindows` title waits,
+- Driving the guest GUI to Play (observed): HMP `mouse_move`, RFB pointer events and keystrokes do not reach the QEMU USB tablet's clickable windows, so an in-guest PowerShell clicker (`EnumWindows` title waits,
   `SetCursorPos` plus `mouse_event`) started from the guest's Startup folder, with the files
   placed on the stopped guest's NTFS disk (`ntfs-3g` loop mount at offset 269484032; after a
   forced stop it needs `ntfsfix -d` on the loop device first). It reached user select, the
   licence wizard, the gear dialog, OK and Play unattended. The app's title has two spaces
   (`BRAINtellect 2  Version 5.1.57`), so a single-space `-like` pattern waits out its timeout.
-- The remaining blocker is the guest's speed (observed, three runs): with the emulator
-  streaming from connect, the graph consumes about 10 blocks a second instead of 125 (tag 12,
-  about 600 a minute, `s53.bin`), the 5 s heartbeat timer fires irregularly, and the GUI
-  clicks take minutes (the gear dialog opens about one minute after the click, the app
-  titles read `(Not Responding)`). Hooks are not the cause: no Evaluator record had fired yet,
-  and `hook11.js` alone (the hook set of the run-8 capture, output renamed) is equally slow.
-  A guest process list taken every minute (PowerShell `Get-Process`) shows `braintellect`
-  using about one core continuously and `MsMpEng` (Defender) about 0.15 core; QEMU runs the
-  two vCPUs at 220 percent. The cause is not identified. Untried: stop the emulator until
-  Play (the stream starts at the handshake's `#48,1`), disable Defender real-time scanning
-  offline, give the guest more vCPUs, and run with no frida to get the app's own rate.
+- The guest's slowness was the host, not the guest (observed): `cpu-turbo-schedule.timer` sets
+  `intel_pstate/no_turbo=1` from 22:00 to 07:00, which capped the host at 800 MHz, and the
+  graph then consumed about 10 blocks a second instead of 125. Before a rig run check
+  `cat /sys/devices/system/cpu/intel_pstate/no_turbo` and run
+  `sudo systemctl stop cpu-turbo-schedule.service` (or write 0) first; start the service
+  again afterwards. With turbo on, the capture ran in real time: 30004 blocks, `hook12.js`
+  loaded, no Evaluator record dropped.
+- The log (`g-s53.bin`, 341 MB) stays in the main checkout's `tmp/s53/r3/`. `replay-extract.py`
+  turns it into the replay directory; `replay_s48` reads it through `S48_REPLAY_DIR` and
+  asserts the A..H amplitudes, the Balance values and the per-block codes.
