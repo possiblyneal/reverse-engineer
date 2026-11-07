@@ -1,6 +1,7 @@
 //! Sensor-status layer: a synthetic level stream in, the overlay state per
 //! update out, compared exactly.
 
+use braintellect_linux::feedback::DspFft;
 use braintellect_linux::sensor::{
     ChannelLevels, SensorDesign, SensorMonitor, SensorStatus, SensorStatusEngine, BLOCK_SAMPLES,
 };
@@ -153,21 +154,76 @@ pub fn expect_faults(actual: &[(Levels, bool)], blocks: &[SensorBlock]) -> Resul
     Ok(())
 }
 
-/// The largest difference between a clone level and the original's, in dB, over
-/// every block, channel and level. A reported figure, not an assertion: the
-/// clone's FFT is not bit exact to the original's (see sensor-status.md).
-pub fn max_level_deviation_db(actual: &[(Levels, bool)], blocks: &[SensorBlock]) -> f32 {
-    actual
+/// The levels the monitor holds after each block, to the bit: the line-noise level and
+/// the 12, 40 and 70 Hz band levels of every channel.
+pub fn expect_levels(actual: &[(Levels, bool)], blocks: &[SensorBlock]) -> Result<(), String> {
+    if actual.len() != blocks.len() {
+        return Err(format!(
+            "{} blocks, expected {}",
+            actual.len(),
+            blocks.len()
+        ));
+    }
+    for ((levels, _), block) in actual.iter().zip(blocks) {
+        for (c, (got, want)) in levels.iter().zip(&block.levels).enumerate() {
+            let got = std::iter::once(got.line_noise).chain(got.bands.iter().copied());
+            let want = std::iter::once(want.line_noise).chain(want.bands);
+            for (i, (g, w)) in got.zip(want).enumerate() {
+                if g.to_bits() != w.to_bits() {
+                    return Err(format!(
+                        "block {} channel {c} level {i}: {g}, expected {w}",
+                        block.index
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// The spectrum the clone's `DSPFFT::process` makes of each channel's input in each block.
+pub fn replay_spectra(blocks: &[SensorBlock]) -> Vec<[Vec<f32>; 4]> {
+    let fft = DspFft::new();
+    blocks
         .iter()
-        .zip(blocks)
-        .flat_map(|((levels, _), block)| levels.iter().zip(&block.levels))
-        .flat_map(|(got, want)| {
-            std::iter::once(got.line_noise)
-                .chain(got.bands.iter().copied())
-                .zip(std::iter::once(want.line_noise).chain(want.bands))
+        .map(|block| {
+            std::array::from_fn(|c| {
+                let input: &[f32; BLOCK_SAMPLES] =
+                    block.samples[c].as_slice().try_into().expect("512 samples");
+                fft.spectrum(input).to_vec()
+            })
         })
-        .map(|(g, w)| (g - w).abs())
-        .fold(0.0, f32::max)
+        .collect()
+}
+
+/// Every bin of every spectrum, to the bit.
+pub fn expect_spectra(actual: &[[Vec<f32>; 4]], blocks: &[SensorBlock]) -> Result<(), String> {
+    if actual.len() != blocks.len() {
+        return Err(format!(
+            "{} blocks, expected {}",
+            actual.len(),
+            blocks.len()
+        ));
+    }
+    for (spectra, block) in actual.iter().zip(blocks) {
+        for (c, (got, want)) in spectra.iter().zip(&block.spectra).enumerate() {
+            if got.len() != want.len() {
+                return Err(format!(
+                    "block {} channel {c}: {} bins, expected {}",
+                    block.index,
+                    got.len(),
+                    want.len()
+                ));
+            }
+            if let Some(k) = (0..got.len()).find(|&k| got[k].to_bits() != want[k].to_bits()) {
+                return Err(format!(
+                    "block {} channel {c} bin {k}: {}, expected {}",
+                    block.index, got[k], want[k]
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Exact match of the overlay state sequence.

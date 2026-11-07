@@ -372,6 +372,42 @@ fn sensor_replay_red_on_a_wrong_fault() {
 }
 
 #[test]
+fn sensor_levels_red_on_one_ulp_or_a_missing_block() {
+    use harness::{fixtures, sensor};
+
+    let blocks = fixtures::sensor_blocks();
+    let actual = sensor::replay_blocks(&blocks);
+    sensor::expect_levels(&actual, &blocks).expect("the clone against the original");
+
+    let mut off_by_one_ulp = actual.clone();
+    let level = &mut off_by_one_ulp[5].0[2].bands[1];
+    *level = f32::from_bits(level.to_bits() + 1);
+    assert!(sensor::expect_levels(&off_by_one_ulp, &blocks).is_err());
+    let mut line_noise = actual.clone();
+    line_noise[9].0[0].line_noise += 0.5;
+    assert!(sensor::expect_levels(&line_noise, &blocks).is_err());
+    assert!(sensor::expect_levels(&actual[1..], &blocks).is_err());
+}
+
+#[test]
+fn sensor_spectra_red_on_one_ulp_or_a_wrong_length() {
+    use harness::{fixtures, sensor};
+
+    let blocks = fixtures::sensor_blocks();
+    let actual = sensor::replay_spectra(&blocks);
+    sensor::expect_spectra(&actual, &blocks).expect("the clone against the original");
+
+    let mut off_by_one_ulp = actual.clone();
+    let bin = &mut off_by_one_ulp[3][1][200];
+    *bin = f32::from_bits(bin.to_bits() + 1);
+    assert!(sensor::expect_spectra(&off_by_one_ulp, &blocks).is_err());
+    let mut short = actual.clone();
+    short[0][0].pop();
+    assert!(sensor::expect_spectra(&short, &blocks).is_err());
+    assert!(sensor::expect_spectra(&actual[1..], &blocks).is_err());
+}
+
+#[test]
 fn fft_spectra_green_on_baseline_red_on_a_bin_or_a_length() {
     let baseline: Vec<Vec<f64>> = (0..4)
         .map(|c| (0..256).map(|k| f64::from(c * 256 + k) * 0.37).collect())

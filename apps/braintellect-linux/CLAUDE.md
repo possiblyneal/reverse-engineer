@@ -189,9 +189,11 @@ those findings, it cites them.
   (512-sample FFT blocks per channel, five band levels, then the evaluator). `live::monitor`
   runs it on an opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check
   sensors" button, `Command::CheckSensors`), needs no tone, and returns why it could not run or
-  broke off, which ends the check with that reason in the notice. Its levels are
-  replay-reported against the original, not asserted, and the evaluator fault flag is
-  replay-asserted exactly (`sensor-status.md`). Tests: `tests/parity_sensor_status.rs`
+  broke off, which ends the check with that reason in the notice. The FFT stage is
+  `feedback::DspFft` (`DSPFFT::process`: f32 Bartlett, `RealFft512`, the `rsqrtps` magnitude of
+  `ipp_magnitude.rs`, the x87 scale); the spectra, levels and evaluator fault flag are all
+  replay-asserted bit exact against the original's sensors-off capture (`sensor-status.md`).
+  The `rsqrtps` table is Intel's. Tests: `tests/parity_sensor_status.rs`
   (synthetic fault tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`),
   `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the
   in-memory stream).

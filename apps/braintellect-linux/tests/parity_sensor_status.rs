@@ -86,10 +86,13 @@ fn the_faults_match_the_original_on_a_sensors_off_replay() {
     assert_eq!(faulted, [16, 20, 31, 58, 77]);
     let actual = sensor::replay_blocks(&blocks);
     sensor::expect_faults(&actual, &blocks).unwrap();
-    // The levels are reported, not asserted: the harness is exact-match only and
-    // the clone's FFT is not bit exact to the original's.
-    println!(
-        "sensor replay: max level deviation {} dB",
-        sensor::max_level_deviation_db(&actual, &blocks)
-    );
+    sensor::expect_levels(&actual, &blocks).unwrap();
+}
+
+#[test]
+fn the_spectra_match_the_originals_dspfft_bit_for_bit() {
+    // Each channel's 512-sample input of 11 blocks of the sensors-off replay, through
+    // the Bartlett window, the IPP real FFT, the IPP magnitude and the scale.
+    let blocks = harness::fixtures::sensor_blocks();
+    sensor::expect_spectra(&sensor::replay_spectra(&blocks), &blocks).unwrap();
 }

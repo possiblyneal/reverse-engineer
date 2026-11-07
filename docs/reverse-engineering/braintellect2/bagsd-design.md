@@ -37,8 +37,10 @@ clone has no selector for it and none is invented. Its outputs are the stored se
   only once the count reaches `+0x73`, then zeroes the buffer. A start or stop message (type 2
   or 0xc) transforms a partial buffer, zero padded, when its count is neither 0 nor `+0x73`.
 - `DSPFFT::process` `0x637940`: `float32` Bartlett window, the IPP order-9 real FFT
-  (`ipp_fft.rs`), magnitude of bins 0..255, scaled by `1/128` over the window mean
-  (0.499022156).
+  (`ipp_fft.rs`), the IPP magnitude (`rsqrtps` plus one Newton step, `ipp_magnitude.rs`) of
+  bins 0..255, scaled by `1/128` over the window mean (0.499022156). `feedback::DspFft` is
+  this chain, bit exact per block against the sensors-off capture (`sensor-status.md`, "Level
+  bit exactness").
 - Stored output: one 256-value vector per channel at x = 240016 ms (the stop), consistent with
   the absolute `VectorAggregator` emitting the mean of the block spectra once, at the stop. The
   input is the Source output as stored (`f32(trunc(x*d)/d)`): 120008 samples from the graph
@@ -46,7 +48,7 @@ clone has no selector for it and none is invented. Its outputs are the stored se
 
 ## Clone and parity
 
-`feedback::FftSpectrum` implements the above over the stored Source output.
+`feedback::FftSpectrum` implements the above over the stored Source output, through `DspFft`.
 `tests/replay_s59.rs` (ignored; `S59_REPLAY_DIR`, default `tmp/s56`) runs exercise 146's
 consumed volts through it and reports the deviation from the stored vectors. The capture is
 #56's stored type-9 record; no run of this ticket logged `DSPFFT` inputs and outputs.

@@ -1,14 +1,7 @@
-//! The FFT pieces the clone's own spectra share: a radix-2 FFT (`PeakFrequency`, the
-//! sensor status) and the `DSPFFT::process` (`0x637940`) Bartlett window and magnitude
-//! scale (the sensor status, [`super::FftSpectrum`]). The IPP order-9 real FFT the
-//! Coherence and the discrete FFT run is [`super::ipp_fft`], kept apart for its exact
-//! sum order.
+//! A radix-2 FFT for `PeakFrequency`. The IPP order-9 real FFT the Coherence and the
+//! discrete FFT run is [`super::ipp_fft`], kept apart for its exact sum order.
 
 use std::f64::consts::PI;
-
-/// `DSPFFT::process` scales each magnitude by `+0x54 / +0x50`: 1/128 (`+0x54`, as
-/// captured for the 512-point FFT) over the window's mean (`+0x50`).
-const SPECTRUM_GAIN: f64 = 1.0 / 128.0;
 
 /// In-place radix-2 FFT of a power-of-two length.
 pub fn radix2(re: &mut [f64], im: &mut [f64]) {
@@ -40,19 +33,4 @@ pub fn radix2(re: &mut [f64], im: &mut [f64]) {
         }
         len <<= 1;
     }
-}
-
-/// The `DSPFFT` Bartlett window of `n` points.
-#[must_use]
-pub fn bartlett(n: usize) -> Vec<f64> {
-    let last = (n - 1) as f64;
-    (0..n)
-        .map(|i| 1.0 - (2.0 * i as f64 / last - 1.0).abs())
-        .collect()
-}
-
-/// The magnitude scale under `window`: `SPECTRUM_GAIN` over the window's mean.
-#[must_use]
-pub fn spectrum_scale(window: &[f64]) -> f64 {
-    SPECTRUM_GAIN / (window.iter().sum::<f64>() / window.len() as f64)
 }

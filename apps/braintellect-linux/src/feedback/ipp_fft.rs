@@ -18,6 +18,7 @@ const HALF: usize = N / 2;
 const STAGES: [usize; 3] = [4, 16, 64];
 
 /// The forward transform with its twiddle and split tables.
+#[derive(Debug, Clone)]
 pub struct RealFft512 {
     /// Per stage, per index `i` of the quarter: `W^i`, `W^2i`, `W^3i` of the stage length.
     twiddles: [Vec<[Complex; 3]>; 3],

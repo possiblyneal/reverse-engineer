@@ -2,15 +2,15 @@
 //! (receive `0x6382d0`, `DSPFFT::process` `0x637940`; `bagsd-design.md`, "Discrete FFT"): the
 //! Source output as stored, gathered in 512-sample blocks, each under a `float32` Bartlett
 //! window, the IPP order-9 real FFT, bins `0..256` as magnitudes scaled by `1/128` over the
-//! window's mean. A stop inside a block transforms the zero-padded partial one too. The
-//! aggregator's single stored vector is the mean of the block spectra.
+//! window's mean ([`DspFft`], bit exact to the original's per block). A stop inside a
+//! block transforms the zero-padded partial one too. The aggregator's single stored vector
+//! is the mean of the block spectra.
 //!
 //! Reported, not yet exact: against exercise 146's stored `FFT-Normal-Order` the model
 //! agrees at low bins to a few percent and its high-bin floor is a third of the original's.
 
 use super::assess::stored_volts;
-use super::fft::{bartlett, spectrum_scale};
-use super::ipp_fft::RealFft512;
+use super::dsp_fft::DspFft;
 
 const BLOCK: usize = 512;
 const BINS: usize = BLOCK / 2;
@@ -19,10 +19,7 @@ const MICROVOLTS: f64 = 1e6;
 
 /// One channel's block-mean spectrum.
 pub struct FftSpectrum {
-    fft: RealFft512,
-    window: [f32; BLOCK],
-    /// The `DSPFFT` scale over the `float32` window's mean, applied to each magnitude.
-    scale: f64,
+    fft: DspFft,
     counts_per_volt: f64,
     block: Vec<f32>,
     sum: [f64; BINS],
@@ -31,12 +28,8 @@ pub struct FftSpectrum {
 
 impl FftSpectrum {
     pub fn new(counts_per_volt: f64) -> Self {
-        let bartlett = bartlett(BLOCK);
-        let window: [f32; BLOCK] = std::array::from_fn(|i| bartlett[i] as f32);
         Self {
-            fft: RealFft512::new(),
-            scale: spectrum_scale(&window.map(f64::from)),
-            window,
+            fft: DspFft::new(),
             counts_per_volt,
             block: Vec::with_capacity(BLOCK),
             sum: [0.0; BINS],
@@ -70,11 +63,9 @@ impl FftSpectrum {
 
     fn transform(&mut self) {
         let mut x = [0.0f32; BLOCK];
-        for ((x, &s), &w) in x.iter_mut().zip(&self.block).zip(&self.window) {
-            *x = s * w;
-        }
-        for (sum, (re, im)) in self.sum.iter_mut().zip(self.fft.forward(&x)) {
-            *sum += f64::from(re.hypot(im)) * self.scale;
+        x[..self.block.len()].copy_from_slice(&self.block);
+        for (sum, bin) in self.sum.iter_mut().zip(self.fft.spectrum(&x)) {
+            *sum += f64::from(bin);
         }
         self.block.clear();
         self.blocks += 1;

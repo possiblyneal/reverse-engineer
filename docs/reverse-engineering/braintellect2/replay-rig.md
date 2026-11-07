@@ -221,6 +221,20 @@ clicker and a 310 s wait so the exercise stored (exercise 146). The clicker wait
   `mysql:5.7` container read it. The log (`s56.bin`, 350 MB) stays in the main checkout's
   `tmp/s56/`.
 
+## Result: the DSPFFT stages captured (#57, 2026-11-07)
+
+Run 8's rx stream replayed (`hook14.js` over `hook13.js`) with hooks on the three IPP calls
+inside `DSPFFT::process` (`0x66ff20` forward FFT: windowed input and output; `0x66ff10`: the
+packed output; `0x66ff00`: the magnitudes), each record tagged with the call's sequence number
+next to the existing tag 30 (raw block and final spectrum): 388 calls over 97 blocks per channel.
+
+- The windowed input is `f32(raw * window)` in all calls; the FFT output matches the clone's
+  `RealFft512`; the magnitude is the `rsqrtps` plus Newton kernel (`sensor-status.md`, "Level
+  bit exactness"). The raw log (19 MB) stays in the main checkout's `tmp/s57c/`.
+- The app was started by a Startup-folder launch file in the guest with the log on the guest's
+  NTFS disk (`C:\cap`), staged and read back with `ntfs-3g` after `ntfsfix -d` while the VM was
+  off.
+
 ## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
 
 The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00

@@ -43,10 +43,11 @@ first connection after the B-2 was switched on, `hs_B.txt` a reconnect), laid ou
 `wire.txt` with the commands the clone writes (stop, a query pass, mode, injection, a second
 query pass) and the 101 serial scrubbed.
 
-The sensor-status fixtures (`sensor_inputs.tsv`, `sensor_levels.tsv`) come from the 2026-11-07
+The sensor-status fixtures (`sensor_inputs.tsv`, `sensor_levels.tsv`, `sensor_spectra.tsv`) come from the 2026-11-07
 hook13 capture `tmp/s57/s57.bin` (`--src57`, never committed; run 8's no-wearer stream replayed into
 the original on the Optimize tab): for a few of the 105 blocks, each channel's 512 float32 FFT
-input, and the levels and fault flag the original's Head2D and evaluator produced from it.
+input, the 256-bin spectrum `DSPFFT::process` produced from it, and the levels and fault flag the
+original's Head2D and evaluator produced from that.
 
 The all-channel acquisition fixtures (`consumed_stream.txt`, `consumed_volts.tsv`) come from the
 ticket-55 replay log `tmp/s55/s55.bin` (`--src55`, never committed; `hook13.js` output of the
@@ -967,15 +968,20 @@ def sensor_blocks(path):
         i += size
     blocks = len(heads) // 4
     assert blocks == len(ffts) // 4 and None not in flags, "capture is not whole blocks"
-    inputs, levels = [], []
+    inputs, levels, spectra = [], [], []
     for b in SENSOR_BLOCKS:
         for c in range(4):
             samples, spectrum = ffts[4 * b + c]
             head = heads[4 * b + c]
             assert head[0] == spectrum, "Head2D spectrum is the FFT output"
             inputs.append(f"{b}\t{c}\t" + " ".join(f"{x:.9g}" for x in samples) + "\n")
+            spectra.append(f"{b}\t{c}\t" + " ".join(f"{x:.9g}" for x in spectrum) + "\n")
             levels.append(f"{b}\t{c}\t" + "\t".join(f"{x:.9g}" for x in head[1:]) + f"\t{flags[b]}\n")
-    return {"sensor_inputs.tsv": "".join(inputs), "sensor_levels.tsv": "".join(levels)}
+    return {
+        "sensor_inputs.tsv": "".join(inputs),
+        "sensor_levels.tsv": "".join(levels),
+        "sensor_spectra.tsv": "".join(spectra),
+    }
 
 
 def main():

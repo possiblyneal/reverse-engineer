@@ -661,13 +661,15 @@ pub struct SensorLevels {
 }
 
 /// One block of the sensors-off replay into the original (`sensor_*.tsv`): each
-/// channel's 512 float32 FFT input, the levels the original derived from it, and
-/// the evaluator's fault flag after the block. Blocks are numbered from the start
+/// channel's 512 float32 FFT input, the 256-bin spectrum the original's `DSPFFT::process`
+/// made of it, the levels the original derived from that, and the evaluator's fault flag
+/// after the block. Blocks are numbered from the start
 /// of the capture; only some are kept.
 #[derive(Clone, Debug)]
 pub struct SensorBlock {
     pub index: usize,
     pub samples: [Vec<f32>; 4],
+    pub spectra: [Vec<f32>; 4],
     pub levels: [SensorLevels; 4],
     pub faulted: bool,
 }
@@ -675,21 +677,25 @@ pub struct SensorBlock {
 pub fn sensor_blocks() -> Vec<SensorBlock> {
     let inputs = read("sensor_inputs.tsv");
     let levels = read("sensor_levels.tsv");
+    let spectra = read("sensor_spectra.tsv");
     let rows = |text: &str| -> Vec<Vec<String>> {
         text.lines()
             .map(|l| l.split('\t').map(String::from).collect())
             .collect()
     };
-    let (inputs, levels) = (rows(&inputs), rows(&levels));
+    let (inputs, levels, spectra) = (rows(&inputs), rows(&levels), rows(&spectra));
     assert_eq!(inputs.len(), levels.len(), "one row per block and channel");
+    assert_eq!(inputs.len(), spectra.len(), "one row per block and channel");
     inputs
         .chunks(4)
         .zip(levels.chunks(4))
-        .map(|(inp, lev)| {
+        .zip(spectra.chunks(4))
+        .map(|((inp, lev), spec)| {
             let num = |s: &str| s.parse::<f32>().expect("float");
             SensorBlock {
                 index: inp[0][0].parse().expect("block"),
                 samples: std::array::from_fn(|c| inp[c][2].split(' ').map(num).collect()),
+                spectra: std::array::from_fn(|c| spec[c][2].split(' ').map(num).collect()),
                 levels: std::array::from_fn(|c| SensorLevels {
                     line_noise: num(&lev[c][2]),
                     bands: [num(&lev[c][3]), num(&lev[c][4]), num(&lev[c][5])],
