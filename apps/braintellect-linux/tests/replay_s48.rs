@@ -5,11 +5,13 @@
 //! `amps.tsv` and `decisions.tsv`. This test feeds the clone the consumed EEG from the
 //! original's logged graph-start sample, with the original's logged Evaluator codes,
 //! counter clock reads and 16-tap-mean flags (as `parity_smart2_exercise.rs` does for run 8),
-//! and reports where its decisions first differ from the original's on that replay.
+//! and reports where its decisions first differ from the original's on that replay. The graph
+//! start, the 45 Hz switch and the E..H band to band-pass object ranks are not logged; all three
+//! are located from the original's logged E..H amplitudes.
 //!
 //! Ignored: the inputs are vendor-derived and live outside Git. Run with
 //! `cargo test --test replay_s48 -- --ignored --nocapture`; `S48_REPLAY_DIR` overrides the
-//! default directory (`tmp/s48/replay` in the harlequin workspace).
+//! default directory (`tmp/s48/replay` at the repository root).
 
 mod harness;
 
@@ -22,7 +24,7 @@ use harness::run8::{replay_from, Replay};
 
 fn dir() -> PathBuf {
     std::env::var_os("S48_REPLAY_DIR").map_or_else(
-        || PathBuf::from("/home/neal/orca/workspaces/reverse-engineering/harlequin/tmp/s48/replay"),
+        || PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../tmp/s48/replay"),
         PathBuf::from,
     )
 }
@@ -32,16 +34,35 @@ fn read(name: &str) -> String {
     fs::read_to_string(&path).unwrap_or_else(|e| panic!("{}: {e}", path.display()))
 }
 
-/// `meta.txt` as (consumed volts logged before the first block, consumed index of `eeg.txt` line 0).
-fn meta() -> (usize, usize) {
+/// Graph-call objects whose 16-tap-mean flags `blocks.tsv` holds, in address-rank order.
+const OBJECTS: usize = 18;
+/// Blocks over which each E..H rank must reproduce the logged amplitudes bit for bit.
+const RANK_BLOCKS: usize = 300;
+
+struct Meta {
+    /// Consumed volts logged before the first block closed.
+    logged_count: usize,
+    /// Consumed index of `eeg.txt` line 0.
+    eeg_base: usize,
+    /// Run 8's band A..H ranks: A..D stand in (unlogged), E..H seed the start search.
+    run8_band_ranks: [usize; 8],
+}
+
+fn meta() -> Meta {
     let text = read("meta.txt");
-    let value = |key: &str| -> usize {
+    let values = |key: &str| -> Vec<usize> {
         text.lines()
             .find_map(|l| l.strip_prefix(key))
-            .and_then(|n| n.trim().parse().ok())
+            .map(|v| v.split(' ').map(|n| n.parse().expect("number")).collect())
             .unwrap_or_else(|| panic!("meta.txt: {key}<n>"))
     };
-    (value("logged_count "), value("eeg_base "))
+    Meta {
+        logged_count: values("logged_count ")[0],
+        eeg_base: values("eeg_base ")[0],
+        run8_band_ranks: values("run8_band_ranks ")
+            .try_into()
+            .expect("eight band ranks"),
+    }
 }
 
 /// The consumed EEG, one four-channel sample per line.
@@ -57,18 +78,44 @@ fn eeg() -> Vec<[i32; 4]> {
         .collect()
 }
 
-fn blocks() -> Vec<Run8Block> {
+/// A logged block, with the 16-tap-mean flags of all graph-call objects by address rank.
+struct LoggedBlock {
+    flags: [bool; OBJECTS],
+    block: Run8Block,
+}
+
+fn blocks() -> Vec<LoggedBlock> {
     read("blocks.tsv")
         .lines()
         .map(|line| {
             let c: Vec<&str> = line.split('\t').collect();
             let lap: i64 = c[3].parse().expect("lap");
-            Run8Block {
-                scalar_heads: std::array::from_fn(|k| c[0].as_bytes()[k] == b'1'),
-                control: c[1].parse().expect("code"),
-                read_ms: c[2].parse().expect("read"),
-                lap_ms: (lap >= 0).then_some(lap),
+            assert_eq!(
+                c[0].len(),
+                OBJECTS,
+                "blocks.tsv: one flag per graph-call object"
+            );
+            LoggedBlock {
+                flags: std::array::from_fn(|r| c[0].as_bytes()[r] == b'1'),
+                block: Run8Block {
+                    scalar_heads: [false; 8],
+                    control: c[1].parse().expect("code"),
+                    read_ms: c[2].parse().expect("read"),
+                    lap_ms: (lap >= 0).then_some(lap),
+                },
             }
+        })
+        .collect()
+}
+
+/// The first `limit` blocks with band A..H's flags taken from object ranks `ranks`.
+fn blocks_under(logged: &[LoggedBlock], ranks: [usize; 8], limit: usize) -> Vec<Run8Block> {
+    logged
+        .iter()
+        .take(limit)
+        .map(|l| Run8Block {
+            scalar_heads: ranks.map(|r| l.flags[r]),
+            ..l.block.clone()
         })
         .collect()
 }
@@ -110,8 +157,10 @@ fn float(word: &str) -> f32 {
     f32::from_bits(u32::from_str_radix(word, 16).expect("float32 bits"))
 }
 
-/// The first block whose logged E..H amplitudes the clone does not reproduce bit for bit.
-fn first_amplitude_mismatch(run: &Replay) -> Option<String> {
+/// Each logged E..H amplitude beside the clone's, as `(block, sample, band, clone, original)`;
+/// blocks the original logged no amplitudes for (`-`) are skipped.
+fn amplitudes(run: &Replay) -> Vec<(usize, usize, usize, f32, f32)> {
+    let mut out = Vec::new();
     for (b, line) in read("amps.tsv").lines().take(run.blocks.len()).enumerate() {
         if line == "-" {
             continue;
@@ -121,44 +170,84 @@ fn first_amplitude_mismatch(run: &Replay) -> Option<String> {
             let at = run.band_index[4 + band];
             for n in 0..BLOCK_LEN {
                 let got = run.decisions[b].samples[n].bands[at];
-                let want = logged[band * BLOCK_LEN + n];
-                if got.to_bits() != want.to_bits() {
-                    return Some(format!(
-                        "block {b} sample {n} band {}: clone {got:e}, original {want:e}",
-                        ["E", "F", "G", "H"][band]
-                    ));
-                }
+                out.push((b, n, band, got, logged[band * BLOCK_LEN + n]));
             }
         }
     }
-    None
+    out
+}
+
+/// The first block whose logged E..H amplitudes the clone does not reproduce bit for bit.
+fn first_amplitude_mismatch(run: &Replay) -> Option<String> {
+    amplitudes(run)
+        .into_iter()
+        .find(|&(_, _, _, got, want)| got.to_bits() != want.to_bits())
+        .map(|(b, n, band, got, want)| {
+            format!(
+                "block {b} sample {n} band {}: clone {got:e}, original {want:e}",
+                ["E", "F", "G", "H"][band]
+            )
+        })
 }
 
 /// How many of the first blocks' logged E..H amplitudes (16 per block) the clone reproduces bit for bit.
 fn amplitude_matches(run: &Replay) -> usize {
-    let mut n = 0;
-    for (b, line) in read("amps.tsv").lines().take(run.blocks.len()).enumerate() {
-        let logged: Vec<f32> = line.split(' ').map(float).collect();
-        for band in 0..4 {
-            let at = run.band_index[4 + band];
-            for k in 0..BLOCK_LEN {
-                let got = run.decisions[b].samples[k].bands[at];
-                n += usize::from(got.to_bits() == logged[band * BLOCK_LEN + k].to_bits());
-            }
-        }
-    }
-    n
+    amplitudes(run)
+        .iter()
+        .filter(|&&(_, _, _, got, want)| got.to_bits() == want.to_bits())
+        .count()
 }
 
-/// The replay with `graph_start` as the graph's first consumed sample and the 45 Hz low-pass
-/// switched in at consumed sample `interference_switch`, over the first `limit` blocks.
+/// Per band E..H, the object rank whose flags make the clone reproduce every logged amplitude
+/// of blocks `0..RANK_BLOCKS` bit for bit. Each band's amplitudes depend only on its own
+/// band-pass object's flags, so one replay per rank (that rank for all four bands) scores all
+/// four. Panics unless exactly one rank fully matches per band.
+fn locate_ranks(
+    eeg: &[[i32; 4]],
+    meta: &Meta,
+    logged: &[LoggedBlock],
+    graph_start: usize,
+    switch: usize,
+) -> [usize; 4] {
+    // [rank][band] = (matching, logged) values
+    let scores: Vec<[(usize, usize); 4]> = (0..OBJECTS)
+        .map(|r| {
+            let mut ranks = meta.run8_band_ranks;
+            ranks[4..].fill(r);
+            let blocks = blocks_under(logged, ranks, RANK_BLOCKS);
+            let run = replay_at(eeg, meta.eeg_base, blocks, graph_start, switch);
+            let mut score = [(0, 0); 4];
+            for (_, _, band, got, want) in amplitudes(&run) {
+                score[band].0 += usize::from(got.to_bits() == want.to_bits());
+                score[band].1 += 1;
+            }
+            score
+        })
+        .collect();
+    std::array::from_fn(|band| {
+        let full: Vec<usize> = (0..OBJECTS)
+            .filter(|&r| scores[r][band].1 > 0 && scores[r][band].0 == scores[r][band].1)
+            .collect();
+        assert!(
+            full.len() == 1,
+            "band {}: {} ranks reproduce the logged amplitudes of blocks 0..{RANK_BLOCKS} bit for \
+             bit, want exactly one; (matching, logged) by rank: {:?}",
+            ["E", "F", "G", "H"][band],
+            full.len(),
+            scores.iter().map(|s| s[band]).collect::<Vec<_>>()
+        );
+        full[0]
+    })
+}
+
+/// The replay of `blocks` with `graph_start` as the graph's first consumed sample and the
+/// 45 Hz low-pass switched in at consumed sample `interference_switch`.
 fn replay_at(
     eeg: &[[i32; 4]],
     eeg_base: usize,
-    blocks: &[Run8Block],
+    blocks: Vec<Run8Block>,
     graph_start: usize,
     interference_switch: usize,
-    limit: usize,
 ) -> Replay {
     // The original ran Source from its first streamed sample, so the warm-up is everything
     // before the graph start.
@@ -166,31 +255,31 @@ fn replay_at(
         .chunks_exact(2)
         .map(|pair| std::array::from_fn(|k| pair[k / 4][k % 4]))
         .collect();
-    replay_from(
-        &frames,
-        eeg_base,
-        graph_start,
-        interference_switch,
-        blocks.iter().take(limit).cloned().collect(),
-    )
+    replay_from(&frames, eeg_base, graph_start, interference_switch, blocks)
 }
 
 #[test]
 #[ignore = "reads the s48 replay extract outside Git"]
 fn clone_decisions_on_the_replayed_stream_against_the_originals() {
-    let (logged_count, eeg_base) = meta();
+    let meta = meta();
+    let logged_count = meta.logged_count;
     let eeg = eeg();
-    let blocks = blocks();
+    let logged = blocks();
     // The app converts samples ahead of the graph, so the logged count is an upper bound on
     // the graph start (run 8: count 25912, start 25600). Locate it from the original's logged
     // E..H amplitudes: the start under which the clone reproduces the most of blocks 0..7.
     // The switch (`setInterferenceFilter`, run by the UI thread at Play) is not logged either and
     // lands at a different sample against the processing thread each run (run 8: start + 1), so
-    // it is located the same way, with the start found first under run 8's start + 1.
+    // it is located the same way, with the start found first under run 8's start + 1. Both
+    // searches run under run 8's band ranks: a wrong rank costs at most one float32 ulp on a
+    // block's scalar-head samples, so the best start and switch still stand out, and the E..H
+    // ranks located afterwards must then match every logged amplitude, which a wrong start or
+    // switch would not.
+    let seed = blocks_under(&logged, meta.run8_band_ranks, 8);
     let mut best: Vec<(usize, usize)> = (logged_count - 1900..=logged_count + 400)
         .map(|s| {
             (
-                amplitude_matches(&replay_at(&eeg, eeg_base, &blocks, s, s + 1, 8)),
+                amplitude_matches(&replay_at(&eeg, meta.eeg_base, seed.clone(), s, s + 1)),
                 s,
             )
         })
@@ -204,7 +293,13 @@ fn clone_decisions_on_the_replayed_stream_against_the_originals() {
     let mut switches: Vec<(usize, usize)> = (graph_start..=graph_start + 16)
         .map(|s| {
             (
-                amplitude_matches(&replay_at(&eeg, eeg_base, &blocks, graph_start, s, 8)),
+                amplitude_matches(&replay_at(
+                    &eeg,
+                    meta.eeg_base,
+                    seed.clone(),
+                    graph_start,
+                    s,
+                )),
                 s,
             )
         })
@@ -214,17 +309,23 @@ fn clone_decisions_on_the_replayed_stream_against_the_originals() {
         "best (matching values of 128, switch): {:?}",
         &switches[..3]
     );
+    let switch = switches[0].1;
+    let mut ranks = meta.run8_band_ranks;
+    ranks[4..].copy_from_slice(&locate_ranks(&eeg, &meta, &logged, graph_start, switch));
+    println!(
+        "E..H band-pass object ranks {:?} (A..D run 8's {:?})",
+        &ranks[4..],
+        &ranks[..4]
+    );
     let run = replay_at(
         &eeg,
-        eeg_base,
-        &blocks,
+        meta.eeg_base,
+        blocks_under(&logged, ranks, usize::MAX),
         graph_start,
-        switches[0].1,
-        usize::MAX,
+        switch,
     );
     println!(
-        "graph start {graph_start}, switch {}, blocks {}",
-        switches[0].1,
+        "graph start {graph_start}, switch {switch}, blocks {}",
         run.blocks.len()
     );
     let mismatch = first_amplitude_mismatch(&run);

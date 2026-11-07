@@ -60,8 +60,10 @@ share): partitioned MBR, FAT32 (`mkfs.fat -F 32 --offset 2048`), loop-mounted on
    Start + 51.2 s (run 8 pressed Play 12800 frames after Start).
 6. After 240 s the app prints "You have completed all exercises". Kill the app and injector
    with `taskkill /F`; never exit it gracefully (that sends power-off).
-7. Copy `C:\cap\run8.bin` out through the CAP image and parse it with the run-8 parsers in
-   `apps/braintellect-linux/scripts/make-fixtures.py` (`run8_records`, `run8_blocks`).
+7. Copy `C:\cap\run8.bin` out through the CAP image and reduce it with
+   `python3 -I apps/braintellect-linux/scripts/replay-extract.py <run8.bin> [--out DIR]` (built
+   on the run-8 parsers in `make-fixtures.py`). It keeps the complete logged block prefix (up to
+   the first block without a clock read, at most 30001) and prints `blocks <n> of 30001`.
 
 ## Result: run 8 replayed into the original (2026-11-06)
 
@@ -101,8 +103,10 @@ graph start + 4) with the original's
 logged Evaluator codes, counter clock reads and 16-tap-mean flags, as
 `tests/parity_smart2_exercise.rs` does for run 8, and diffs the Trigger/Note decisions.
 `scripts/replay-extract.py <run8.bin>` reduces the replay hook log to the files the test
-reads (default `tmp/s48/replay/`). Run
-`cargo test --release --test replay_s48 -- --ignored --nocapture` (about 1 min).
+reads (default `tmp/s48/replay/`): the complete logged block prefix, with the 16-tap-mean flags
+of all 18 graph-call objects by address rank. Run
+`cargo test --release --test replay_s48 -- --ignored --nocapture` (about 1 min;
+`S48_REPLAY_DIR` points it at another extract).
 
 - Logged consumed volts before block 0: 25952. As run 8's 25600 was (count 25912), the graph
   start is located from the original's own logged E..H amplitudes: 25640 is the best start in
@@ -113,8 +117,12 @@ reads (default `tmp/s48/replay/`). Run
   40, clone 42); both are recorded in `audio-feedback.md` ("Replay start-up"): the 45 Hz
   low-pass switch landed at graph start + 4 (run 8: + 1), and the band to band-pass object
   mapping of run 8 does not carry over to another process.
-- `replay_s48` locates the start (25640) and the switch (25644) from the logged E..H
-  amplitudes, the same way; both are unlogged inputs.
+- `replay_s48` locates the start (25640), the switch (25644) and the E..H object ranks
+  (7, 3, 1, 5) from the logged E..H amplitudes; all three are unlogged inputs. Start and switch
+  are searched under run 8's ranks (a wrong rank costs at most one `float32` ulp on scalar-head
+  samples); then each band's rank is the one rank of 18 whose replay reproduces every logged
+  amplitude of blocks 0..299, and the test fails if none or several do. A..D are not logged, so
+  run 8's ranks (14, 3, 2, 8) stand in for them.
 
 ## Why rx8.raw holds 639k frames and `audio-feedback.md` says 149k
 
@@ -131,7 +139,7 @@ A 240 s live session through the clone's UI on the server against the real B-2 r
 59,974 frames (239.9 s, 0 counter and 0 validation errors, 419 notes). That capture was
 replayed into the original with this rig and the clone was run on the original's consumed
 EEG as `replay_s48` does (`S48_REPLAY_DIR=<extract> cargo test --release --test replay_s48
--- --ignored --nocapture`, test unchanged).
+-- --ignored --nocapture`).
 
 - Play at Start + 31.17 s; 15956 consumed samples before block 0; graph start located at
   15616, the 45 Hz low-pass switch at 15620 (start + 4, as in the run-8 replay).
@@ -142,8 +150,8 @@ EEG as `replay_s48` does (`S48_REPLAY_DIR=<extract> cargo test --release --test 
 - Decisions: 734 original (367 Trigger/Note pairs) against 734 clone; all match in kind,
   value and clock time. All 26022 blocks of E..H amplitudes are bit exact.
 - The E..H band-pass object ranks in this process were (6, 2, 4, 0), not the run-8 replay's
-  (7, 3, 1, 5): the rank mapping differs per process and has to be located per run (each
-  band matched 1200/1200 of blocks 0..299 at exactly one rank). With the wrong ranks the
+  (7, 3, 1, 5): the rank mapping differs per process, and `replay_s48` locates it per run
+  (each band matched 1200/1200 of blocks 0..299 at exactly one rank). With the wrong ranks the
   decisions still matched but amplitudes differed by 1 ulp from block 2.
 - Acquisition: the clone's frame parse and µV decode (`live::stream_config`, family 12)
   against the original's logged consumed volts (hook tag 12 logs channel 0 only): 119,704

@@ -31,7 +31,12 @@ fn handshake_replies() -> Vec<u8> {
 /// Run the emulator against `script` with a clock that advances 1 ms per turn
 /// and return what it sent.
 fn emulate(script: Vec<Step>) -> Vec<u8> {
-    let capture = Capture::parse(&baseline_capture());
+    emulate_capture(&baseline_capture(), script)
+}
+
+/// [`emulate`] over the raw capture `raw`.
+fn emulate_capture(raw: &[u8], script: Vec<Step>) -> Vec<u8> {
+    let capture = Capture::parse(raw);
     let mut peer = ScriptedPeer::new(script);
     let mut now = 0;
     serve(&mut peer, &capture, &mut || {
@@ -143,4 +148,26 @@ fn bytes_before_the_first_marker_are_skipped() {
     serve(&mut peer, &capture, &mut || 0).expect("serve");
 
     assert_eq!(peer.received, handshake_replies()[..56]);
+}
+
+#[test]
+fn frames_streamed_before_the_handshake_are_not_served() {
+    // A B-2 left streaming sends frames before the replies; the session skips them.
+    let mut raw = stream_bytes()[..5 * 32].to_vec();
+    raw.extend(baseline_capture());
+    let mut script = vec![Step::Input(Command::Start { channels: 4 }.encode())];
+    script.extend(quiet(100));
+
+    assert_eq!(emulate_capture(&raw, script), stream_bytes()[..25 * 32]);
+}
+
+#[test]
+fn a_last_frame_followed_by_a_cut_off_marker_is_kept() {
+    let mut raw = baseline_capture();
+    raw.extend([0xAC, 0xBC]);
+    let total = stream_bytes().len() / 32;
+    let mut script = vec![Step::Input(Command::Start { channels: 4 }.encode())];
+    script.extend(quiet((total + 10) * 4));
+
+    assert_eq!(emulate_capture(&raw, script), stream_bytes());
 }

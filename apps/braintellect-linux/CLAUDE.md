@@ -105,7 +105,8 @@ those findings, it cites them.
 - **Live session and UI** (`src/live.rs`, `src/ui/`; ADR 0005). `live::run` is the session
   engine: `Session` over `Read + Write` -> `SourceFilters` -> `Smart2Graph` -> `audio::Player`
   -> an `AudioSink` (a trait; `AlsaSink` stays the only device code) -> `Store::save` when the
-  session ends (stop, the length reached, or the device closing the stream). It stores only
+  session ends (stop, the length reached, the device closing the stream, or the window closing, which
+  stops the worker and waits for the store). It stores only
   if a frame arrived, and an error (link, audio, store) ends it unstored. It blocks, so it
   runs off the UI thread and reports a `Snapshot` (phase, link health, frames, `StreamStats`,
   per-channel RMS microvolts over the last second, triggers) through `Environment::report`;
@@ -134,17 +135,18 @@ those findings, it cites them.
 - **B-2 emulator and capture** (`src/emulate.rs`, `src/capture.rs`). The live session tees its raw
   RX to `<data dir>/captures/b2-<secs>.rx` (`capture::Recording`). `braintellect-linux emulate
   <capture> <socket>` plays a B-2 over a Unix socket (the QEMU serial chardev): `Command::decode`
-  recognises the app's requests and `PowerOff`, replies are replayed byte for byte, frames stream
-  from Start at 250/s and stop on Stop, and nothing is sent on power-off. It is tested over
+  recognises the app's requests and `PowerOff`, replies are replayed byte for byte, frames recorded
+  before the last reply (a B-2 left streaming) are dropped, the rest stream from Start at 250/s and stop on Stop, and nothing is sent on power-off. It is tested over
   `Read + Write` with `tests/harness/peer.rs` (`tests/emulator.rs`); the VM rig and the run-8
   replay result are in `docs/reverse-engineering/braintellect2/replay-rig.md`.
   `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
   `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/`, and the ignored
   `tests/replay_s48.rs` diffs the clone's decisions on that stream against the original's
   (via `harness::run8::replay_from`) and asserts the logged E..H amplitudes bit for bit; it locates
-  the unlogged graph start and 45 Hz low-pass switch sample from those amplitudes, and
-  `replay-extract.py` carries the replay's own band to band-pass object ranks (`audio-feedback.md`,
-  "Replay start-up"); inputs are vendor-derived and stay outside Git.
+  the unlogged graph start, 45 Hz low-pass switch sample and E..H band to band-pass object ranks
+  from those amplitudes (`audio-feedback.md`, "Replay start-up"; the extract keeps all 18 objects'
+  flags and the complete logged block prefix, up to 30001); inputs are vendor-derived and stay
+  outside Git.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and

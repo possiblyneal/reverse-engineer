@@ -6,14 +6,21 @@ consumed a stream replayed by `braintellect-linux emulate`; see
 `docs/reverse-engineering/braintellect2/replay-rig.md`) and writes, next to it or to
 `--out`, the files `tests/replay_s48.rs` reads:
 
-- `meta.txt`: `logged_count <consumed ch0 volts logged before the first block closed>` and
-  `eeg_base <consumed sample index of the first line of eeg.txt>`. The count is not the graph
-  start: in run 8 it was 25912 where the graph's first sample was 25600 (the app converts
-  samples ahead of the graph).
-- `eeg.txt`: the consumed EEG, one sample per line as four 24-bit hex values (channels 0..3), from `eeg_base` through the end of the exercise
-  (30001 blocks after the logged count).
-- `blocks.tsv`: per block `flags<TAB>Evaluator code<TAB>read ms<TAB>lap ms` (as the
-  `run8_blocks_*.tsv` fixtures), clocks in ms from block 0.
+- `meta.txt`: `logged_count <consumed ch0 volts logged before the first block closed>`,
+  `eeg_base <consumed sample index of the first line of eeg.txt>` and
+  `run8_band_ranks <A..H>`. The count is not the graph start: in run 8 it was 25912 where the
+  graph's first sample was 25600 (the app converts samples ahead of the graph).
+- Blocks: the complete logged prefix, every block up to the first without a clock read, at most
+  30001 (the exercise), printed as `blocks <n> of 30001`. A replay of a live capture stops short
+  of the exercise end when the capture runs out (`replay-rig.md`, #33).
+- `eeg.txt`: the consumed EEG, one sample per line as four 24-bit hex values (channels 0..3),
+  from `eeg_base` through `n` blocks after the logged count (or the last consumed sample).
+- `blocks.tsv`: per block `flags<TAB>Evaluator code<TAB>read ms<TAB>lap ms`, clocks in ms from
+  block 0. `flags` holds the 16-tap-mean flag of all 18 graph-call objects, in rank order (the
+  rank of the object's address among the 18). Which rank is which band differs per process, so
+  the test locates the E..H ranks from the logged amplitudes. A..D amplitudes are not logged, so
+  their ranks cannot be located and run 8's (`run8_band_ranks`) stand in; Evaluator codes 12 and
+  82 (`ExprTriggerAll`) read A and C, so a wrong A..D rank is unchecked there.
 - `amps.tsv`: per block the logged E..H band amplitudes as 16 float32 hex words (as the
   `run8_amplitudes_*.tsv` fixtures), or `-` where the log has none.
 - `decisions.tsv`: the original's Trigger and Note decisions (as `run8_decisions.tsv`).
@@ -31,13 +38,6 @@ spec = importlib.util.spec_from_file_location("make_fixtures", HERE / "make-fixt
 mf = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(mf)
 
-BLOCKS = mf.RUN8_BLOCKS
-# Band A..H -> rank of the band-pass object's address among the 18 graph-call objects. Object
-# addresses differ per process, so run 8's ranks (`mf.RUN8_BAND_RANKS`) do not carry over. E..H
-# are the ranks under which the clone reproduces the logged E..H amplitudes bit for bit (1200 of
-# 1200 values per band over blocks 0..299). A..D are not logged and no replay decision reads them
-# (Evaluator codes 111 and 183 sum E..H), so their ranks are not determined; run 8's stand in.
-REPLAY_BAND_RANKS = (*mf.RUN8_BAND_RANKS[:4], 7, 3, 1, 5)
 EEG_BASE = 0
 
 
@@ -78,25 +78,26 @@ def main():
         if tag == 12:
             logged_count += 1
     samples = consumed_samples(frames, volts)
-    blocks = mf.run8_blocks(records)
-    if len(blocks) < BLOCKS or any(b["clock"] is None for b in blocks[:BLOCKS]):
-        raise SystemExit("block log is incomplete")
-    blocks = blocks[:BLOCKS]
+    blocks = mf.run8_blocks(records)[:mf.RUN8_BLOCKS]
+    blocks = blocks[:next((b for b, blk in enumerate(blocks) if blk["clock"] is None), len(blocks))]
+    if not blocks:
+        raise SystemExit("no complete block logged")
     keys = sorted({k for blk in blocks for k in blk["calls"]})
     if len(keys) != 18:
         raise SystemExit("expected 18 graph-call objects")
 
     first = EEG_BASE
-    last = logged_count + BLOCKS * 4
+    last = logged_count + len(blocks) * 4
     window = samples[first:last]
     lines = ["".join("%06x" % (x & 0xFFFFFF) for x in sample) + "\n" for sample in window]
     (out / "eeg.txt").write_text("".join(lines))
-    (out / "meta.txt").write_text(f"logged_count {logged_count}\neeg_base {EEG_BASE}\n")
+    (out / "meta.txt").write_text(f"logged_count {logged_count}\neeg_base {EEG_BASE}\n"
+        f"run8_band_ranks {' '.join(map(str, mf.RUN8_BAND_RANKS))}\n")
 
     t0 = blocks[0]["clock"]
     rows, decs = [], []
     for b, blk in enumerate(blocks):
-        flags = "".join("1" if blk["calls"].get(keys[r]) else "0" for r in REPLAY_BAND_RANKS)
+        flags = "".join("1" if blk["calls"].get(k) else "0" for k in keys)
         now = blk["clock"] - t0
         lap = blk["lap"] - t0 if blk["lap"] is not None else -1
         rows.append(f"{flags}\t{blk['code']}\t{now}\t{lap}\n")
@@ -109,7 +110,7 @@ def main():
     (out / "blocks.tsv").write_text("".join(rows))
     (out / "decisions.tsv").write_text("".join(decs))
     print(f"logged_count {logged_count}, frames {len(frames)}, consumed {len(volts)}, "
-          f"blocks {len(blocks)}, fires {len(decs) // 2}")
+          f"blocks {len(blocks)} of {mf.RUN8_BLOCKS}, eeg samples {len(window)}, fires {len(decs) // 2}")
 
 
 if __name__ == "__main__":

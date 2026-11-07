@@ -34,7 +34,8 @@ impl Capture {
     /// Split raw RX bytes. A marker followed by another marker 32 bytes on is a
     /// stream frame; one whose `[8]` is a request code and is not is a 56-byte
     /// reply. Bytes between them (a partial read at the start) and a cut-off
-    /// last item are dropped.
+    /// last item are dropped. Frames before the last reply were streaming before the
+    /// handshake (a B-2 left running), which the session skips, so they are dropped too.
     #[must_use]
     pub fn parse(bytes: &[u8]) -> Self {
         let mut capture = Self::default();
@@ -43,8 +44,11 @@ impl Capture {
             let rest = &bytes[found..];
             let is_frame = rest.len() >= FRAME_LEN + MARKER.len()
                 && rest[FRAME_LEN..FRAME_LEN + MARKER.len()] == MARKER;
-            let next_is_marker = rest.len() == FRAME_LEN && rest[6..8] == [3, 3];
-            if is_frame || next_is_marker {
+            // The last frame, followed by nothing or by a cut-off marker.
+            let is_last_frame = (FRAME_LEN..FRAME_LEN + MARKER.len()).contains(&rest.len())
+                && MARKER.starts_with(&rest[FRAME_LEN..])
+                && rest[6..8] == [3, 3];
+            if is_frame || is_last_frame {
                 capture
                     .frames
                     .push(rest[..FRAME_LEN].try_into().expect("32"));
@@ -52,6 +56,7 @@ impl Capture {
             } else if rest.len() >= REPLY_LEN && command::is_request(rest[CODE_AT]) {
                 let reply: [u8; REPLY_LEN] = rest[..REPLY_LEN].try_into().expect("56");
                 capture.push_reply(reply);
+                capture.frames.clear();
                 at = found + REPLY_LEN;
             } else {
                 at = found + 1;

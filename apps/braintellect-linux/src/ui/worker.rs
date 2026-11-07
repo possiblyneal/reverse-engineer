@@ -6,7 +6,7 @@
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
-use std::thread;
+use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
 use crate::acquisition::rfcomm::{RfcommStream, DEFAULT_CHANNEL};
@@ -26,6 +26,7 @@ const READ_TIMEOUT: Duration = Duration::from_secs(1);
 pub struct Worker {
     stop: Arc<AtomicBool>,
     pub events: Receiver<Event>,
+    thread: Option<JoinHandle<()>>,
 }
 
 impl Worker {
@@ -39,7 +40,7 @@ impl Worker {
         let stop = Arc::new(AtomicBool::new(false));
         let (send, events) = channel();
         let flag = Arc::clone(&stop);
-        thread::spawn(move || {
+        let thread = thread::spawn(move || {
             let send = |event: Event| {
                 // The window closing drops the receiver; nothing is left to tell.
                 let _ = send.send(event);
@@ -49,12 +50,26 @@ impl Worker {
                 send(Event::Failed(why));
             }
         });
-        Self { stop, events }
+        Self {
+            stop,
+            events,
+            thread: Some(thread),
+        }
     }
 
     /// Ask the session to end; it is stored like any other end.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Closing the window mid-session stops the session and waits for it to be stored.
+impl Drop for Worker {
+    fn drop(&mut self) {
+        self.stop();
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
     }
 }
 
@@ -64,11 +79,10 @@ fn session(
     stop: &AtomicBool,
     send: &dyn Fn(Event),
 ) -> Result<(), String> {
-    let bank_dir = import::default_dir().ok_or("neither XDG_DATA_HOME nor HOME is set")?;
+    let bank_dir = import::default_dir().ok_or(storage::NO_DATA_DIR)?;
     let bank = audio::load_instrument(&bank_dir, INSTRUMENT_ID).map_err(|e| e.to_string())?;
-    let store =
-        Store::open(&storage::default_path().ok_or("neither XDG_DATA_HOME nor HOME is set")?)
-            .map_err(|e| e.to_string())?;
+    let store = Store::open(&storage::default_path().ok_or(storage::NO_DATA_DIR)?)
+        .map_err(|e| e.to_string())?;
     let mut sink = AlsaSink::open(OUTPUT_RATE_HZ).map_err(|e| format!("no audio output: {e}"))?;
     let stream = RfcommStream::connect(mac, DEFAULT_CHANNEL)
         .map_err(|e| format!("cannot connect to {mac}: {e}"))?;
@@ -77,7 +91,7 @@ fn session(
         .map_err(|e| e.to_string())?;
     // The raw RX bytes, handshake included, go to the data directory: the B-2
     // emulator replays them into the original app (`capture.rs`).
-    let data_dir = storage::default_data_dir().ok_or("neither XDG_DATA_HOME nor HOME is set")?;
+    let data_dir = storage::default_data_dir().ok_or(storage::NO_DATA_DIR)?;
     let (file, path) = capture::create(&data_dir).map_err(|e| format!("no capture file: {e}"))?;
     eprintln!("recording the raw stream to {}", path.display());
     let session = Session::open(Recording::new(stream, file), live::stream_config()?)
