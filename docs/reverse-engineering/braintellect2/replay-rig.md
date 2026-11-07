@@ -125,7 +125,33 @@ from an earlier or shorter log of the same run. The file spans about 42.6 min, o
 37 min is streaming after the exercise. The replay received 95,676 frames in about 380 s, so
 the emulator streams at the right rate (250 frames/s).
 
-## Not run
+## Result: #33, the clone's live capture replayed into the original (2026-11-06)
 
-The clone's live-session capture from a real B-2 needs the physical B-2 and adapter and was not run; it is covered by the fixture
-transport tests (`tests/live_session.rs`).
+A 240 s live session through the clone's UI on the server against the real B-2 recorded
+59,974 frames (239.9 s, 0 counter and 0 validation errors, 419 notes). That capture was
+replayed into the original with this rig and the clone was run on the original's consumed
+EEG as `replay_s48` does (`S48_REPLAY_DIR=<extract> cargo test --release --test replay_s48
+-- --ignored --nocapture`, test unchanged).
+
+- Play at Start + 31.17 s; 15956 consumed samples before block 0; graph start located at
+  15616, the 45 Hz low-pass switch at 15620 (start + 4, as in the run-8 replay).
+- The original logged 26022 blocks (about 208 s) and then stalled when the capture ran out:
+  a live capture is the exercise's length, and the 240 s exercise needs 120,004 samples after
+  the graph start, so a replay never reaches "You have completed all exercises". Kill it once
+  the stream stops.
+- Decisions: 734 original (367 Trigger/Note pairs) against 734 clone; all match in kind,
+  value and clock time. All 26022 blocks of E..H amplitudes are bit exact.
+- The E..H band-pass object ranks in this process were (6, 2, 4, 0), not the run-8 replay's
+  (7, 3, 1, 5): the rank mapping differs per process and has to be located per run (each
+  band matched 1200/1200 of blocks 0..299 at exactly one rank). With the wrong ranks the
+  decisions still matched but amplitudes differed by 1 ulp from block 2.
+- Acquisition: the clone's frame parse and µV decode (`live::stream_config`, family 12)
+  against the original's logged consumed volts (hook tag 12 logs channel 0 only): 119,704
+  ch0 samples, max difference 0 µV. The first logged sample is slot 0 of the first stream
+  frame.
+- The original consumed fewer frames than it received: 35 gaps totalling 124 frames (248 ch0
+  samples), on frame boundaries, the first at stream frames 9138..9143 and most in
+  50338..52503. Its own RX log (tag 1) holds all 59,978 frames byte-identical to the capture,
+  so the drop is inside the app; the cause is not established. The clone consumes every frame.
+  The decision diff is unaffected because `replay_s48` feeds the original's consumed samples,
+  but two apps reading one raw stream live would diverge at the first gap.
