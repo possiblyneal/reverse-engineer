@@ -17,6 +17,7 @@ pub mod circle_balance;
 mod coherence;
 mod counter;
 mod evaluator;
+mod fft_spectrum;
 mod fir;
 mod graph;
 mod iir;
@@ -33,6 +34,7 @@ pub use assess::StoredSeries;
 pub use band_pass::{BandPass, BandPassDesign};
 pub use counter::{BlockClock, Counter, CounterClock, TRIGGER_EPOCH_MS};
 pub use evaluator::{balances, Evaluator, BALANCES, COHERENCES, DEFAULT_CODE};
+pub use fft_spectrum::FftSpectrum;
 pub use graph::{
     BandPassSpec, BlockDecision, CoherenceSpec, DesignError, PeakSpec, SampleOutput, Smart2Design,
     Smart2Graph, BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,

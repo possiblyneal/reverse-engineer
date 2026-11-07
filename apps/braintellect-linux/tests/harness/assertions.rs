@@ -251,6 +251,36 @@ pub fn stored_series(expected: &[Channel], actual: &[Channel]) -> Parity {
     Ok(())
 }
 
+/// Stored FFT spectra match: per channel the same bin count, every bin (microvolts)
+/// within [`RECORD_EPSILON`].
+pub fn fft_spectra(expected: &[Vec<f64>], actual: &[Vec<f64>]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "spectrum count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    for (c, (e, a)) in expected.iter().zip(actual).enumerate() {
+        if e.len() != a.len() {
+            return mismatch(format!(
+                "channel {c} bins: expected {}, got {}",
+                e.len(),
+                a.len()
+            ));
+        }
+        if let Some((k, (e, a))) = e
+            .iter()
+            .zip(a)
+            .enumerate()
+            .find(|(_, (e, a))| (*e - *a).abs() > RECORD_EPSILON)
+        {
+            return mismatch(format!("channel {c} bin {k}: expected {e}, got {a}"));
+        }
+    }
+    Ok(())
+}
+
 /// Threshold pass flags match sample for sample (boolean: no tolerance applies).
 pub fn pass_flags(expected: &[bool], actual: &[bool]) -> Parity {
     if expected.len() != actual.len() {

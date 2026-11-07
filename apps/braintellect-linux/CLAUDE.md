@@ -170,7 +170,10 @@ those findings, it cites them.
   microvolt point every 5 s of stream time and a closing point at the stop
   (`session-storage.md`, "Stored series (#56)"). The ignored `tests/replay_s56.rs` holds them to
   the original's exercise 146 record within `RECORD_EPSILON` (`assertions::stored_series`;
-  inputs `vol146.txt` and `b146/series.tsv` in `tmp/s56`, `S56_REPLAY_DIR`). The UI shows signal level and stream health, plus the sensor status
+  inputs `vol146.txt` and `b146/series.tsv` in `tmp/s56`, `S56_REPLAY_DIR`). The same BAGSD design's discrete FFT is `feedback::FftSpectrum`; the
+  ignored `tests/replay_s59.rs` only reports its deviation from the stored `FFT-Normal-Order`
+  vectors (not bit exact yet; `bagsd-design.md`). BAGSD is a post-session design, so the
+  session window does not offer it. The UI shows signal level and stream health, plus the sensor status
   (`src/sensor.rs`: the Head2D evaluator's three fault tests, the `stateChangeDelay` debounce
   and the engine lifecycle, off while a session connects or runs; `ui::state::Event::Sensor`
   carries it). `sensor::SensorMonitor` is the pre-session feed (512-sample FFT blocks per

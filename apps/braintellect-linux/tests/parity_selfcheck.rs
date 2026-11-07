@@ -370,3 +370,25 @@ fn sensor_replay_red_on_a_wrong_fault() {
     assert!(sensor::expect_faults(&wrong_fault, &blocks).is_err());
     assert!(sensor::expect_faults(&actual[1..], &blocks).is_err());
 }
+
+#[test]
+fn fft_spectra_green_on_baseline_red_on_a_bin_or_a_length() {
+    let baseline: Vec<Vec<f64>> = (0..4)
+        .map(|c| (0..256).map(|k| f64::from(c * 256 + k) * 0.37).collect())
+        .collect();
+    assertions::fft_spectra(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut near = baseline.clone();
+    near[1][7] += RECORD_EPSILON / 2.0;
+    assertions::fft_spectra(&baseline, &near).expect("inside the record epsilon");
+
+    let mut far = baseline.clone();
+    far[2][200] += RECORD_EPSILON * 2.0;
+    let err = assertions::fft_spectra(&baseline, &far).expect_err("outside is red");
+    assert!(err.0.contains("channel 2 bin 200"), "{}", err.0);
+
+    let mut short = baseline.clone();
+    short[0].pop();
+    assert!(assertions::fft_spectra(&baseline, &short).is_err());
+    assert!(assertions::fft_spectra(&baseline, &baseline[..3]).is_err());
+}
