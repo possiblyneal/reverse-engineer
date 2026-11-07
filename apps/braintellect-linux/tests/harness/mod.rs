@@ -7,10 +7,14 @@
 
 pub mod assertions;
 pub mod audio;
+pub mod channels;
 pub mod fixtures;
+pub mod inputs;
 pub mod peer;
 pub mod run8;
+pub mod sensor;
 pub mod session;
 pub mod synthetic_bank;
+pub mod synthetic_soundfont;
 pub mod tolerance;
 pub mod transport;

@@ -7,8 +7,9 @@
 //! filter off, and the 45 Hz low-pass is switched in cold at the graph's second
 //! sample, which reproduces the app's logged Source output bit for bit.
 //!
-//! Inputs the clone does not derive are the logged ones: the Evaluator code, the
-//! counter timer's clock reads and the 16-tap-mean sum order of each band-pass call.
+//! Inputs the clone does not derive are the logged ones: the counter timer's clock reads and
+//! the 16-tap-mean sum order of each band-pass call. The Evaluator code is logged, except in
+//! the test that has the clone's Evaluator decide it.
 
 mod harness;
 
@@ -16,7 +17,10 @@ use braintellect_linux::feedback::BLOCK_LEN;
 
 use harness::assertions;
 use harness::fixtures::{self, Decision};
-use harness::run8::replay;
+use harness::run8::{
+    deviation, replay, replay_evaluated, replay_fixed, replay_switching_at, replay_with_flags,
+    Deviation,
+};
 
 fn expected(kind: &str) -> Vec<Decision> {
     fixtures::run8_decisions()
@@ -83,4 +87,77 @@ fn band_amplitudes_match_the_logged_values_bit_for_bit_from_the_first_block() {
             }
         }
     }
+}
+
+/// The live sum-order choice (`audio-feedback.md`, "Live sum order"): the original's order
+/// depends on heap alignment per process, so a live run fixes one order for every band-pass
+/// call. Measured against the logged order of run 8 (120462 of 240008 band-pass calls take
+/// the scalar head), all-scalar-head departs less than all-SIMD, and neither changes a
+/// Trigger or a Note decision.
+#[test]
+fn the_live_sum_order_choice_moves_amplitudes_but_no_decision() {
+    let logged = replay();
+    let simd = deviation(logged, &replay_with_flags(false));
+    let scalar = deviation(logged, &replay_with_flags(true));
+    assert_eq!(
+        simd,
+        Deviation {
+            amplitudes: 126_070,
+            amplitudes_total: 960_032,
+            blocks: 28_702,
+            blocks_total: 30_001,
+            triggers: 0,
+            notes: 0,
+        }
+    );
+    assert_eq!(
+        scalar,
+        Deviation {
+            amplitudes: 125_013,
+            amplitudes_total: 960_032,
+            blocks: 28_655,
+            blocks_total: 30_001,
+            triggers: 0,
+            notes: 0,
+        }
+    );
+    assert!(scalar.amplitudes < simd.amplitudes);
+}
+
+/// Fixed mode switches the 45 Hz low-pass in at the first graph sample, where the app's
+/// switch lands on a thread-timed sample (start + 1 in run 8). Observable as the band
+/// amplitudes: with the sum order held equal (fixed mode's all-scalar-head), the fixed
+/// replay is the original replay switched at the start and not the one switched at
+/// start + 1.
+#[test]
+fn fixed_mode_switches_the_low_pass_at_the_first_graph_block() {
+    let fixed = replay_fixed();
+    let at_start = replay_switching_at(0, true);
+    let one_late = replay_switching_at(1, true);
+    assert_eq!(deviation(fixed, &at_start).amplitudes, 0);
+    assert!(deviation(fixed, &one_late).amplitudes > 0);
+}
+
+/// Run 8's decisions under fixed mode against original mode (`audio-feedback.md`, "Fixed
+/// mode against original mode"): 24 of the 415 fires move to another block and 24 of the 415
+/// notes at a fire differ, a count of blocks whose decision differs.
+#[test]
+fn fixed_mode_changes_24_trigger_and_24_note_decisions_of_run_8() {
+    let d = deviation(replay(), replay_fixed());
+    assert_eq!((d.triggers, d.notes), (24, 24));
+}
+
+/// The Evaluator, fed only the clone's band averages, reproduces run 8's logged code of every
+/// block: 111, then 12 from the second epoch end, then 82 (`audio-feedback.md`, "SMART-2
+/// Evaluator"). The A..D band-pass sum orders are run 8's stand-in ranks, which cannot
+/// move a Balance across its 0.15 threshold.
+#[test]
+fn the_evaluator_reproduces_run_8_codes_111_12_82() {
+    let run = replay_evaluated();
+    let logged: Vec<u32> = run.blocks.iter().map(|b| b.control).collect();
+    let evaluated: Vec<u32> = run.decisions.iter().map(|d| d.control).collect();
+    assertions::control_codes(&logged, &evaluated).expect("per-block Evaluator code parity");
+    let mut sequence = evaluated.clone();
+    sequence.dedup();
+    assert_eq!(sequence, [111, 12, 82]);
 }

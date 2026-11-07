@@ -9,12 +9,14 @@ mod harness;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
+use braintellect_linux::acquisition::decode::ChannelCalibration;
 use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::acquisition::stream::StreamConfig;
 use braintellect_linux::capture::Recording;
 use braintellect_linux::feedback::Interference1;
-use braintellect_linux::live::{self, Environment, Health, Phase, SessionProperties, Snapshot};
+use braintellect_linux::live::{
+    self, Environment, GraphStart, Health, Phase, SessionProperties, Snapshot,
+};
 use braintellect_linux::storage::Store;
 use harness::audio::{small_bank, RecordingSink, RATE_HZ};
 use harness::fixtures;
@@ -22,6 +24,8 @@ use harness::transport::{frames_from_counts, ReplayTransport};
 
 /// Frames of the run-8 EEG in 30 s (250 frames a second).
 const THIRTY_SECONDS: usize = 30 * 250;
+/// Frames that warm the Source filters before the graph's first block (two samples a frame).
+const WARMUP_FRAMES: usize = GraphStart::LIVE.warmup_samples / 2;
 
 struct Outcome {
     last: Snapshot,
@@ -48,14 +52,32 @@ fn exercise(
     properties: &SessionProperties,
     stop_when: Option<fn(&Snapshot) -> bool>,
 ) -> Outcome {
+    let link = if stall {
+        ReplayTransport::stalling
+    } else {
+        std::convert::identity
+    };
+    exercise_stepping(name, frames, link, properties, stop_when, 8)
+}
+
+/// [`exercise`] over the link `link` makes of the fixture transport, with a clock that
+/// advances `step_ms` per reading.
+fn exercise_stepping(
+    name: &str,
+    frames: usize,
+    link: fn(ReplayTransport) -> ReplayTransport,
+    properties: &SessionProperties,
+    stop_when: Option<fn(&Snapshot) -> bool>,
+    step_ms: i64,
+) -> Outcome {
     let rows: Vec<[i32; 8]> = fixtures::run8_eeg().into_iter().take(frames).collect();
-    let mut transport = ReplayTransport::new(fixtures::wire(), frames_from_counts(&rows));
-    if stall {
-        transport = transport.stalling();
-    }
+    let transport = link(ReplayTransport::new(
+        fixtures::wire(),
+        frames_from_counts(&rows),
+    ));
     let config = StreamConfig {
         calibration: ChannelCalibration::new(12.0, 10.0).expect("calibration"),
-        family: DeviceFamily::F12,
+        family: None,
     };
     let mut captured = Vec::new();
     let session =
@@ -67,7 +89,7 @@ fn exercise(
     let mut readings = -1i64;
     let mut clock = move || {
         readings += 1;
-        readings * 8
+        readings * step_ms
     };
     let mut reports: Vec<Snapshot> = Vec::new();
     let mut report = |s: &Snapshot| {
@@ -85,6 +107,7 @@ fn exercise(
             store: &store,
             stop: &stop,
             clock: &mut clock,
+            graph: GraphStart::LIVE,
             report: &mut report,
         },
     );
@@ -108,7 +131,7 @@ fn saved_id(run: &Outcome) -> i64 {
 fn a_run_to_the_end_of_the_stream_is_stored_and_readable() {
     let run = exercise(
         "end",
-        THIRTY_SECONDS,
+        WARMUP_FRAMES + THIRTY_SECONDS,
         false,
         &SessionProperties::default(),
         None,
@@ -167,10 +190,92 @@ fn triggers_reach_the_sink_as_audio_and_are_counted() {
         "the run-8 EEG triggers under control 111"
     );
     assert!(run.last.last_note.is_some_and(|n| (40..=76).contains(&n)));
+    assert_eq!(run.last.control, 111, "no epoch has ended in 30 s");
     // A block (4 samples, 8 ms) is 8 ms of audio whether or not a note rings.
-    let blocks = THIRTY_SECONDS / 2;
+    let blocks = (THIRTY_SECONDS - WARMUP_FRAMES) / 2;
     assert_eq!(run.sink.frames.len(), blocks * (RATE_HZ as usize / 125));
     assert!(run.sink.frames.iter().any(|&f| f != 0));
+}
+
+/// The block in which the first note sounds, on a clock that advances `step_ms` a reading.
+fn first_sounding_block(step_ms: i64) -> usize {
+    let run = exercise_stepping(
+        "first-fire",
+        THIRTY_SECONDS,
+        std::convert::identity,
+        &SessionProperties::default(),
+        None,
+        step_ms,
+    );
+    let frames_per_block = RATE_HZ as usize / 125;
+    run.sink
+        .frames
+        .iter()
+        .position(|&f| f != 0)
+        .map(|at| at / frames_per_block)
+        .expect("a note sounds")
+}
+
+/// 125 s of the run-8 EEG after the warm-up, streamed from its first sample: the Evaluator leaves 111
+/// for the code it decides there, which the snapshot reports. The code is the clone's own on
+/// this stream (the original never ran it, so no logged code applies; `replay_s48` holds the
+/// parity against the original's codes).
+#[test]
+fn the_snapshot_reports_the_code_the_evaluator_decides() {
+    let run = exercise(
+        "evaluator",
+        WARMUP_FRAMES + 125 * 250,
+        false,
+        &SessionProperties::default(),
+        None,
+    );
+
+    assert_eq!(run.last.control, 12);
+    // The code is reported in the frame that closes the deciding epoch's last block.
+    let first = run
+        .reports
+        .iter()
+        .find(|s| s.control != 111)
+        .expect("a code change");
+    assert_eq!(
+        (first.frames, first.control),
+        ((WARMUP_FRAMES + 2 * 15_000) as u64, 12)
+    );
+}
+
+/// Every trigger is reported with its note in the frame that closes its block, so the
+/// session window and a replay see each one when it happens.
+#[test]
+fn every_trigger_is_reported_as_it_happens() {
+    let run = exercise(
+        "each-trigger",
+        THIRTY_SECONDS,
+        false,
+        &SessionProperties::default(),
+        None,
+    );
+
+    let mut seen: Vec<u32> = run.reports.iter().map(|s| s.triggers).collect();
+    seen.dedup();
+    assert_eq!(seen, (0..=run.last.triggers).collect::<Vec<_>>());
+    let first = run
+        .reports
+        .iter()
+        .find(|s| s.triggers == 1)
+        .expect("a trigger");
+    let block = first_sounding_block(8);
+    assert_eq!(first.frames, (WARMUP_FRAMES + 2 * (block + 1)) as u64);
+}
+
+/// The original's counter timer starts long before the first graph block (3707 to 21018 ms
+/// before it in three logged runs; `audio-feedback.md`, "Counter timer start"), so the first
+/// block is already past the 500 ms epoch and the first pass fires. At 8 ms a reading the
+/// first pass is past one epoch anyway; at 1 ms a reading the first 500 blocks fall inside the
+/// epoch of a timer started when the graph is built, which would hold the first fire back to
+/// block 500. The first fire must be the same block on both clocks.
+#[test]
+fn the_first_counter_fire_does_not_wait_one_epoch_after_the_graph_is_built() {
+    assert_eq!(first_sounding_block(1), first_sounding_block(8));
 }
 
 #[test]
@@ -215,6 +320,23 @@ fn the_clinicians_filter_settings_are_stored_in_the_header() {
     assert_eq!(header.interference_filter, "Off");
     assert_eq!(header.device_low_pass_cutoff, 100.0);
     assert_eq!(header.device_high_pass_cutoff, 0.5);
+}
+
+/// A read timeout before each frame of the warm-up, 16 ms of clock apart: frames keep
+/// arriving, so the link never reads as quiet, though no block has read the clock yet.
+#[test]
+fn frames_arriving_between_read_timeouts_in_the_warm_up_are_not_no_data() {
+    let run = exercise_stepping(
+        "late",
+        WARMUP_FRAMES,
+        ReplayTransport::late,
+        &SessionProperties::default(),
+        None,
+        16,
+    );
+
+    assert_eq!(run.last.frames, WARMUP_FRAMES as u64);
+    assert!(run.reports.iter().all(|s| s.health != Health::NoData));
 }
 
 #[test]

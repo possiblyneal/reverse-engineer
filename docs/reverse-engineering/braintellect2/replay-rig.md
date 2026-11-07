@@ -47,6 +47,9 @@ share): partitioned MBR, FAT32 (`mkfs.fat -F 32 --offset 2048`), loop-mounted on
 
 ## Run steps
 
+0. Turbo on: `echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo` on the host
+   (see "Host CPU clock" below); after the run, `sudo systemctl start cpu-turbo-schedule.service`
+   puts the schedule's state back.
 1. Forward the serial socket to where the emulator runs:
    `ssh -fN -L <local>.sock:/srv/local/windows/braintellect-offline/b2/b2.sock neal@10.10.10.10`.
 2. Start the emulator first: `braintellect-linux emulate <rx capture> <local>.sock 2> emu.log`.
@@ -161,3 +164,89 @@ EEG as `replay_s48` does (`S48_REPLAY_DIR=<extract> cargo test --release --test 
   so the drop is inside the app; the cause is not established. The clone consumes every frame.
   The decision diff is unaffected because `replay_s48` feeds the original's consumed samples,
   but two apps reading one raw stream live would diverge at the first gap.
+
+## Result: the Evaluator inputs and bands A..D captured (#53, 2026-11-07)
+
+A replay of the run-8 rx stream with hooks on the Evaluator (each Balance and Coherence series value per block, the chosen code) and on bands A..D was captured on the third attempt; the findings are in `audio-feedback.md`, "Replay capture of the Evaluator inputs".
+
+- Static (observed, Ghidra `analyzeHeadless` over a copy of the `bt2` project): the series push
+  (`0x63d9c0`), the series evaluation (`0x63e540`), the Evaluator decision (`0x63eb70`, code at
+  object offset `+0x274`) and the Evaluator code setter (`0x63ea70`). A hook set for them,
+  `hook12.js` (`hook11.js` plus those four), was written and loaded under `frida-inject -f`
+  with the app connected to the emulator and idle on the Optimize tab.
+- Driving the guest GUI to Play (observed): HMP `mouse_move`, RFB pointer events and keystrokes do not reach the QEMU USB tablet's clickable windows, so an in-guest PowerShell clicker (`EnumWindows` title waits,
+  `SetCursorPos` plus `mouse_event`) started from the guest's Startup folder, with the files
+  placed on the stopped guest's NTFS disk (`ntfs-3g` loop mount at offset 269484032; after a
+  forced stop it needs `ntfsfix -d` on the loop device first). It reached user select, the
+  licence wizard, the gear dialog, OK and Play unattended. The app's title has two spaces
+  (`BRAINtellect 2  Version 5.1.57`), so a single-space `-like` pattern waits out its timeout.
+- The guest's slowness was the host's night turbo cap ("Host CPU clock" below). With turbo on, the capture ran in real time: 30004 blocks, `hook12.js` loaded, no Evaluator record dropped.
+- The log (`g-s53.bin`, 341 MB) stays in the main checkout's `tmp/s53/r3/`. `replay-extract.py`
+  turns it into the replay directory; `replay_s48` reads it through `S48_REPLAY_DIR` and
+  asserts the A..H amplitudes, the Balance values and the per-block codes.
+
+## Result: all four channels' consumed volts (#55, 2026-11-07)
+
+Run 8's rx stream replayed with `hook13.js` (`hook11.js` plus tag 13: the converted volts of
+channels 1 to 3 at the same site as tag 12's channel 0), host at 3.8 GHz.
+
+- Launch (observed): no gear, OK or Play is needed, as the app consumes the stream from Start.
+  A Startup-folder `.cmd` started the app under `frida-inject -f` and a clicker that clicked user
+  select and both EULA pages, waited 150 s on the main window and ran `taskkill /F`. The log was
+  then copied off the stopped guest's NTFS disk, with no output image.
+- Logged: 73,792 consumed samples on each of the four channels, 0 records dropped.
+  `scripts/consumed-extract.py <s55.bin>` reduces the log to `tmp/s55/replay/`, and the ignored
+  `tests/replay_s55.rs` decodes the consumed frames with the clone. All four channels match bit
+  for bit over the whole range. The fixtures `consumed_stream.txt` and `consumed_volts.tsv`
+  (`make-fixtures.py --src55`) hold the first 150 frames, and `tests/parity_acquisition.rs`
+  asserts them.
+- The original again skipped received frames, as in #33: 11 gaps totalling 26 frames among the
+  first 36,922, the first after consumed frame 1149. The clone counts each gap as a packet
+  counter error.
+- The log (`s55.bin`, 80 MB) stays in the main checkout's `tmp/s55/`.
+
+## Result: the stored session against the consumed volts (#56, 2026-11-07)
+
+Run 8's rx stream replayed with a hook file (`hook13.js` plus the aggregator emit 0x649580 and the
+series push 0x6497b0/0x649820/0x649840) at 3.8 GHz, then gear, OK and Play through the #53
+clicker and a 310 s wait so the exercise stored (exercise 146). The clicker waited on the title
+`BRAINtellect 2  Version*` (two spaces); a one-space pattern costs three minutes of timeout.
+
+- Logged: 262,516 consumed samples per channel from the stream start (tag 12 and 13, none
+  dropped), and 49 emits for each of 64 aggregators. The push and reset hooks never fired.
+- The stored Band-10 and Band-80 series are reproduced within `RECORD_EPSILON` from the consumed
+  volts once the Source output is truncated to whole counts, as stored; see `session-storage.md`,
+  "Stored series (#56)".
+- The datadir was copied off the stopped guest's NTFS disk after `ntfsfix -d`; a throwaway
+  `mysql:5.7` container read it. The log (`s56.bin`, 350 MB) stays in the main checkout's
+  `tmp/s56/`.
+
+## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
+
+The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00
+(#53's three runs): GUI clicks took minutes, titles read `(Not Responding)`. The cause is the
+host's clock, not the guest, the hooks or Defender.
+
+- Host config (observed): `cpu-turbo-schedule.timer` runs `/usr/local/bin/cpu-turbo-schedule.sh 22 7`,
+  which writes `intel_pstate/no_turbo=1` from 22:00 to 07:00. Its comment intends "base clock",
+  but this host's firmware reports a base ratio of 8 (MSR `0xCE` bits 15:8 and HWP guaranteed
+  performance in `0x771` are both 8), so `no_turbo=1` caps every core at 800 MHz
+  (`cpuinfo_max_freq` 800000, HWP request max ratio 8). With `no_turbo=0` the cap is 3.8 GHz.
+  Prometheus (`node_cpu_scaling_frequency_max_hertz`, instance `node-exporter:9100`) shows the
+  cap at 800 MHz from 22:05 on 2026-11-06; the real-time #48 and #33 replays ran before 22:00.
+- A/B in one rig run (observed; run-8 rx stream, the `hook11.js` hook set, tag 12 = one consumed
+  ch0 sample, 500/s at real time, binned per 30 s from the first tag 12):
+
+  | Host cap | Tag 12 per s | Serial reads (tag 1) per s | Heartbeats per 30 s |
+  |---|---|---|---|
+  | 3.8 GHz (`no_turbo=0`), before and after Play | 500 | ~120 | 6 |
+  | 800 MHz (`no_turbo=1`), toggled mid-run | 5 to 9 | 0.3 | 1 to 3 |
+  | back to 3.8 GHz | 500 from the next bin | ~120 | 6 |
+  | 2.3 GHz (`no_turbo=0`, `max_perf_pct=60`), separate run, 60 s past Play | 500 | ~119 | 6 |
+
+  With the cap lifted the gear dialog opened 0.8 s after the click (about one minute at 800 MHz).
+- Inferred: at 800 MHz the app needs more than its one busy core and never catches up; the
+  drop (about 60-fold for a 4.75-fold clock cut) is not explained further here.
+- Fix: run step 0 (turbo on for the run). 2.3 GHz also held the rate, so capping the night
+  window with `max_perf_pct=60` instead of `no_turbo=1` would keep both night-time rigs and
+  the schedule's "base clock" intent; that host change is not made.

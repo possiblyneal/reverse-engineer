@@ -1,26 +1,44 @@
 //! `ThresholdCounter`: type `timeHigh`, trigger epoch 500 ms (handler `0x642ed0`).
 
-/// `triggerEpoch` of the design, in milliseconds.
-const TRIGGER_EPOCH_MS: i64 = 500;
+/// The design's `triggerEpoch`: the time that must pass on the timer before a pass fires.
+pub const TRIGGER_EPOCH_MS: i64 = 500;
 
-/// The counter timer's two clock reads in one block. The timer reads the clock
-/// once to test the epoch and, on a fire, reads it again to restart; the second
-/// read can trail the first by a few milliseconds (`audio-feedback.md`, "Run 8").
+/// The counter timer's clock in one block. The timer reads the clock once, before the
+/// block's samples, to test the epoch and, only on a fire, reads it again to restart; the
+/// second read can trail the first by a few milliseconds (`audio-feedback.md`, "Run 8" and
+/// "Live replay of the #33 capture").
+pub trait CounterClock {
+    /// The read that tests the epoch.
+    fn read_ms(&self) -> i64;
+    /// The read that restarts the timer, taken once per fire, after the test.
+    fn lap_ms(&mut self) -> i64;
+}
+
+/// A block's two reads as values, for a replay that logged them.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct BlockClock {
-    /// The read that tests the epoch.
     pub read_ms: i64,
-    /// The read that restarts the timer on a fire.
     pub lap_ms: i64,
 }
 
-impl From<i64> for BlockClock {
-    /// Both reads at the same millisecond.
-    fn from(ms: i64) -> Self {
-        Self {
-            read_ms: ms,
-            lap_ms: ms,
-        }
+impl CounterClock for BlockClock {
+    fn read_ms(&self) -> i64 {
+        self.read_ms
+    }
+
+    fn lap_ms(&mut self) -> i64 {
+        self.lap_ms
+    }
+}
+
+/// Both reads at the same millisecond.
+impl CounterClock for i64 {
+    fn read_ms(&self) -> i64 {
+        *self
+    }
+
+    fn lap_ms(&mut self) -> i64 {
+        *self
     }
 }
 
@@ -40,9 +58,9 @@ impl Counter {
 
     /// Process one block of pass flags read at `clock`. Each pass increments the count; a pass in a block
     /// read at least one epoch after the timer started zeroes the count and
-    /// fires, and the timer restarts.
-    pub fn process_block(&mut self, clock: BlockClock, passes: &[bool]) -> bool {
-        let epoch_elapsed = clock.read_ms - self.timer_start_ms >= TRIGGER_EPOCH_MS;
+    /// fires, and the timer restarts at the clock's lap read.
+    pub fn process_block(&mut self, clock: &mut impl CounterClock, passes: &[bool]) -> bool {
+        let epoch_elapsed = clock.read_ms() - self.timer_start_ms >= TRIGGER_EPOCH_MS;
         let mut fired = false;
         for _ in passes.iter().filter(|&&p| p) {
             self.count += 1;
@@ -52,7 +70,7 @@ impl Counter {
             }
         }
         if fired {
-            self.timer_start_ms = clock.lap_ms;
+            self.timer_start_ms = clock.lap_ms();
         }
         fired
     }

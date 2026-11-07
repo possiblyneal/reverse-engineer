@@ -37,7 +37,27 @@ A..H flags, Evaluator code, eval clock, lap clock), the baseline Trigger and Not
 decisions (`run8_decisions.tsv`) and the logged E..H band amplitudes of blocks 0..6599
 (`run8_amplitudes_N.tsv`). Clocks are milliseconds from block 0.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--baseline DIR] [--out DIR]
+The live-handshake fixtures (`handshake_live_a.txt`, `handshake_live_b.txt`) come from the
+2026-11-07 live handshakes under `tmp/s58/` (`--src58`, never committed; `hs_A.txt` is the
+first connection after the B-2 was switched on, `hs_B.txt` a reconnect), laid out like
+`wire.txt` with the commands the clone writes (stop, a query pass, mode, injection, a second
+query pass) and the 101 serial scrubbed.
+
+The sensor-status fixtures (`sensor_inputs.tsv`, `sensor_levels.tsv`) come from the 2026-11-07
+hook13 capture `tmp/s57/s57.bin` (`--src57`, never committed; run 8's no-wearer stream replayed into
+the original on the Optimize tab): for a few of the 105 blocks, each channel's 512 float32 FFT
+input, and the levels and fault flag the original's Head2D and evaluator produced from it.
+
+The all-channel acquisition fixtures (`consumed_stream.txt`, `consumed_volts.tsv`) come from the
+ticket-55 replay log `tmp/s55/s55.bin` (`--src55`, never committed; `hook13.js` output of the
+original fed run 8's no-wearer stream by `emulate`): the first `S55_FRAMES` frames the original
+consumed, and its logged volts for channels 0 to 3 of each consumed sample as float64 bit patterns.
+
+`circle_balance_design.tsv` is the Balance Meter wiring of the decrypted
+`B-2-Circle-Balance-fromBAGSD-v5.1.1` design XML (`--src64`, `tmp/s64/design171.xml`, never
+committed): one row per chart input, traced back to its LMH band, time window and channels.
+
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src57 FILE] [--src58 DIR] [--src55 FILE] [--src64 FILE] [--baseline DIR] [--out DIR]
 """
 import argparse
 import collections
@@ -107,6 +127,35 @@ def scrub_serial(events):
     if serial in b"".join(data for _, data in scrubbed):
         raise SystemExit("serial survived scrubbing")
     return scrubbed
+
+
+def live_handshake(path):
+    """The clone's handshake as `wire.txt` lines, from `<tag> <code> <reply hex>` lines."""
+    replies = {}
+    for line in path.read_text().splitlines():
+        _, code, hexed = line.split(" ")
+        replies.setdefault(int(code), []).append(bytes.fromhex(hexed))
+    plain = ["!*#48,0,0,0,0,0,0", "!*#40,1,0,0,0,0,0", "!*#46,0,0,0,0,0,0"]
+    lines = []
+
+    def tx(text):
+        lines.append("TX " + (text + "\r\n").encode().hex())
+
+    def query_pass(n):
+        for code in [101, 110, 112, *range(131, 139)]:
+            tx(f"!*#{code},0,0,0,0,0,0")
+            reply = replies[code][n]
+            if code == 101:
+                found = reply[10:28]
+                reply = reply.replace(found, with_separators(SERIAL_PLACEHOLDER))
+            lines.append("RX " + reply.hex())
+
+    tx(plain[0])
+    query_pass(0)
+    tx(plain[1])
+    tx(plain[2])
+    query_pass(1)
+    return "\n".join(lines) + "\n"
 
 
 def stream_chunks(trace):
@@ -309,7 +358,8 @@ def local(tag):
 def design_rows(src, header):
     """The design properties of the upstream elements, as tab-separated rows.
 
-    Element names (`BPF Ch1 Band 10`, `PeakFreq Ch1`) give channel and band label;
+    Element names (`BPF Ch1 Band 10`, `Coherence Ch3n4 Band 10`, `PeakFreq Ch1`) give
+    channels and band label;
     the Source filter settings come from the session header and the app log.
     """
     root = ET.fromstring((src / "130-t1.xml").read_text())
@@ -331,6 +381,10 @@ def design_rows(src, header):
         if m := re.fullmatch(r"BPF Ch(\d) (Band \d+)", name):
             rows.append(("bandpass", m[1], m[2], props["lowFrequency"], props["highFrequency"],
                          props["windowType"], props["filterOrder"]))
+        elif m := re.fullmatch(r"Coherence Ch(\d)n(\d) (Band \d+)", name):
+            rows.append(("coherence", m[1], m[2], m[3], props["lowFrequency"],
+                         props["highFrequency"], props["windowType"], props["filterOrder"],
+                         props["processingStyle"]))
         elif m := re.fullmatch(r"PeakFreq Ch(\d)", name):
             rows.append(("peak", m[1], props["fftOrder"], props["lowFrequency"],
                          props["highFrequency"], props["windowType"]))
@@ -339,6 +393,63 @@ def design_rows(src, header):
     if len(aggregators) != 1:
         raise SystemExit("Aggregators differ in style or epoch")
     rows.append(("aggregator", *aggregators.pop()))
+    return rows
+
+
+def circle_balance_rows(path):
+    """One row per Balance Meter input of the decrypted Circle-Balance design XML.
+
+    Traces each `CircleGraphChart` input back through its `ExpressionTransform`, the two
+    `AggregatorFilter`/`TimeFilter`/`BAGSDataTypeBandFilter` chains, to the `Source` outputs:
+    chart, graph title, range axis, LMH band, time anchor, begin and end (s), the channels
+    feeding `A` and `B`, and the expression. Refuses any other chain shape.
+    """
+    root = ET.fromstring(path.read_text())
+
+    def keyed(node):
+        # `flowEngine.display.graphTitle.Chart1` -> `graphTitle.Chart1`
+        return {p.get("key").split(".", 2)[2]: (p.text or "").strip()
+                for p in node.iter() if local(p.tag) == "property"}
+
+    impl, props, feeds, charts = {}, {}, {}, []
+    for e in root.iter():
+        if local(e.tag) == "element":
+            name = e.get("name")
+            impl[name] = next(c.text for c in e if local(c.tag) == "implClass").rsplit(".", 1)[1]
+            props[name] = keyed(e)
+    for c in root.iter():
+        if local(c.tag) != "connection":
+            continue
+        f = {local(x.tag): (x.text or "").strip() for x in c}
+        feeds[(f["destElementName"], f["destPipeName"])] = (f["sourceElementName"], f["sourcePipeName"])
+        if impl[f["destElementName"]] == "CircleGraphChart":
+            charts.append((f["destElementName"], f["destPipeName"], keyed(c)["rangeAxis"],
+                           f["sourceElementName"]))
+
+    def chain(aggregator):
+        """The band, time window and Source output (channel) behind one aggregator."""
+        time_filter = feeds[(aggregator, "InSignal")][0]
+        band_filter = feeds[(time_filter, "InSignal")][0]
+        source, out = feeds[(band_filter, "InBAGSD")]
+        kinds = [impl[n] for n in (aggregator, time_filter, band_filter, source)]
+        if kinds != ["AggregatorFilter", "TimeFilter", "BAGSDataTypeBandFilter", "Source"]:
+            raise SystemExit(f"unexpected chain behind {aggregator}: {kinds}")
+        if props[aggregator]["flowStyle"] != "absolute" or props[band_filter]["BAGSDataType"] != "LMH":
+            raise SystemExit(f"unexpected aggregator or data type behind {aggregator}")
+        t = props[time_filter]
+        window = (t["exerciseTimeAnchorPoint"], t["beginTime"], t["endTime"])
+        return props[band_filter]["BAGSDataTypeBand"], window, out.removeprefix("Out")
+
+    rows = []
+    for chart, pipe, axis, expression in sorted(charts):
+        if impl[expression] != "ExpressionTransform":
+            raise SystemExit(f"{chart} {pipe} is not fed by an expression")
+        (band, window, a), (band_b, window_b, b) = (
+            chain(feeds[(expression, f"InSignal{v}")][0]) for v in "AB")
+        if (band, window) != (band_b, window_b):
+            raise SystemExit(f"{expression} pairs different bands or windows")
+        rows.append((chart, props[chart][f"graphTitle.{pipe}"], axis, band, *window, a, b,
+                     props[expression]["expression"]))
     return rows
 
 
@@ -630,7 +741,7 @@ RUN8_FILE_LIMIT = 9000  # EEG frames or block rows per file; keeps every file un
 RUN8_BAND_RANKS = (14, 3, 2, 8, 9, 16, 12, 0)
 
 
-RUN8_TAGS = frozenset((1, 2, 3, 4, 5, 7, 11, 12))  # serial RX, block, clocks, graph calls, note, amplitudes, volts
+RUN8_TAGS = frozenset((1, 2, 3, 4, 5, 7, 11, 12, 13, 20, 21))  # serial RX, block, clocks, graph calls, note, amplitudes, ch0 volts, ch1..3 volts, Evaluator series input and key
 
 
 def run8_records(path):
@@ -644,12 +755,13 @@ def run8_records(path):
             i += length
 
 
-def run8_frames(records):
+def run8_frames(records, raw=None):
     """Received frames and the volts the app consumed, from the serial RX records.
 
     A frame is `AC BC CC 03`, a 16-bit counter and 8 x 24-bit samples; `03 03` in
     the counter position is accepted only when it continues the counter.
-    Returns (frames as 8 raw ints, consumed ch0 volts in order).
+    Returns (frames as 8 raw ints, consumed ch0 volts in order). `raw`, if given, collects
+    each frame's 32 bytes.
     """
     buf, frames, volts = bytearray(), [], []
     prev = None
@@ -672,12 +784,14 @@ def run8_frames(records):
                     continue
                 prev = counter
                 frames.append([i24(buf[8 + 3 * k:11 + 3 * k]) for k in range(8)])
+                if raw is not None:
+                    raw.append(bytes(buf[:FRAME_LEN]))
                 del buf[:FRAME_LEN]
     return frames, volts
 
 
-def run8_consumed_frames(frames, volts):
-    """The received frames holding the samples the app consumed, in order.
+def run8_consumed_indices(frames, volts):
+    """Indices of the received frames holding the samples the app consumed, in order.
 
     Each consumed ch0 volt is matched forward (within 400 samples) to the received
     ch0 slot 0 / slot 4 sequence; frames the app never consumed (counter jumps) drop out.
@@ -693,7 +807,40 @@ def run8_consumed_frames(frames, volts):
             raise SystemExit("consumed sample has no received counterpart")
         used.add(q // 2)
         pos = q + 1
-    return [frames[k] for k in sorted(used)]
+    return sorted(used)
+
+
+def run8_consumed_frames(frames, volts):
+    """The received frames holding the samples the app consumed, in order."""
+    return [frames[k] for k in run8_consumed_indices(frames, volts)]
+
+
+S55_FRAMES = 150  # consumed frames kept in the committed all-channel acquisition fixture
+
+
+def s55_consumed(path):
+    """The frames the original consumed and its logged volts for channels 0 to 3.
+
+    `path` is a `hook13.js` log (tag 12: channel 0, tag 13: channels 1 to 3) of the original
+    fed a no-wearer stream by `emulate`. Returns (consumed frames as 32 raw bytes, volts rows
+    of [ch0, ch1, ch2, ch3] per consumed sample), both cut to the samples every channel logged.
+    """
+    records = list(run8_records(path))
+    raw, volts0 = [], []
+    frames, volts0 = run8_frames(records, raw)
+    volts = [volts0] + [[] for _ in range(3)]
+    for tag, v in records:
+        if tag == 13:
+            volts[int(v[3])].append(v[5])
+    used = run8_consumed_indices(frames, volts0)
+    n = min(len(c) for c in volts) // 2 * 2
+    n = min(n, 2 * len(used))
+    return [raw[k] for k in used[:n // 2]], [[volts[c][i] for c in range(4)] for i in range(n)]
+
+
+def s55_row(row):
+    """One consumed sample: the four logged volts as float64 bit patterns."""
+    return "\t".join("%016x" % struct.unpack("<Q", struct.pack("<d", x))[0] for x in row) + "\n"
 
 
 def run8_blocks(records):
@@ -703,7 +850,7 @@ def run8_blocks(records):
     4-sample band-pass calls (tag 5), the Evaluator code from the last tag-11
     record, the clock from the tag-3 timer read and the lap read from tag 4.
     """
-    blocks, cur = [], {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None}
+    blocks, cur = [], {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None, "amps_ad": None}
     for tag, v in records:
         if tag == 5 and int(v[6]) == 4:
             cur["calls"][int(v[3])] = int(v[5]) % 16 == 8
@@ -722,10 +869,31 @@ def run8_blocks(records):
             cur["code"] = int(recs[-1][0])
             if len(recs) == 9 and cur["amps"] is None:
                 cur["amps"] = [x for r in recs[4:8] for x in r]
+                cur["amps_ad"] = [x for r in recs[0:4] for x in r]
         elif tag == 2:
             blocks.append(cur)
-            cur = {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None}
+            cur = {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None, "amps_ad": None}
     return blocks
+
+
+def run8_evaluator_series(records):
+    """The Evaluator's series inputs by name, as `{name: {block: latest float32 value}}`.
+
+    Tag 21 names each series object (`Bal1n2B10`, `Coh3n4B80`, ...); tag 20 is one
+    `setInput` per block (4 samples), the series' latest value after it. The block is the
+    count before the call over 4.
+    """
+    names, out = {}, {}
+    for tag, v in records:  # the key dump may follow the series' first input
+        if tag == 21:
+            key = bytes(int(x) for x in v[39:87]).split(b"\0")[0].decode("latin-1")
+            kind = "Bal" if key.startswith("lance:") else "Coh"
+            channels, band = key.split(":")[-2:]
+            names[int(v[3])] = f"{kind}{channels.replace('Channels ', '')}{band.replace('Band ', 'B')}"
+    for tag, v in records:
+        if tag == 20:
+            out.setdefault(names[int(v[3])], {})[int(v[4]) // 4] = v[6]
+    return out
 
 
 def run8(path):
@@ -771,6 +939,45 @@ def run8(path):
     return out
 
 
+SENSOR_BLOCKS = (0, 1, 2, 3, 15, 16, 17, 20, 31, 58, 77)  # the line-noise decision, the fault blocks and their neighbours
+
+
+def sensor_blocks(path):
+    """Tags 30 (FFT input), 32 (Head2D levels) and 35 (evaluator fault flag), four channels per block."""
+    import array
+
+    raw = pathlib.Path(path).read_bytes()
+    a = array.array("d")
+    a.frombytes(raw[:len(raw) // 8 * 8])
+    ffts, heads, flags = [], [], []  # flags: per block, the fault flag after its last evaluator call
+    i = 0
+    while i + 3 <= len(a):
+        tag, size = int(a[i]), int(a[i + 1])
+        if size < 3 or i + size > len(a):
+            break
+        r = a[i:i + size]
+        if tag == 30:
+            ffts.append((list(r[12:12 + 512]), list(r[12 + 512:12 + 768])))
+        elif tag == 32:
+            if len(heads) % 4 == 0:
+                flags.append(None)
+            heads.append((list(r[21:21 + 256]), r[9], r[12], r[13], r[14]))
+        elif tag == 35 and flags:
+            flags[-1] = int(r[4])
+        i += size
+    blocks = len(heads) // 4
+    assert blocks == len(ffts) // 4 and None not in flags, "capture is not whole blocks"
+    inputs, levels = [], []
+    for b in SENSOR_BLOCKS:
+        for c in range(4):
+            samples, spectrum = ffts[4 * b + c]
+            head = heads[4 * b + c]
+            assert head[0] == spectrum, "Head2D spectrum is the FFT output"
+            inputs.append(f"{b}\t{c}\t" + " ".join(f"{x:.9g}" for x in samples) + "\n")
+            levels.append(f"{b}\t{c}\t" + "\t".join(f"{x:.9g}" for x in head[1:]) + f"\t{flags[b]}\n")
+    return {"sensor_inputs.tsv": "".join(inputs), "sensor_levels.tsv": "".join(levels)}
+
+
 def main():
     root =pathlib.Path(__file__).resolve().parents[3]
     ap = argparse.ArgumentParser()
@@ -779,6 +986,10 @@ def main():
     ap.add_argument("--src4", type=pathlib.Path, default=root / "tmp/s26/run4")
     ap.add_argument("--src5", type=pathlib.Path, default=root / "tmp/s43/live")
     ap.add_argument("--src8", type=pathlib.Path, default=root / "tmp/s43/run8/run8.bin")
+    ap.add_argument("--src57", type=pathlib.Path, default=root / "tmp/s57/s57.bin")
+    ap.add_argument("--src58", type=pathlib.Path, default=root / "tmp/s58")
+    ap.add_argument("--src55", type=pathlib.Path, default=root / "tmp/s55/s55.bin")
+    ap.add_argument("--src64", type=pathlib.Path, default=root / "tmp/s64/design171.xml")
     ap.add_argument("--baseline", type=pathlib.Path, default=root / "tmp/s43/baseline")
     ap.add_argument(
         "--out", type=pathlib.Path,
@@ -798,6 +1009,9 @@ def main():
 
     (args.out / "wire.txt").write_text(
         "".join(f"{d} {data.hex()}\n" for d, data in events))
+    for tag in "ab":
+        (args.out / f"handshake_live_{tag}.txt").write_text(
+            live_handshake(args.src58 / f"hs_{tag.upper()}.txt"))
     (args.out / "stream.txt").write_text(
         "".join(f"{c.hex()}\n" for c in chunks))
     (args.out / "microvolts.tsv").write_text("".join(
@@ -837,9 +1051,22 @@ def main():
     (args.out / "smart2_bandpass_stages.tsv").write_text(bandpass_stages(hook_text))
     (args.out / "smart2_design.tsv").write_text("".join(
         "\t".join(r) + "\n" for r in design_rows(args.src4, header4)))
+    (args.out / "circle_balance_design.tsv").write_text("".join(
+        "\t".join(r) + "\n" for r in circle_balance_rows(args.src64)))
 
     for name, text in run8(args.src8).items():
         (args.out / name).write_text(text)
+    for name, text in sensor_blocks(args.src57).items():
+        (args.out / name).write_text(text)
+
+    frames55, rows55 = s55_consumed(args.src55)
+    if len(frames55) < S55_FRAMES:
+        raise SystemExit("ticket-55 replay log holds too few consumed frames")
+    counters = [(f[4] << 8) | f[5] for f in frames55[:S55_FRAMES]]
+    if any(b != (a + 1) & 0xFFFF for a, b in zip(counters, counters[1:])):
+        raise SystemExit("ticket-55 replay dropped a frame inside the committed window")
+    (args.out / "consumed_stream.txt").write_text("".join(f.hex() + "\n" for f in frames55[:S55_FRAMES]))
+    (args.out / "consumed_volts.tsv").write_text("".join(s55_row(r) for r in rows55[:2 * S55_FRAMES]))
 
 
 if __name__ == "__main__":

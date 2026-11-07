@@ -2,11 +2,12 @@
 //! shows out. No window is drawn.
 
 use braintellect_linux::acquisition::stream::StreamStats;
+use braintellect_linux::audio::tone::{Availability, Tone, DEFAULT_TONE, TONES};
 use braintellect_linux::live::{Health, Phase, SessionProperties, Snapshot};
-use braintellect_linux::ui::state::{Command, Event, Instrument, Stage, UiModel};
+use braintellect_linux::ui::state::{Command, Event, Stage, UiModel};
 
 fn ready() -> UiModel {
-    UiModel::new("00:11:22:33:44:55".to_owned(), Instrument::Ready)
+    UiModel::new("00:11:22:33:44:55".to_owned(), Availability::Ready)
 }
 
 fn snapshot(phase: Phase, health: Health) -> Snapshot {
@@ -21,6 +22,7 @@ fn snapshot(phase: Phase, health: Health) -> Snapshot {
         rms_uv: [1.5, 2.5, 3.5, 4.5],
         triggers: 7,
         last_note: Some(52),
+        control: 12,
         elapsed_s: 42,
     }
 }
@@ -29,7 +31,7 @@ fn snapshot(phase: Phase, health: Health) -> Snapshot {
 fn a_session_cannot_start_until_the_instrument_is_imported() {
     let mut model = UiModel::new(
         "00:11:22:33:44:55".to_owned(),
-        Instrument::Missing("the instrument bank is missing".to_owned()),
+        Availability::Missing("the instrument bank is missing".to_owned()),
     );
 
     assert!(!model.view().can_start);
@@ -42,8 +44,16 @@ fn a_session_cannot_start_until_the_instrument_is_imported() {
 }
 
 #[test]
+fn the_sensors_can_be_checked_before_any_tone_is_imported() {
+    let mut model = UiModel::new("m".to_owned(), Availability::Missing("missing".to_owned()));
+
+    assert!(model.view().can_check);
+    assert_eq!(model.check_sensors(), Some(Command::CheckSensors));
+}
+
+#[test]
 fn a_failed_import_says_why_and_keeps_the_offer() {
-    let mut model = UiModel::new("m".to_owned(), Instrument::Missing("missing".to_owned()));
+    let mut model = UiModel::new("m".to_owned(), Availability::Missing("missing".to_owned()));
     model.apply(Event::ImportFailed("no banks in /x".to_owned()));
 
     assert!(model.view().needs_import);
@@ -104,6 +114,7 @@ fn a_running_session_shows_the_signal_and_stream_health() {
         "500 frames, 2 counter errors, 1 validation error"
     );
     assert_eq!(view.feedback, "7 notes, last note 52");
+    assert_eq!(view.control, "Control code 12");
     assert_eq!(view.elapsed, "0:42 of 4:00");
 }
 
@@ -174,4 +185,146 @@ fn settings_that_cannot_run_are_refused_with_a_reason() {
     assert_eq!(model.start(), None);
     assert!(model.view().notice.contains("high-pass"));
     assert_eq!(model.stage(), &Stage::Setup);
+}
+
+#[test]
+fn the_sensor_status_shows_before_a_session_and_is_not_available_while_one_runs() {
+    use braintellect_linux::sensor::SensorStatus;
+
+    let mut model = ready();
+    assert_eq!(model.view().sensor, "Not Available");
+
+    model.apply(Event::Sensor(SensorStatus::AdjustFit));
+    assert_eq!(model.view().sensor, "Adjust Fit");
+    model.apply(Event::Sensor(SensorStatus::Ready));
+    assert_eq!(model.view().sensor, "Ready");
+
+    model.start().expect("starts");
+    assert_eq!(model.view().sensor, "Not Available");
+    model.apply(Event::Update(snapshot(Phase::Running, Health::Streaming)));
+    assert_eq!(model.view().sensor, "Not Available");
+
+    // A status that arrives during the run does not show until the run ends.
+    model.apply(Event::Sensor(SensorStatus::Ready));
+    assert_eq!(model.view().sensor, "Not Available");
+    model.apply(Event::Update(snapshot(
+        Phase::Saved { id: 1 },
+        Health::Streaming,
+    )));
+    assert_eq!(model.view().sensor, "Ready");
+}
+
+#[test]
+fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
+    use braintellect_linux::sensor::SensorStatus;
+
+    let mut model = ready();
+    assert!(model.view().can_check);
+    assert!(!model.view().checking);
+
+    assert_eq!(model.check_sensors(), Some(Command::CheckSensors));
+    assert!(model.view().checking);
+    assert!(!model.view().can_check);
+    assert_eq!(model.check_sensors(), None);
+    model.apply(Event::Sensor(SensorStatus::Ready));
+    assert_eq!(model.view().sensor, "Ready");
+
+    assert_eq!(model.stop_check(), Some(Command::StopCheck));
+    model.apply(Event::SensorCheckEnded(None));
+    assert!(!model.view().checking);
+    assert_eq!(model.view().sensor, "Not Available");
+    assert_eq!(model.stop_check(), None);
+
+    // A check that cannot connect says why and leaves the status unavailable.
+    model.check_sensors();
+    model.apply(Event::SensorCheckEnded(Some("cannot connect".to_owned())));
+    assert!(!model.view().checking);
+    assert!(model.view().notice.contains("cannot connect"));
+
+    // No check during a session.
+    model.start().expect("starts");
+    assert!(!model.view().can_check);
+    assert_eq!(model.check_sensors(), None);
+}
+
+fn tone_key(key: &str) -> &'static Tone {
+    TONES.iter().find(|t| t.key == key).expect("tone")
+}
+
+/// Only the default tone and the harp are imported.
+fn with_harp() -> UiModel {
+    let mut model = ready();
+    model.set_tones(
+        TONES
+            .iter()
+            .map(|t| match t.key {
+                "strings" | "harp" => Availability::Ready,
+                _ => Availability::Missing(format!("{} is not imported", t.label)),
+            })
+            .collect(),
+    );
+    model
+}
+
+#[test]
+fn the_setup_screen_lists_every_tone_and_marks_the_missing_ones_unavailable() {
+    let view = with_harp().view();
+
+    let listed: Vec<(&str, bool, bool)> = view
+        .tones
+        .iter()
+        .map(|t| (t.label.as_str(), t.available, t.selected))
+        .collect();
+    assert_eq!(
+        listed,
+        [
+            ("Acoustic strings (original default)", true, true),
+            ("Piano", false, false),
+            ("Celeste", false, false),
+            ("Harp", true, false),
+            ("Acoustic guitar", false, false),
+            ("Xylophone", false, false),
+        ]
+    );
+    assert_eq!(view.tones[1].status, "Piano is not imported");
+    assert!(view.can_start, "missing tones do not stop a session");
+}
+
+#[test]
+fn the_default_tone_is_the_original_bank() {
+    assert_eq!(ready().tone(), &DEFAULT_TONE);
+}
+
+#[test]
+fn an_available_tone_can_be_chosen_and_an_unavailable_one_is_refused() {
+    let mut model = with_harp();
+
+    assert!(model.select_tone(tone_key("harp")));
+    assert_eq!(model.tone().key, "harp");
+    assert!(model.view().tones[3].selected);
+
+    assert!(!model.select_tone(tone_key("xylophone")));
+    assert_eq!(model.tone().key, "harp");
+}
+
+#[test]
+fn a_session_can_start_on_a_recorded_tone_while_the_original_bank_is_missing() {
+    let mut model = UiModel::new("m".to_owned(), Availability::Missing("missing".to_owned()));
+    let mut states = vec![Availability::Missing("missing".to_owned()); TONES.len()];
+    states[3] = Availability::Ready;
+    model.set_tones(states);
+
+    assert!(!model.view().can_start);
+    assert!(model.select_tone(tone_key("harp")));
+    assert!(model.view().can_start);
+    assert!(matches!(model.start(), Some(Command::Start(_))));
+}
+
+#[test]
+fn the_tone_cannot_change_while_a_session_runs() {
+    let mut model = with_harp();
+    model.start();
+
+    assert!(!model.select_tone(tone_key("harp")));
+    assert_eq!(model.tone(), &DEFAULT_TONE);
 }

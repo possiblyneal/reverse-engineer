@@ -5,9 +5,12 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::PathBuf;
 
+use braintellect_linux::feedback::circle_balance::{
+    Anchor, Axis, CircleBalanceDesign, Graph, LmhBand, Meter, MeterInput, TimeWindow,
+};
 use braintellect_linux::feedback::{
-    BandPassDesign, BandPassSpec, Interference1, Interference2, PeakDesign, PeakSpec, Smart2Design,
-    SourceDesign,
+    BandPassDesign, BandPassSpec, CoherenceSpec, Interference1, Interference2, PeakDesign,
+    PeakSpec, Smart2Design, SourceDesign,
 };
 
 fn read(name: &str) -> String {
@@ -40,7 +43,18 @@ pub struct WireEvent {
 /// The baseline handshake and start sequence, in order (replies carry the
 /// scrubbed serial placeholder).
 pub fn wire() -> Vec<WireEvent> {
-    read("wire.txt")
+    wire_file("wire.txt")
+}
+
+/// A live handshake from the real B-2 (`handshake_live_a.txt`: the first
+/// connection after switch-on; `handshake_live_b.txt`: a reconnect), laid out like
+/// [`wire`] with the commands the clone writes and the serial scrubbed.
+pub fn live_handshake(tag: char) -> Vec<WireEvent> {
+    wire_file(&format!("handshake_live_{tag}.txt"))
+}
+
+fn wire_file(name: &str) -> Vec<WireEvent> {
+    read(name)
         .lines()
         .map(|l| {
             let (dir, hex) = l.split_once(' ').expect("DIR hex");
@@ -131,6 +145,34 @@ pub fn expected_microvolts() -> Vec<(u16, Vec<f64>)> {
             )
         })
         .collect()
+}
+
+/// The frames the original consumed from the replayed no-wearer stream
+/// (`consumed_stream.txt`, one 32-byte frame per line), as the transport's chunks.
+pub fn consumed_stream_chunks() -> Vec<Vec<u8>> {
+    read("consumed_stream.txt").lines().map(unhex).collect()
+}
+
+/// Parse volts rows (`consumed_volts.tsv`: per consumed sample, the original's logged volts of
+/// channels 0 to 3 as float64 bit patterns) into microvolts per channel, `[channel][sample]`.
+/// The `* 1e6` is the clone's own last step (`stream.rs`); the logged volts are the independent
+/// value.
+pub fn consumed_microvolts_from(text: &str) -> Vec<Vec<f64>> {
+    let mut channels = vec![Vec::new(); 4];
+    for line in text.lines() {
+        let cols: Vec<&str> = line.split('\t').collect();
+        assert_eq!(cols.len(), 4, "four channels per consumed sample");
+        for (c, col) in cols.iter().enumerate() {
+            let bits = u64::from_str_radix(col, 16).expect("float64 bits");
+            channels[c].push(f64::from_bits(bits) * 1e6);
+        }
+    }
+    channels
+}
+
+/// The original's logged consumed microvolts for the committed window, `[channel][sample]`.
+pub fn consumed_microvolts() -> Vec<Vec<f64>> {
+    consumed_microvolts_from(&read("consumed_volts.tsv"))
 }
 
 /// Baseline stored-record fields (`key -> value`).
@@ -324,6 +366,7 @@ pub fn smart2_design() -> Smart2Design {
             high_pass_hz: 0.0,
         },
         band_passes: vec![],
+        coherences: vec![],
         peaks: vec![],
         aggregator_epoch_s: 0,
     };
@@ -353,6 +396,19 @@ pub fn smart2_design() -> Smart2Design {
                         low_hz: num(3),
                         high_hz: num(4),
                         order: c[6].parse().expect("order"),
+                    },
+                });
+            }
+            "coherence" => {
+                assert_eq!((c[6], c[8]), ("Hamming", "Relaxed"));
+                let channel = |i: usize| c[i].parse::<usize>().expect("channel") - 1;
+                design.coherences.push(CoherenceSpec {
+                    channels: [channel(1), channel(2)],
+                    label: c[3].to_owned(),
+                    design: BandPassDesign {
+                        low_hz: num(4),
+                        high_hz: num(5),
+                        order: c[7].parse().expect("order"),
                     },
                 });
             }
@@ -557,6 +613,28 @@ pub fn run8_decisions() -> Vec<Decision> {
     time_kind_value_decisions("run8_decisions.tsv")
 }
 
+/// `(block, note)` of every trigger in a `time kind value` decisions log whose Trigger value
+/// is the block and whose Note follows its Trigger (`scripts/replay-extract.py`).
+pub fn trigger_notes(log: &str) -> Vec<(usize, u32)> {
+    let rows: Vec<Vec<&str>> = log.lines().map(|l| l.split('\t').collect()).collect();
+    rows.as_chunks::<2>()
+        .0
+        .iter()
+        .map(|pair| {
+            assert_eq!((pair[0][1], pair[1][1]), ("Trigger", "Note"), "{pair:?}");
+            (
+                pair[0][2].parse().expect("block"),
+                pair[1][2].parse().expect("note"),
+            )
+        })
+        .collect()
+}
+
+/// `(block, note)` of every trigger over run 8.
+pub fn run8_trigger_notes() -> Vec<(usize, u32)> {
+    trigger_notes(&read("run8_decisions.tsv"))
+}
+
 /// Blocks of logged E..H amplitudes the run 8 fixtures keep (`RUN8_AMP_BLOCKS` in
 /// `scripts/make-fixtures.py`).
 pub const RUN8_AMPLITUDE_BLOCKS: usize = 6600;
@@ -572,4 +650,101 @@ pub fn run8_amplitudes() -> Vec<[f32; 16]> {
             std::array::from_fn(|k| bits(words[k]))
         })
         .collect()
+}
+
+/// What the original's Head2D held for one channel after a block: the line-noise
+/// level (`+0x5c`) and the 12, 40 and 70 Hz band levels, in dB.
+#[derive(Clone, Debug)]
+pub struct SensorLevels {
+    pub line_noise: f32,
+    pub bands: [f32; 3],
+}
+
+/// One block of the sensors-off replay into the original (`sensor_*.tsv`): each
+/// channel's 512 float32 FFT input, the levels the original derived from it, and
+/// the evaluator's fault flag after the block. Blocks are numbered from the start
+/// of the capture; only some are kept.
+#[derive(Clone, Debug)]
+pub struct SensorBlock {
+    pub index: usize,
+    pub samples: [Vec<f32>; 4],
+    pub levels: [SensorLevels; 4],
+    pub faulted: bool,
+}
+
+pub fn sensor_blocks() -> Vec<SensorBlock> {
+    let inputs = read("sensor_inputs.tsv");
+    let levels = read("sensor_levels.tsv");
+    let rows = |text: &str| -> Vec<Vec<String>> {
+        text.lines()
+            .map(|l| l.split('\t').map(String::from).collect())
+            .collect()
+    };
+    let (inputs, levels) = (rows(&inputs), rows(&levels));
+    assert_eq!(inputs.len(), levels.len(), "one row per block and channel");
+    inputs
+        .chunks(4)
+        .zip(levels.chunks(4))
+        .map(|(inp, lev)| {
+            let num = |s: &str| s.parse::<f32>().expect("float");
+            SensorBlock {
+                index: inp[0][0].parse().expect("block"),
+                samples: std::array::from_fn(|c| inp[c][2].split(' ').map(num).collect()),
+                levels: std::array::from_fn(|c| SensorLevels {
+                    line_noise: num(&lev[c][2]),
+                    bands: [num(&lev[c][3]), num(&lev[c][4]), num(&lev[c][5])],
+                }),
+                faulted: lev[0][6] == "1",
+            }
+        })
+        .collect()
+}
+
+/// The Circle-Balance design's chart inputs, read from the design XML by `make-fixtures.py`
+/// (`circle_balance_design.tsv`, one row per input).
+pub fn circle_balance_design() -> CircleBalanceDesign {
+    let inputs = read("circle_balance_design.tsv")
+        .lines()
+        .map(|line| {
+            let c: Vec<&str> = line.split('\t').collect();
+            let num = |i: usize| -> u32 { c[i].parse().expect("design number") };
+            MeterInput {
+                meter: match c[0] {
+                    "Emotional State" => Meter::Emotional,
+                    "Activation State" => Meter::Activation,
+                    other => panic!("chart {other}"),
+                },
+                graph: match c[1] {
+                    "Before" => Graph::Before,
+                    "After" => Graph::After,
+                    other => panic!("graph {other}"),
+                },
+                axis: match c[2] {
+                    "top" => Axis::Top,
+                    "bottom" => Axis::Bottom,
+                    other => panic!("axis {other}"),
+                },
+                band: match c[3] {
+                    "High" => LmhBand::High,
+                    "Low" => LmhBand::Low,
+                    other => panic!("band {other}"),
+                },
+                window: TimeWindow {
+                    anchor: match c[4] {
+                        "Start" => Anchor::Start,
+                        "End" => Anchor::End,
+                        other => panic!("anchor {other}"),
+                    },
+                    begin_s: num(5),
+                    end_s: num(6),
+                },
+                channels: (
+                    c[7].parse().expect("channel A"),
+                    c[8].parse().expect("channel B"),
+                ),
+                expression: c[9].to_owned(),
+            }
+        })
+        .collect();
+    CircleBalanceDesign { inputs }
 }

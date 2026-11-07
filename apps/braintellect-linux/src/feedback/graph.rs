@@ -6,16 +6,21 @@
 //! parameters come from the design (`BT-SMART-2-v5.1.2`), passed in as
 //! [`Smart2Design`], not from per-band constants.
 //!
-//! The Evaluator (`coherenceChecker`) is not implemented; its control code is an
-//! input of each block.
+//! The Evaluator ([`Evaluator`]) turns the Aggregators' averages, of the band-pass
+//! amplitudes and of the Ch3/Ch4 `Coherence` elements, into the control code. A block runs
+//! under the Evaluator's code ([`Smart2Graph::process_evaluated_block`]) or, for a parity
+//! test, under a logged one ([`Smart2Graph::process_filtered_block`]).
 
 use std::fmt;
 
 use super::band_pass::{BandPass, BandPassDesign};
+use super::coherence::Coherence;
+use super::evaluator::{balances, BALANCES, COHERENCES};
 use super::peak_frequency::{Peak, PeakDesign, PeakFrequency};
 use super::source::SourceDesign;
 use super::{
-    BandAmplitudes, BlockClock, NoteSelection, PeakFrequencies, Smoother, TriggerPath, RATE_HZ,
+    BandAmplitudes, CounterClock, Evaluator, Mode, NoteSelection, PeakFrequencies, Smoother,
+    TriggerPath, RATE_HZ,
 };
 
 /// Channels the graph carries (the B-2's four, in resolved order).
@@ -36,6 +41,16 @@ pub struct BandPassSpec {
     pub design: BandPassDesign,
 }
 
+/// One `Coherence` element (`processingStyle` `Relaxed`), with the `AggregatorFilter` it
+/// feeds. Its band-pass filters both inputs.
+#[derive(Debug, Clone, PartialEq)]
+pub struct CoherenceSpec {
+    /// Zero-based channels of `InSignal1` and `InSignal2`, in resolved order.
+    pub channels: [usize; 2],
+    pub label: String,
+    pub design: BandPassDesign,
+}
+
 /// One `PeakFrequency` element.
 #[derive(Debug, Clone, PartialEq)]
 pub struct PeakSpec {
@@ -50,6 +65,7 @@ pub struct Smart2Design {
     /// The Source filter chain, which the caller runs ahead of the graph.
     pub source: SourceDesign,
     pub band_passes: Vec<BandPassSpec>,
+    pub coherences: Vec<CoherenceSpec>,
     pub peaks: Vec<PeakSpec>,
     /// `averageEpoch` of the `continuous` Aggregators, in seconds.
     pub aggregator_epoch_s: usize,
@@ -88,27 +104,48 @@ pub struct BlockDecision {
     pub note: i32,
     /// The note the sound element reads when the counter fired in this block.
     pub note_at_trigger: Option<i32>,
+    /// The Evaluator code the block ran under.
+    pub control: u32,
+    /// The Balance values after the block's last sample (`evaluator::BALANCES` series:
+    /// Ch1/Ch2 Band 10, Ch1/Ch2 Band 80, Ch3/Ch4 Band 10, Ch3/Ch4 Band 80).
+    pub balances: [f32; BALANCES],
+    /// The Coherence Aggregators' averages after the block's last sample
+    /// (`evaluator::COHERENCES` series: Ch3/Ch4 Band 10, Ch3/Ch4 Band 80).
+    pub coherences: [f32; COHERENCES],
+}
+
+/// A `Coherence` element and the Aggregator it feeds.
+struct CoherencePath {
+    channels: [usize; 2],
+    element: Coherence,
+    aggregator: Smoother,
 }
 
 pub struct Smart2Graph {
+    mode: Mode,
     design: Smart2Design,
     bands: Vec<BandPass>,
     aggregators: Vec<Smoother>,
+    /// The Evaluator's Coherence series in order.
+    coherences: [CoherencePath; COHERENCES],
     peaks: Vec<PeakFrequency>,
     trigger: TriggerPath,
     notes: NoteSelection,
+    evaluator: Evaluator,
 }
 
 impl Smart2Graph {
     /// `timer_start_ms` is the counter timer's reading at construction (see
-    /// [`TriggerPath::smart2`]).
+    /// [`TriggerPath::smart2`]). `mode` is the one explicit choice between the original's
+    /// behaviour and the fixed one ([`Mode`]); in [`Mode::Fixed`] every band-pass takes
+    /// the scalar-head sum order.
     ///
     /// # Errors
-    /// Fails if a band-pass or PeakFrequency names a channel outside 1..4, or the
-    /// design lacks a PeakFrequency for a channel or the Band 10/80 elements
-    /// `ExprTriggerAll` reads, its sample rate is not the 500 Hz the trigger and
-    /// note windows are sized for, or its Aggregator `averageEpoch` is zero.
-    pub fn new(design: Smart2Design, timer_start_ms: i64) -> Result<Self, DesignError> {
+    /// Fails if a band-pass, Coherence or PeakFrequency names a channel outside 1..4, or
+    /// the design lacks a PeakFrequency for a channel, the Band 10/80 elements
+    /// `ExprTriggerAll` reads or the Band 10/80 Coherence the Evaluator reads, its sample
+    /// rate is not the 500 Hz the trigger and note windows are sized for, or its Aggregator `averageEpoch` is zero.
+    pub fn new(design: Smart2Design, timer_start_ms: i64, mode: Mode) -> Result<Self, DesignError> {
         let err = |msg: String| Err(DesignError(msg));
         if design.rate_hz != RATE_HZ {
             return err(format!(
@@ -124,10 +161,27 @@ impl Smart2Graph {
             .iter()
             .map(|b| b.channel)
             .chain(design.peaks.iter().map(|p| p.channel))
+            .chain(design.coherences.iter().flat_map(|c| c.channels))
             .any(|c| c >= CHANNELS)
         {
             return err("channel outside the 4 resolved channels".into());
         }
+        let rate = design.rate_hz;
+        let window = rate * design.aggregator_epoch_s;
+        let coherences = [BAND_LOW, BAND_HIGH].map(|label| {
+            design
+                .coherences
+                .iter()
+                .find(|c| c.label == label)
+                .map(|c| CoherencePath {
+                    channels: c.channels,
+                    element: Coherence::new(&c.design, rate, BLOCK_LEN),
+                    aggregator: Smoother::new(window),
+                })
+        });
+        let [Some(low), Some(high)] = coherences else {
+            return err("no Band 10 and Band 80 Coherence".into());
+        };
         for channel in 0..CHANNELS {
             if !design.peaks.iter().any(|p| p.channel == channel) {
                 return err(format!("no PeakFrequency for channel {}", channel + 1));
@@ -138,13 +192,17 @@ impl Smart2Graph {
                 }
             }
         }
-        let rate = design.rate_hz;
-        let window = rate * design.aggregator_epoch_s;
         Ok(Self {
+            coherences: [low, high],
+            mode,
             bands: design
                 .band_passes
                 .iter()
-                .map(|b| BandPass::new(&b.design, rate, BLOCK_LEN))
+                .map(|b| {
+                    let mut band = BandPass::new(&b.design, rate, BLOCK_LEN);
+                    band.set_scalar_head(mode == Mode::Fixed);
+                    band
+                })
                 .collect(),
             aggregators: design
                 .band_passes
@@ -156,8 +214,9 @@ impl Smart2Graph {
                 .iter()
                 .map(|p| PeakFrequency::new(&p.design, rate))
                 .collect(),
-            trigger: TriggerPath::smart2(timer_start_ms),
-            notes: NoteSelection::smart2(),
+            trigger: TriggerPath::smart2(timer_start_ms, mode),
+            notes: NoteSelection::smart2(mode),
+            evaluator: Evaluator::new(window),
             design,
         })
     }
@@ -165,12 +224,17 @@ impl Smart2Graph {
     /// Which band-pass output blocks start on the IPP kernel's scalar head (see
     /// [`BandPass::set_scalar_head`]), in the design's `band_passes` order, from the
     /// next block on. The app's choice follows the output buffer's heap address, so a
-    /// replay has to supply it; the default is all `false`.
+    /// replay has to supply it; the default is all `false`. [`Mode::Fixed`] ignores the
+    /// call: its order is the fixed all-scalar-head policy (`audio-feedback.md`, "Live
+    /// sum order").
     ///
     /// # Panics
     /// Panics if `heads` is not one flag per band-pass.
     pub fn set_scalar_heads(&mut self, heads: &[bool]) {
         assert_eq!(heads.len(), self.bands.len(), "one flag per band-pass");
+        if self.mode == Mode::Fixed {
+            return;
+        }
         for (band, &head) in self.bands.iter_mut().zip(heads) {
             band.set_scalar_head(head);
         }
@@ -203,41 +267,88 @@ impl Smart2Graph {
     }
 
     /// One block of samples in volts that have already left the Source filters
-    /// (see [`Self::push_filtered`]), under the Evaluator code `control`, read at
-    /// `clock`. Within a block the trigger path runs before the note path.
+    /// (see [`Self::push_filtered`]), under the logged Evaluator code `control`, read at
+    /// `clock`. Within a block the trigger path runs before the note path. The
+    /// Evaluator still runs, so the block's Balance and Coherence values are reported.
     pub fn process_filtered_block(
         &mut self,
-        clock: impl Into<BlockClock>,
+        clock: impl CounterClock,
         control: u32,
         block: &[[f64; CHANNELS]],
     ) -> BlockDecision {
-        let samples = block.iter().map(|&s| self.push_filtered(s)).collect();
-        self.decide(clock.into(), control, samples)
+        let samples: Vec<SampleOutput> = block.iter().map(|&s| self.push_filtered(s)).collect();
+        let inputs = self.evaluate(block, &samples);
+        self.decide(clock, control, inputs, samples)
+    }
+
+    /// Like [`Self::process_filtered_block`], under the code the Evaluator decides from
+    /// the block's samples: a code decided at the end of an epoch applies to the block that
+    /// completes it.
+    pub fn process_evaluated_block(
+        &mut self,
+        clock: impl CounterClock,
+        block: &[[f64; CHANNELS]],
+    ) -> BlockDecision {
+        let samples: Vec<SampleOutput> = block.iter().map(|&s| self.push_filtered(s)).collect();
+        let inputs = self.evaluate(block, &samples);
+        let control = self.evaluator.code();
+        self.decide(clock, control, inputs, samples)
+    }
+
+    /// The Evaluator code now in effect.
+    #[must_use]
+    pub fn control(&self) -> u32 {
+        self.evaluator.code()
+    }
+
+    /// Run the Coherence elements and their Aggregators over `block`, then the Evaluator on
+    /// the latest Balance and Coherence values, which are returned.
+    fn evaluate(
+        &mut self,
+        block: &[[f64; CHANNELS]],
+        samples: &[SampleOutput],
+    ) -> ([f32; BALANCES], [f32; COHERENCES]) {
+        let last = samples.last().expect("a block holds samples");
+        let latest = balances(self.amplitudes(&last.aggregates));
+        let coherences = self.coherences.each_mut().map(|path| {
+            let [a, b] = path.channels;
+            let inputs: Vec<[f64; 2]> = block.iter().map(|s| [s[a], s[b]]).collect();
+            let value = path.element.process_block(&inputs);
+            // The element outputs its value for each of the block's samples.
+            let mut average = value;
+            for _ in block {
+                average = path.aggregator.push(value);
+            }
+            average
+        });
+        self.evaluator.end_block(samples.len(), latest, coherences);
+        (latest, coherences)
+    }
+
+    /// Bands A..H out of per-band values in the design's `band_passes` order.
+    fn amplitudes(&self, values: &[f32]) -> BandAmplitudes {
+        let at = |channel, label| values[band_index(&self.design, channel, label).unwrap()];
+        BandAmplitudes {
+            a: at(0, BAND_LOW),
+            b: at(1, BAND_LOW),
+            c: at(0, BAND_HIGH),
+            d: at(1, BAND_HIGH),
+            e: at(2, BAND_LOW),
+            f: at(3, BAND_LOW),
+            g: at(2, BAND_HIGH),
+            h: at(3, BAND_HIGH),
+        }
     }
 
     fn decide(
         &mut self,
-        clock: BlockClock,
+        clock: impl CounterClock,
         control: u32,
+        (balances, coherences): ([f32; BALANCES], [f32; COHERENCES]),
         samples: Vec<SampleOutput>,
     ) -> BlockDecision {
-        let amplitudes: Vec<BandAmplitudes> = samples
-            .iter()
-            .map(|s| {
-                let at =
-                    |channel, label| s.bands[band_index(&self.design, channel, label).unwrap()];
-                BandAmplitudes {
-                    a: at(0, BAND_LOW),
-                    b: at(1, BAND_LOW),
-                    c: at(0, BAND_HIGH),
-                    d: at(1, BAND_HIGH),
-                    e: at(2, BAND_LOW),
-                    f: at(3, BAND_LOW),
-                    g: at(2, BAND_HIGH),
-                    h: at(3, BAND_HIGH),
-                }
-            })
-            .collect();
+        let amplitudes: Vec<BandAmplitudes> =
+            samples.iter().map(|s| self.amplitudes(&s.bands)).collect();
         let out = self.trigger.process_amplitudes(clock, control, &amplitudes);
         let note_at_trigger = out.trigger.then(|| self.notes.latest());
         let peaks: Vec<PeakFrequencies> = samples
@@ -251,6 +362,9 @@ impl Smart2Graph {
             trigger: out.trigger,
             note,
             note_at_trigger,
+            control,
+            balances,
+            coherences,
         }
     }
 }
@@ -265,20 +379,22 @@ fn band_index(design: &Smart2Design, channel: usize, label: &str) -> Option<usiz
 impl Smart2Design {
     /// The `BT-SMART-2-v5.1.2` design with the clinician's Source settings:
     /// eight 128-tap Hamming band-passes (Band 10 at 1-3 Hz, Band 80 at 23-36 Hz,
-    /// per channel), a Hann `PeakFrequency` per channel (6-14 Hz on channels 1
+    /// per channel), a `Relaxed` Ch3/Ch4 `Coherence` on each of the two bands with the
+    /// same filters, a Hann `PeakFrequency` per channel (6-14 Hz on channels 1
     /// and 2, 7-15 Hz on 3 and 4) and the `continuous` Aggregator with a 60 s
     /// epoch, at 500 Hz. `tests/parity_feedback.rs` checks it against the design
     /// fixture decoded from the real app's records.
     #[must_use]
     pub fn smart2(source: SourceDesign) -> Self {
+        let design = |low_hz, high_hz| BandPassDesign {
+            low_hz,
+            high_hz,
+            order: 128,
+        };
         let band = |label: &str, low_hz, high_hz, channel| BandPassSpec {
             channel,
             label: label.to_owned(),
-            design: BandPassDesign {
-                low_hz,
-                high_hz,
-                order: 128,
-            },
+            design: design(low_hz, high_hz),
         };
         let peak = |channel, low_hz, high_hz| PeakSpec {
             channel,
@@ -295,6 +411,14 @@ impl Smart2Design {
                 .into_iter()
                 .flat_map(|(label, low, high)| {
                     (0..CHANNELS).map(move |channel| band(label, low, high, channel))
+                })
+                .collect(),
+            coherences: [(BAND_LOW, 1.0, 3.0), (BAND_HIGH, 23.0, 36.0)]
+                .into_iter()
+                .map(|(label, low, high)| CoherenceSpec {
+                    channels: [2, 3],
+                    label: label.to_owned(),
+                    design: design(low, high),
                 })
                 .collect(),
             peaks: vec![

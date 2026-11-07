@@ -10,6 +10,8 @@ pub mod bank;
 pub mod import;
 pub mod player;
 pub mod sink;
+pub mod soundfont;
+pub mod tone;
 
 use std::fmt;
 use std::path::{Path, PathBuf};
@@ -31,7 +33,8 @@ impl fmt::Display for InstrumentError {
         match self {
             InstrumentError::Missing(path) => write!(
                 f,
-                "the instrument bank {} is missing; run `braintellect-linux import <original lib dir>`",
+                "the instrument bank {} is missing; run `braintellect-linux import <original lib dir>` \
+                 (original banks) or `braintellect-linux import-soundfont <file.sf2>` (recorded tones)",
                 path.display()
             ),
             InstrumentError::Bank(path, e) => write!(f, "{}: {e}", path.display()),

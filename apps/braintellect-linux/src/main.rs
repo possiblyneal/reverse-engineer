@@ -1,4 +1,4 @@
-//! Four commands.
+//! Five commands.
 //!
 //! `braintellect-linux ui --mac <MAC>` opens the session window: connection and
 //! signal status, session properties, start and stop, live feedback, and the
@@ -6,6 +6,9 @@
 //!
 //! `braintellect-linux import <lib-dir>` copies the original's instrument banks
 //! (`dll<id>.BT.dll`) from its `lib` directory into the clone's data directory.
+//!
+//! `braintellect-linux import-soundfont <file.sf2>` renders the harp, acoustic guitar
+//! and xylophone tones from a General MIDI SoundFont into the same directory.
 //!
 //! `braintellect-linux emulate <capture> <socket>` plays a B-2 for the original app:
 //! it connects to the Unix socket a QEMU serial port is backed by and serves a raw
@@ -24,7 +27,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 use braintellect_linux::acquisition::rfcomm::{RfcommStream, DEFAULT_CHANNEL};
 use braintellect_linux::acquisition::session::Session;
-use braintellect_linux::audio::import;
+use braintellect_linux::audio::{import, tone};
 use braintellect_linux::emulate::{self, Capture};
 use braintellect_linux::live;
 use braintellect_linux::storage;
@@ -56,7 +59,7 @@ fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-const USAGE: &str = "usage: braintellect-linux ui --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>\n       braintellect-linux emulate <capture file> <serial socket>";
+const USAGE: &str = "usage: braintellect-linux ui --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>\n       braintellect-linux import-soundfont <file.sf2>\n       braintellect-linux emulate <capture file> <serial socket>";
 
 /// How long the emulator waits for the app's bytes before it checks the stream
 /// clock; a frame is due every 4 ms.
@@ -110,6 +113,14 @@ fn import_banks(lib_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
+fn import_soundfont(file: &str) -> Result<(), Box<dyn std::error::Error>> {
+    let dest = import::default_dir().ok_or(storage::NO_DATA_DIR)?;
+    for path in tone::import_soundfont(&std::fs::read(file)?, &dest)? {
+        println!("{}", path.display());
+    }
+    Ok(())
+}
+
 fn main() -> ExitCode {
     let args: Vec<String> = std::env::args().skip(1).collect();
     let result = match args
@@ -121,6 +132,7 @@ fn main() -> ExitCode {
         ["ui", "--mac", mac] => ui::app::run((*mac).to_owned()).map_err(Into::into),
         ["--mac", mac] => run(mac),
         ["import", lib_dir] => import_banks(lib_dir),
+        ["import-soundfont", file] => import_soundfont(file),
         ["emulate", capture, socket] => emulate_capture(capture, socket),
         _ => {
             eprintln!("{USAGE}");

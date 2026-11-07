@@ -5,15 +5,15 @@
 
 use std::collections::VecDeque;
 
-use super::Smoother;
+use super::{Mode, Smoother};
 
 /// Trailing samples the min/max tracker spans (30 s at 500 Hz; `0x65a940`).
 const TRACKER_WINDOW: usize = 15_000;
 /// Samples the note smoother averages (the pipe's smoother window).
 const SMOOTHER_WINDOW: usize = 62;
 /// The sound element's MIDI range at run time (`0x2d4`/`0x2d8` of `SoundElement`).
-const NOTE_LOW: i32 = 40;
-const NOTE_HIGH: i32 = 76;
+pub const NOTE_LOW: i32 = 40;
+pub const NOTE_HIGH: i32 = 76;
 /// `SoundElement`'s default note until one arrives (MIDI 60).
 const DEFAULT_NOTE: i32 = 60;
 
@@ -81,14 +81,17 @@ fn map_note(x: f32, min: f32, max: f32) -> i32 {
 
 /// The SMART-2 note path: one MIDI note per block of PeakFrequency values.
 pub struct NoteSelection {
+    mode: Mode,
     tracker: Tracker,
     smoother: Smoother,
     latest: i32,
 }
 
 impl NoteSelection {
-    pub fn smart2() -> Self {
+    /// The SMART-2 note path in `mode` ([`Mode`]; `select` names what fixed mode corrects).
+    pub fn smart2(mode: Mode) -> Self {
         Self {
+            mode,
             tracker: Tracker::new(TRACKER_WINDOW),
             smoother: Smoother::new(SMOOTHER_WINDOW),
             latest: DEFAULT_NOTE,
@@ -109,7 +112,7 @@ impl NoteSelection {
         }
         let mut mean = 0.0;
         for peaks in block {
-            let x = select(control, peaks.0);
+            let x = select(self.mode, control, peaks.0);
             self.tracker.push(x);
             mean = self.smoother.push(x);
         }
@@ -120,15 +123,17 @@ impl NoteSelection {
 }
 
 /// `ExprNoteSelection`: a single channel or the mean of a pair, by Evaluator code.
-/// The design lists 101 where the Evaluator emits 112/113 for the Ch3/Ch4 pair,
-/// so those fall to the default, as in the app.
-fn select(control: u32, [ch1, ch2, ch3, ch4]: [f32; 4]) -> f32 {
-    match control {
-        11 | 81 => (ch1 + ch2) / 2.0,
-        12 | 82 => ch1,
-        13 | 83 => ch2,
-        102 | 182 => ch3,
-        103 | 183 => ch4,
+/// The design lists 101/102/103 where the Evaluator emits 111/112/113 for the Ch3/Ch4
+/// pair, so in [`Mode::Original`] 112/113 fall to the default, as in the app;
+/// [`Mode::Fixed`] reads them as channel 3 and 4, by the design's own Band 10/80 pairing
+/// (`audio-feedback.md`, "Channels 3n4 note codes"). 101 reaches the default either way.
+fn select(mode: Mode, control: u32, [ch1, ch2, ch3, ch4]: [f32; 4]) -> f32 {
+    match (mode, control) {
+        (_, 11 | 81) => (ch1 + ch2) / 2.0,
+        (_, 12 | 82) => ch1,
+        (_, 13 | 83) => ch2,
+        (_, 102 | 182) | (Mode::Fixed, 112) => ch3,
+        (_, 103 | 183) | (Mode::Fixed, 113) => ch4,
         _ => (ch3 + ch4) / 2.0,
     }
 }

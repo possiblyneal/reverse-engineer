@@ -7,7 +7,8 @@
 mod harness;
 
 use braintellect_linux::feedback::{
-    trigger_all, BandAmplitudes, NoteSelection, PeakFrequencies, Smart2Design, TriggerPath,
+    trigger_all, BandAmplitudes, Mode, NoteSelection, PeakFrequencies, Smart2Design, Threshold,
+    TriggerPath, RATE_HZ,
 };
 use harness::assertions;
 use harness::fixtures::{self, Decision, NoteBlock, TriggerBlock};
@@ -29,7 +30,7 @@ fn trigger(time_ms: u64) -> Decision {
 }
 
 fn replay() -> (Vec<bool>, Vec<Decision>) {
-    let mut path = TriggerPath::smart2(-TIMER_BEFORE_FIRST_BLOCK_MS);
+    let mut path = TriggerPath::smart2(-TIMER_BEFORE_FIRST_BLOCK_MS, Mode::Original);
     let (mut passes, mut triggers) = (Vec::new(), Vec::new());
     for block in fixtures::feedback_blocks() {
         let out = path.process_block(block.time_ms as i64, &block.values);
@@ -89,7 +90,7 @@ fn peaks(block: &NoteBlock) -> Vec<PeakFrequencies> {
 /// Replay the amplitude blocks through the trigger path: every pass flag, and
 /// whether the counter fired in each block.
 fn replay_amplitudes() -> (Vec<bool>, Vec<bool>) {
-    let mut path = TriggerPath::smart2(-TIMER_BEFORE_FIRST_BLOCK_MS);
+    let mut path = TriggerPath::smart2(-TIMER_BEFORE_FIRST_BLOCK_MS, Mode::Original);
     let (mut passes, mut fired) = (Vec::new(), Vec::new());
     for block in fixtures::smart2_trigger_blocks() {
         let out = path.process_amplitudes(block.time_ms as i64, block.control, &amplitudes(&block));
@@ -129,7 +130,7 @@ fn trigger_all_amplitudes_reproduce_the_baseline_triggers() {
 #[test]
 fn note_selection_reproduces_the_baseline_note_every_block() {
     let blocks = fixtures::smart2_note_blocks();
-    let mut selection = NoteSelection::smart2();
+    let mut selection = NoteSelection::smart2(Mode::Original);
     let actual: Vec<i32> = blocks
         .iter()
         .map(|b| selection.process_block(b.control, &peaks(b)))
@@ -149,7 +150,7 @@ fn notes_at_the_baseline_fires_reproduce_the_baseline_note_decisions() {
         .iter()
         .map(|b| b.time_ms)
         .collect();
-    let mut selection = NoteSelection::smart2();
+    let mut selection = NoteSelection::smart2(Mode::Original);
     let mut actual = Vec::new();
     for (index, note) in fixtures::smart2_note_blocks()
         .iter()
@@ -215,4 +216,82 @@ fn trigger_all_decodes_every_evaluator_code_of_the_design() {
 fn the_built_in_design_is_the_one_decoded_from_the_real_apps_records() {
     let decoded = fixtures::smart2_design();
     assert_eq!(Smart2Design::smart2(decoded.source.clone()), decoded);
+}
+
+/// Feed `values` through the SMART-2 threshold of `mode`, one block per value, and
+/// return the pass flag of each.
+fn threshold_passes(mode: Mode, values: &[f64]) -> Vec<bool> {
+    let mut threshold = Threshold::smart2(RATE_HZ, mode);
+    values
+        .iter()
+        .map(|&v| {
+            let passed = threshold.push(v);
+            threshold.end_block();
+            passed
+        })
+        .collect()
+}
+
+/// A full 5 s ring of one repeated value, then one larger value pushes a copy of the
+/// repeat out of the ring, then a value between the two is tested. The original erases
+/// every copy (`audio-feedback.md`, "Threshold window erases by value"), so its window
+/// holds only the larger value and the threshold jumps to it; the fixed window keeps the
+/// other copies and the threshold stays at the repeated value.
+fn repeat_then_larger_then_between() -> Vec<f64> {
+    let mut values = vec![5.0; RATE_HZ * 5];
+    values.extend([20.0, 10.0]);
+    values
+}
+
+#[test]
+fn original_mode_shrinks_the_threshold_window_when_values_repeat() {
+    let passes = threshold_passes(Mode::Original, &repeat_then_larger_then_between());
+    assert!(
+        passes.last().copied().expect("flags"),
+        "10 is below the threshold 20 of the one-entry window"
+    );
+}
+
+#[test]
+fn fixed_mode_keeps_the_threshold_window_at_its_ring_size_when_values_repeat() {
+    let passes = threshold_passes(Mode::Fixed, &repeat_then_larger_then_between());
+    assert!(
+        !passes.last().copied().expect("flags"),
+        "10 is not below the threshold 5 of the full window"
+    );
+}
+
+/// The notes of three long blocks: code 182 pins the tracker minimum at channel 3's 0 Hz,
+/// code 183 its maximum at channel 4's 40 Hz, then `code` selects from channel 3 = 10 Hz
+/// and channel 4 = 30 Hz. Each block outlasts the 62-sample smoother, so the last note
+/// reads the selected value alone: 10 Hz is note 49, 30 Hz note 67, their mean note 58.
+fn notes_under(mode: Mode, code: u32) -> Vec<i32> {
+    let block = |ch3: f32, ch4: f32| vec![PeakFrequencies([1.0, 2.0, ch3, ch4]); 100];
+    let mut selection = NoteSelection::smart2(mode);
+    [
+        (182, block(0.0, 40.0)),
+        (183, block(0.0, 40.0)),
+        (code, block(10.0, 30.0)),
+    ]
+    .iter()
+    .map(|(control, peaks)| selection.process_block(*control, peaks))
+    .collect()
+}
+
+/// The Evaluator's Ch3/Ch4 Band 10 codes are 112/113, but the design's `ExprNoteSelection`
+/// lists 102/103, so the original averages channels 3 and 4 for them
+/// (`audio-feedback.md`, "Channels 3n4 note codes").
+#[test]
+fn original_mode_averages_channels_3_and_4_for_the_band_10_pair_codes() {
+    for code in [112, 113] {
+        assertions::notes(&[40, 76, 58], &notes_under(Mode::Original, code))
+            .unwrap_or_else(|e| panic!("code {code}: {e:?}"));
+    }
+}
+
+/// Fixed mode reads 112 as channel 3 and 113 as channel 4, as 182/183 are read for Band 80.
+#[test]
+fn fixed_mode_selects_channel_3_for_112_and_channel_4_for_113() {
+    assertions::notes(&[40, 76, 49], &notes_under(Mode::Fixed, 112)).expect("112 is channel 3");
+    assertions::notes(&[40, 76, 67], &notes_under(Mode::Fixed, 113)).expect("113 is channel 4");
 }

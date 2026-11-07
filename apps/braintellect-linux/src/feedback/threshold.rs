@@ -5,9 +5,12 @@
 //! open: the threshold is the sorted window's element at `trunc(n * lower)`,
 //! zero-based, clamped to `n - 1`. The window is a ring plus a sorted multiset
 //! whose erase-by-value drops every equal element (`0x62e850`, `0x62e520`), so
-//! `n` is the multiset's size, which can fall below the ring's.
+//! `n` is the multiset's size, which can fall below the ring's. [`Mode::Fixed`]
+//! erases one entry instead, so the set stays at the ring's size.
 
 use std::collections::VecDeque;
+
+use super::Mode;
 
 /// Lower quantile as the app stores it (`0.65` as a single-precision float).
 const LOWER: f32 = 0.65;
@@ -15,6 +18,7 @@ const LOWER: f32 = 0.65;
 const THRESHOLD_EPOCH_MS: usize = 5_000;
 
 pub struct Threshold {
+    mode: Mode,
     capacity: usize,
     ring: VecDeque<f64>,
     sorted: Vec<f64>,
@@ -23,8 +27,9 @@ pub struct Threshold {
 
 impl Threshold {
     /// The SMART-2 threshold for a stream at `rate_hz`.
-    pub fn smart2(rate_hz: usize) -> Self {
+    pub fn smart2(rate_hz: usize, mode: Mode) -> Self {
         Self {
+            mode,
             capacity: rate_hz * THRESHOLD_EPOCH_MS / 1000,
             ring: VecDeque::new(),
             sorted: Vec::new(),
@@ -44,8 +49,12 @@ impl Threshold {
         if let (Some(old), true) = (old, self.sorted.len() > self.capacity) {
             // `multiset::erase(key)` (`0x62e520`): every element equal to the
             // value leaving the ring goes, so the set can fall short of the ring.
+            // Fixed mode removes one of them.
             let from = self.sorted.partition_point(|x| x.total_cmp(&old).is_lt());
-            let to = self.sorted.partition_point(|x| x.total_cmp(&old).is_le());
+            let to = match self.mode {
+                Mode::Original => self.sorted.partition_point(|x| x.total_cmp(&old).is_le()),
+                Mode::Fixed => from + 1,
+            };
             self.sorted.drain(from..to);
         }
         passed
@@ -70,6 +79,7 @@ mod tests {
     #[test]
     fn a_repeated_value_leaving_the_ring_erases_every_copy_from_the_window() {
         let mut t = Threshold {
+            mode: Mode::Original,
             capacity: 3,
             ring: VecDeque::new(),
             sorted: Vec::new(),

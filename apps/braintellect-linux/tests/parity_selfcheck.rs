@@ -5,6 +5,7 @@
 mod harness;
 
 use braintellect_linux::audio::player::AudioEvent;
+use braintellect_linux::storage::{Channel, Point, Series};
 
 use harness::fixtures::{self, Dir};
 use harness::tolerance::{RECORD_EPSILON, SAMPLE_EPSILON_UV, TIMING_WINDOW_MS};
@@ -23,6 +24,35 @@ fn microvolts_green_on_baseline_red_on_wrong() {
     assert!(assertions::microvolts(&baseline, &off_by_epsilon).is_err());
 
     assert!(assertions::microvolts(&baseline, &baseline[1..]).is_err());
+}
+
+fn four_channels() -> Vec<Vec<f64>> {
+    (0..4)
+        .map(|c| (0..6).map(|i| f64::from(c * 100 + i) * 0.37).collect())
+        .collect()
+}
+
+#[test]
+fn channel_microvolts_green_on_equal_red_on_one_bit_or_length() {
+    let baseline = four_channels();
+    assertions::channel_microvolts(&baseline, &baseline).expect("baseline vs itself");
+
+    // One ulp on one sample of channel 2 is a mismatch, reported with its position.
+    let mut one_ulp = baseline.clone();
+    one_ulp[2][4] = f64::from_bits(one_ulp[2][4].to_bits() + 1);
+    let err = assertions::channel_microvolts(&baseline, &one_ulp).expect_err("1 ulp is red");
+    assert!(err.0.contains("channel 2 sample 4"), "{}", err.0);
+
+    // The first differing sample in channel order is the one reported.
+    let mut two = one_ulp.clone();
+    two[1][5] += 1.0;
+    let err = assertions::channel_microvolts(&baseline, &two).expect_err("red");
+    assert!(err.0.contains("channel 1 sample 5"), "{}", err.0);
+
+    let mut short = baseline.clone();
+    short[3].pop();
+    assert!(assertions::channel_microvolts(&baseline, &short).is_err());
+    assert!(assertions::channel_microvolts(&baseline, &baseline[..3]).is_err());
 }
 
 #[test]
@@ -81,6 +111,54 @@ fn stored_record_green_on_baseline_red_on_wrong() {
     assert!(assertions::stored_record(&baseline, &missing).is_err());
 }
 
+fn stored_channels() -> Vec<Channel> {
+    (1..=2)
+        .map(|c| Channel {
+            name: format!("Channel{c}"),
+            series: ["Band 10", "Band 80"]
+                .map(|name| Series {
+                    name: name.into(),
+                    points: (1..=3)
+                        .map(|k| Point {
+                            x: f64::from(5000 * k),
+                            y: f64::from(c * 10 + k) * 0.37,
+                        })
+                        .collect(),
+                })
+                .into(),
+        })
+        .collect()
+}
+
+#[test]
+fn stored_series_green_inside_the_record_epsilon_red_outside() {
+    let baseline = stored_channels();
+    assertions::stored_series(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut near = baseline.clone();
+    near[1].series[0].points[2].y += RECORD_EPSILON / 2.0;
+    assertions::stored_series(&baseline, &near).expect("inside the record epsilon");
+
+    let mut far = baseline.clone();
+    far[1].series[0].points[2].y += RECORD_EPSILON * 2.0;
+    let err = assertions::stored_series(&baseline, &far).expect_err("outside is red");
+    assert!(err.0.contains("Channel2 Band 10 point 2"), "{}", err.0);
+
+    let mut moved = baseline.clone();
+    moved[0].series[1].points[0].x += 2.0;
+    assert!(assertions::stored_series(&baseline, &moved).is_err());
+
+    let mut short = baseline.clone();
+    short[0].series[1].points.pop();
+    assert!(assertions::stored_series(&baseline, &short).is_err());
+
+    let mut renamed = baseline.clone();
+    renamed[0].series[0].name = "Band 20".into();
+    assert!(assertions::stored_series(&baseline, &renamed).is_err());
+
+    assert!(assertions::stored_series(&baseline, &baseline[..1]).is_err());
+}
+
 #[test]
 fn pass_flags_green_on_baseline_red_on_wrong() {
     let baseline: Vec<bool> = fixtures::feedback_blocks()
@@ -94,6 +172,43 @@ fn pass_flags_green_on_baseline_red_on_wrong() {
     flipped[7] = !flipped[7];
     assert!(assertions::pass_flags(&baseline, &flipped).is_err());
     assert!(assertions::pass_flags(&baseline, &baseline[1..]).is_err());
+}
+
+#[test]
+fn trigger_notes_green_on_baseline_red_on_a_shifted_block_or_wrong_note() {
+    let baseline = fixtures::run8_trigger_notes();
+    assert!(baseline.len() > 10, "run 8 triggers are non-trivial");
+    assertions::trigger_notes(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut early = baseline.clone();
+    early[3].0 -= 1;
+    assert!(assertions::trigger_notes(&baseline, &early).is_err());
+    let mut wrong = baseline.clone();
+    wrong[3].1 += 1;
+    assert!(assertions::trigger_notes(&baseline, &wrong).is_err());
+    assert!(assertions::trigger_notes(&baseline, &baseline[1..]).is_err());
+}
+
+#[test]
+fn control_codes_green_on_baseline_red_on_wrong() {
+    let baseline: Vec<u32> = [111, 111, 12, 12, 82].repeat(3);
+    assertions::control_codes(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut wrong = baseline.clone();
+    wrong[7] = 13;
+    assert!(assertions::control_codes(&baseline, &wrong).is_err());
+    assert!(assertions::control_codes(&baseline, &baseline[1..]).is_err());
+}
+
+#[test]
+fn float32_bits_green_on_baseline_red_on_one_ulp() {
+    let baseline: Vec<f32> = [1.0, 0.973_25, 0.812_5, -0.25].repeat(3);
+    assertions::float32_bits("value", &baseline, &baseline).expect("baseline vs itself");
+
+    let mut wrong = baseline.clone();
+    wrong[6] = f32::from_bits(wrong[6].to_bits() + 1);
+    assert!(assertions::float32_bits("value", &baseline, &wrong).is_err());
+    assert!(assertions::float32_bits("value", &baseline, &baseline[1..]).is_err());
 }
 
 #[test]
@@ -165,6 +280,37 @@ fn audio_events_green_on_baseline_within_window_red_outside() {
 }
 
 #[test]
+fn circle_balance_design_green_on_baseline_red_on_wrong() {
+    use braintellect_linux::feedback::circle_balance::{Anchor, LmhBand};
+
+    let baseline = fixtures::circle_balance_design();
+    assert_eq!(baseline.inputs.len(), 8, "eight chart inputs");
+    assertions::circle_balance_design(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut window = baseline.clone();
+    window.inputs[6].window.anchor = Anchor::Start;
+    let err = assertions::circle_balance_design(&baseline, &window).expect_err("anchor is red");
+    assert!(err.0.contains("chart input 6"), "{}", err.0);
+
+    let mut band = baseline.clone();
+    band.inputs[0].band = LmhBand::High;
+    band.inputs[1].band = LmhBand::Low;
+    assert!(assertions::circle_balance_design(&baseline, &band).is_err());
+
+    let mut channels = baseline.clone();
+    channels.inputs[7].channels = (2, 1);
+    assert!(assertions::circle_balance_design(&baseline, &channels).is_err());
+
+    let mut gain = baseline.clone();
+    gain.inputs[2].expression = gain.inputs[2].expression.replace("1.08", "1.0");
+    assert!(assertions::circle_balance_design(&baseline, &gain).is_err());
+
+    let mut short = baseline.clone();
+    short.inputs.pop();
+    assert!(assertions::circle_balance_design(&baseline, &short).is_err());
+}
+
+#[test]
 fn smart2_fixtures_are_well_formed() {
     let triggers = fixtures::smart2_trigger_blocks();
     let notes = fixtures::smart2_note_blocks();
@@ -174,4 +320,75 @@ fn smart2_fixtures_are_well_formed() {
     let decisions = fixtures::smart2_decisions();
     assert!(decisions.iter().any(|d| d.kind == "Trigger"));
     assert!(decisions.iter().any(|d| d.kind == "Note"));
+}
+
+#[test]
+fn sensor_status_green_on_baseline_red_on_wrong() {
+    use braintellect_linux::sensor::SensorStatus::{AdjustFit, NotAvailable, Ready};
+    use harness::sensor;
+
+    let baseline = [Ready, Ready, AdjustFit, Ready, NotAvailable];
+    sensor::expect(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut wrong_state = baseline;
+    wrong_state[2] = Ready;
+    assert!(sensor::expect(&baseline, &wrong_state).is_err());
+    assert!(sensor::expect(&baseline, &baseline[1..]).is_err());
+
+    // The debounce: the fault is Adjust Fit only once stateChangeDelay has passed.
+    let faulty = sensor::faulty_outlier();
+    let early = sensor::run(true, &[(0, faulty.clone()), (999, faulty.clone())]);
+    assert!(sensor::expect(&early, &[Ready, AdjustFit]).is_err());
+    let late = sensor::run(true, &[(0, faulty.clone()), (1000, faulty)]);
+    sensor::expect(&late, &[Ready, AdjustFit]).expect("delay reached");
+}
+
+#[test]
+fn sensor_feed_red_on_a_wrong_stream_result() {
+    use braintellect_linux::sensor::SensorStatus::{AdjustFit, Ready};
+    use harness::sensor;
+
+    let healthy = sensor::run_feed(&sensor::stream(4, sensor::tones_healthy));
+    sensor::expect(&healthy, &[Ready; 4]).expect("healthy feed");
+    let outlier = sensor::run_feed(&sensor::stream(4, sensor::tones_outlier));
+    assert!(sensor::expect(&outlier, &[Ready; 4]).is_err());
+    assert!(sensor::expect(&healthy, &[Ready, Ready, Ready, AdjustFit]).is_err());
+    let short = sensor::run_feed(&sensor::stream(3, sensor::tones_healthy));
+    assert!(sensor::expect(&short, &[Ready; 4]).is_err());
+}
+
+#[test]
+fn sensor_replay_red_on_a_wrong_fault() {
+    use harness::{fixtures, sensor};
+
+    let blocks = fixtures::sensor_blocks();
+    let actual = sensor::replay_blocks(&blocks);
+    sensor::expect_faults(&actual, &blocks).expect("the clone against the original");
+
+    let mut wrong_fault = actual.clone();
+    wrong_fault[5].1 = !wrong_fault[5].1;
+    assert!(sensor::expect_faults(&wrong_fault, &blocks).is_err());
+    assert!(sensor::expect_faults(&actual[1..], &blocks).is_err());
+}
+
+#[test]
+fn fft_spectra_green_on_baseline_red_on_a_bin_or_a_length() {
+    let baseline: Vec<Vec<f64>> = (0..4)
+        .map(|c| (0..256).map(|k| f64::from(c * 256 + k) * 0.37).collect())
+        .collect();
+    assertions::fft_spectra(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut near = baseline.clone();
+    near[1][7] += RECORD_EPSILON / 2.0;
+    assertions::fft_spectra(&baseline, &near).expect("inside the record epsilon");
+
+    let mut far = baseline.clone();
+    far[2][200] += RECORD_EPSILON * 2.0;
+    let err = assertions::fft_spectra(&baseline, &far).expect_err("outside is red");
+    assert!(err.0.contains("channel 2 bin 200"), "{}", err.0);
+
+    let mut short = baseline.clone();
+    short[0].pop();
+    assert!(assertions::fft_spectra(&baseline, &short).is_err());
+    assert!(assertions::fft_spectra(&baseline, &baseline[..3]).is_err());
 }

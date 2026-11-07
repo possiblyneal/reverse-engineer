@@ -8,7 +8,7 @@ use std::collections::VecDeque;
 use super::fir::{bandpass_taps, Fir};
 
 /// Taps of the final mean (`0x6507e0`), each `2.0 / 16` (constant `0x18953a8`).
-const MEAN_TAPS: usize = 16;
+pub(super) const MEAN_TAPS: usize = 16;
 const MEAN_GAIN: f32 = 2.0 / MEAN_TAPS as f32;
 /// Outputs of a 4-sample block that `ippsFIR_32f` sums one at a time, in order, when
 /// the block's destination is 8 bytes past a 16-byte boundary (the head before the
@@ -25,13 +25,47 @@ pub struct BandPassDesign {
     pub order: usize,
 }
 
-pub struct BandPass {
-    fir: Fir,
-    /// Sliding-maximum window `W`.
+/// The sliding maximum of `OutAmplitude` over its window `W`.
+pub(super) struct SlidingMax {
     window: usize,
     seen: usize,
-    /// Monotonic queue of `(index, |y|)`, largest first.
+    /// Monotonic queue of `(index, value)`, largest first.
     maxima: VecDeque<(usize, f64)>,
+}
+
+impl SlidingMax {
+    /// The window `OutAmplitude` uses for a band whose upper edge is `high_hz`: half a
+    /// period of that edge, at least one stream block of `block_len` samples.
+    pub(super) fn for_band(high_hz: f64, rate_hz: usize, block_len: usize) -> Self {
+        Self {
+            window: ((rate_hz as f64 / (2.0 * high_hz)) as usize).max(block_len),
+            seen: 0,
+            maxima: VecDeque::new(),
+        }
+    }
+
+    /// Feed one value and return the largest of the last `window`.
+    pub(super) fn push(&mut self, y: f64) -> f64 {
+        let i = self.seen;
+        self.seen += 1;
+        while self.maxima.back().is_some_and(|&(_, v)| v <= y) {
+            self.maxima.pop_back();
+        }
+        self.maxima.push_back((i, y));
+        while self
+            .maxima
+            .front()
+            .is_some_and(|&(j, _)| j + self.window <= i)
+        {
+            self.maxima.pop_front();
+        }
+        self.maxima.front().expect("just pushed").1
+    }
+}
+
+pub struct BandPass {
+    fir: Fir,
+    maxima: SlidingMax,
     /// The last `MEAN_TAPS` sliding maxima, oldest first.
     means: VecDeque<f32>,
     /// Position of the next sample within its stream block.
@@ -44,16 +78,13 @@ impl BandPass {
     /// `block_len` is the samples per stream block (`W` is at least that long).
     pub fn new(design: &BandPassDesign, rate_hz: usize, block_len: usize) -> Self {
         let rate = rate_hz as f64;
-        let window = ((rate / (2.0 * design.high_hz)) as usize).max(block_len);
         Self {
             fir: Fir::new(bandpass_taps(
                 design.low_hz / rate,
                 design.high_hz / rate,
                 design.order,
             )),
-            window,
-            seen: 0,
-            maxima: VecDeque::new(),
+            maxima: SlidingMax::for_band(design.high_hz, rate_hz, block_len),
             means: VecDeque::with_capacity(MEAN_TAPS + 1),
             block_pos: 0,
             block_len,
@@ -81,23 +112,8 @@ impl BandPass {
     /// rounded here and the later stages see the rounded value.
     pub fn push_stages(&mut self, x: f64) -> [f64; 2] {
         let fir = f64::from(self.fir.push(x) as f32);
-        let y = fir.abs();
-        let i = self.seen;
-        self.seen += 1;
-        while self.maxima.back().is_some_and(|&(_, v)| v <= y) {
-            self.maxima.pop_back();
-        }
-        self.maxima.push_back((i, y));
-        while self
-            .maxima
-            .front()
-            .is_some_and(|&(j, _)| j + self.window <= i)
-        {
-            self.maxima.pop_front();
-        }
         // The maxima are `f32` values (the FIR output is rounded to `f32`).
-        self.means
-            .push_back(self.maxima.front().expect("just pushed").1 as f32);
+        self.means.push_back(self.maxima.push(fir.abs()) as f32);
         if self.means.len() > MEAN_TAPS {
             self.means.pop_front();
         }
@@ -186,13 +202,13 @@ mod tests {
     #[test]
     fn silence_reads_zero_and_the_window_follows_the_high_edge() {
         let mut band = BandPass::new(&band_80(), 500, 4);
-        assert_eq!(band.window, 6);
+        assert_eq!(band.maxima.window, 6);
         assert_eq!(band.push(0.0), 0.0);
         let low = BandPassDesign {
             low_hz: 1.0,
             high_hz: 3.0,
             order: 128,
         };
-        assert_eq!(BandPass::new(&low, 500, 4).window, 83);
+        assert_eq!(BandPass::new(&low, 500, 4).maxima.window, 83);
     }
 }

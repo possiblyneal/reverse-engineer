@@ -2,6 +2,8 @@
 //! a [`Mismatch`] describing the first difference.
 
 use braintellect_linux::audio::player::AudioEvent;
+use braintellect_linux::feedback::circle_balance::CircleBalanceDesign;
+use braintellect_linux::storage::Channel;
 
 use super::fixtures::{Decision, StoredRecord};
 use super::tolerance::{RECORD_EPSILON, SAMPLE_EPSILON_UV, TIMING_WINDOW_MS};
@@ -28,6 +30,40 @@ pub fn microvolts(expected: &[f64], actual: &[f64]) -> Parity {
     for (i, (e, a)) in expected.iter().zip(actual).enumerate() {
         if (e - a).abs() > SAMPLE_EPSILON_UV {
             return mismatch(format!("sample {i}: expected {e} uV, got {a} uV"));
+        }
+    }
+    Ok(())
+}
+
+/// Decoded microvolts match bit for bit on every channel (`[channel][sample]`,
+/// channels 0 to 3). No tolerance applies: the original's logged values and the
+/// clone's decode are the same arithmetic. The mismatch names the first
+/// differing sample, channel by channel.
+pub fn channel_microvolts(expected: &[Vec<f64>], actual: &[Vec<f64>]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "channel count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    for (c, (e, a)) in expected.iter().zip(actual).enumerate() {
+        if e.len() != a.len() {
+            return mismatch(format!(
+                "channel {c} sample count: expected {}, got {}",
+                e.len(),
+                a.len()
+            ));
+        }
+        if let Some(i) = e
+            .iter()
+            .zip(a)
+            .position(|(x, y)| x.to_bits() != y.to_bits())
+        {
+            return mismatch(format!(
+                "channel {c} sample {i}: expected {} uV, got {} uV",
+                e[i], a[i]
+            ));
         }
     }
     Ok(())
@@ -119,6 +155,132 @@ pub fn notes(expected: &[i32], actual: &[i32]) -> Parity {
     }
 }
 
+/// Every trigger's block and the note it plays match the baseline's one for one (integers:
+/// no tolerance applies, so a trigger one block early is red).
+pub fn trigger_notes(expected: &[(usize, u32)], actual: &[(usize, u32)]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "trigger count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected.iter().zip(actual).position(|(e, a)| e != a) {
+        Some(i) => mismatch(format!(
+            "trigger {i} (block, note): expected {:?}, got {:?}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The control code the Evaluator decides for each block matches the baseline's, block for
+/// block (integers: no tolerance applies).
+pub fn control_codes(expected: &[u32], actual: &[u32]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "control code count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected.iter().zip(actual).position(|(e, a)| e != a) {
+        Some(i) => mismatch(format!(
+            "block {i} control code: expected {}, got {}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Logged `float32` values (Balance, Coherence) match bit for bit: they are the app's own
+/// float32 results, so no tolerance applies.
+pub fn float32_bits(what: &str, expected: &[f32], actual: &[f32]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "{what} count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected
+        .iter()
+        .zip(actual)
+        .position(|(e, a)| e.to_bits() != a.to_bits())
+    {
+        Some(i) => mismatch(format!(
+            "{what} {i}: expected {:e}, got {:e}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
+/// Stored series match: the same channels, series and point count in order, every
+/// point `x` exactly and every `y` (microvolts) within [`RECORD_EPSILON`].
+pub fn stored_series(expected: &[Channel], actual: &[Channel]) -> Parity {
+    let shape = |channels: &[Channel]| {
+        channels
+            .iter()
+            .flat_map(|c| {
+                c.series
+                    .iter()
+                    .map(move |s| (c.name.clone(), s.name.clone(), s.points.len()))
+            })
+            .collect::<Vec<_>>()
+    };
+    if shape(expected) != shape(actual) {
+        return mismatch(format!(
+            "stored series: expected {:?}, got {:?}",
+            shape(expected),
+            shape(actual)
+        ));
+    }
+    for (ec, ac) in expected.iter().zip(actual) {
+        for (es, as_) in ec.series.iter().zip(&ac.series) {
+            for (i, (e, a)) in es.points.iter().zip(&as_.points).enumerate() {
+                if e.x != a.x || (e.y - a.y).abs() > RECORD_EPSILON {
+                    return mismatch(format!(
+                        "{} {} point {i}: expected ({}, {}), got ({}, {})",
+                        ec.name, es.name, e.x, e.y, a.x, a.y
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Stored FFT spectra match: per channel the same bin count, every bin (microvolts)
+/// within [`RECORD_EPSILON`].
+pub fn fft_spectra(expected: &[Vec<f64>], actual: &[Vec<f64>]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "spectrum count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    for (c, (e, a)) in expected.iter().zip(actual).enumerate() {
+        if e.len() != a.len() {
+            return mismatch(format!(
+                "channel {c} bins: expected {}, got {}",
+                e.len(),
+                a.len()
+            ));
+        }
+        if let Some((k, (e, a))) = e
+            .iter()
+            .zip(a)
+            .enumerate()
+            .find(|(_, (e, a))| (*e - *a).abs() > RECORD_EPSILON)
+        {
+            return mismatch(format!("channel {c} bin {k}: expected {e}, got {a}"));
+        }
+    }
+    Ok(())
+}
+
 /// Threshold pass flags match sample for sample (boolean: no tolerance applies).
 pub fn pass_flags(expected: &[bool], actual: &[bool]) -> Parity {
     if expected.len() != actual.len() {
@@ -159,4 +321,31 @@ pub fn stored_record(expected: &StoredRecord, actual: &StoredRecord) -> Parity {
         }
     }
     Ok(())
+}
+
+/// The Circle-Balance chart inputs match the original's design one for one, in order (labels,
+/// windows and channel numbers: no tolerance applies).
+pub fn circle_balance_design(
+    expected: &CircleBalanceDesign,
+    actual: &CircleBalanceDesign,
+) -> Parity {
+    if expected.inputs.len() != actual.inputs.len() {
+        return mismatch(format!(
+            "chart input count: expected {}, got {}",
+            expected.inputs.len(),
+            actual.inputs.len()
+        ));
+    }
+    match expected
+        .inputs
+        .iter()
+        .zip(&actual.inputs)
+        .position(|(e, a)| e != a)
+    {
+        Some(i) => mismatch(format!(
+            "chart input {i}: expected {:?}, got {:?}",
+            expected.inputs[i], actual.inputs[i]
+        )),
+        None => Ok(()),
+    }
 }

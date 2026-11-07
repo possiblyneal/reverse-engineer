@@ -3,12 +3,13 @@
 //! byte stream. The Bluetooth RFCOMM socket is one such transport
 //! ([`rfcomm::RfcommStream`]); parity tests drive the same code from fixtures.
 //!
-//! Not implemented (the protocol doc marks them unresolved): the meaning of the
-//! 110 pairs 1-2 and the 112 payload, deriving the device family from the
-//! handshake, and power-off.
+//! The 110, 112 and 131-138 replies are decoded ([`info`]) and the device family
+//! is read from the 110 reply. Not implemented: the 112 payload and two 110 bytes
+//! (unresolved in the protocol doc) and power-off.
 
 pub mod command;
 pub mod decode;
+pub mod info;
 pub mod rfcomm;
 pub mod session;
 pub mod stream;

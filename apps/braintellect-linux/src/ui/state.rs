@@ -2,24 +2,22 @@
 
 use std::path::PathBuf;
 
+use crate::audio::tone::{self, Availability, Tone, TONES};
 use crate::live::{Health, Phase, SessionProperties, Snapshot};
+use crate::sensor::SensorStatus;
 
 /// The channel names of the montage `FP1FP2T3T4`, in the engine's channel order.
 const CHANNEL_LABELS: [&str; 4] = ["FP1", "FP2", "T3", "T4"];
-
-/// Whether instrument 1002 has been imported (`docs/adrs/0004-*.md`).
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum Instrument {
-    Ready,
-    /// Not imported yet; the message says where it should be.
-    Missing(String),
-}
 
 /// What the engine side tells the model.
 #[derive(Debug, Clone, PartialEq)]
 pub enum Event {
     /// The running session's state, including its final state.
     Update(Snapshot),
+    /// The sensor status the engine reports while no session runs.
+    Sensor(SensorStatus),
+    /// The sensor check ended: on a stop (`None`) or because it could not run.
+    SensorCheckEnded(Option<String>),
     /// The session could not start, and why.
     Failed(String),
     /// A stop ended the session before it streamed.
@@ -33,6 +31,9 @@ pub enum Event {
 pub enum Command {
     Start(SessionProperties),
     Stop,
+    /// Show the sensor status from the B-2 stream before a session.
+    CheckSensors,
+    StopCheck,
     /// Copy the instrument banks from the original's `lib` directory.
     Import(PathBuf),
 }
@@ -53,44 +54,80 @@ pub struct ChannelView {
     pub level: String,
 }
 
+/// One tone in the set-up list.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToneView {
+    pub label: String,
+    /// Imported, so it can be chosen.
+    pub available: bool,
+    pub selected: bool,
+    /// Why the tone is unavailable; empty when it is not.
+    pub status: String,
+}
+
 /// What the window shows, as text and flags.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct View {
     pub can_start: bool,
     pub can_stop: bool,
+    pub can_check: bool,
+    /// The sensor check is streaming.
+    pub checking: bool,
+    /// The original's default bank is not imported yet.
     pub needs_import: bool,
+    /// Every tone, in [`TONES`] order.
+    pub tones: Vec<ToneView>,
+    /// The tone can be changed: no session or sensor check is under way.
+    pub can_choose_tone: bool,
     /// The latest outcome or problem; empty when there is none.
     pub notice: String,
     pub connection: String,
+    /// "Ready", "Adjust Fit" or "Not Available".
+    pub sensor: String,
     pub channels: Vec<ChannelView>,
     pub frames: String,
     pub feedback: String,
+    /// The Evaluator's current control code.
+    pub control: String,
     pub elapsed: String,
 }
 
 pub struct UiModel {
     mac: String,
-    instrument: Instrument,
+    /// Availability of each of [`TONES`], in order (`docs/adrs/0004-*.md`).
+    tones: Vec<Availability>,
+    /// Index into [`TONES`] of the tone a session plays.
+    tone: usize,
     /// The session settings the clinician edits.
     pub properties: SessionProperties,
     stage: Stage,
     snapshot: Option<Snapshot>,
+    sensor: SensorStatus,
+    checking: bool,
     notice: String,
 }
 
 impl UiModel {
+    /// A model for the B-2 at `mac`, with the default tone's availability `default`
+    /// and every other tone not imported until [`Self::set_tones`].
     #[must_use]
-    pub fn new(mac: String, instrument: Instrument) -> Self {
-        let notice = match &instrument {
-            Instrument::Ready => String::new(),
-            Instrument::Missing(why) => why.clone(),
+    pub fn new(mac: String, default: Availability) -> Self {
+        let notice = match &default {
+            Availability::Ready => String::new(),
+            Availability::Missing(why) => why.clone(),
         };
+        let mut tones = vec![Availability::Missing("not imported".to_owned()); TONES.len()];
+        let tone = tone::default_index();
+        tones[tone] = default;
         Self {
             mac,
-            instrument,
+            tones,
+            tone,
             properties: SessionProperties::default(),
             stage: Stage::Setup,
             snapshot: None,
+            sensor: SensorStatus::NotAvailable,
+            checking: false,
             notice,
         }
     }
@@ -98,6 +135,31 @@ impl UiModel {
     #[must_use]
     pub fn stage(&self) -> &Stage {
         &self.stage
+    }
+
+    /// The tone a session plays.
+    #[must_use]
+    pub fn tone(&self) -> &'static Tone {
+        &TONES[self.tone]
+    }
+
+    /// Replace the availability of every tone, in [`TONES`] order.
+    pub fn set_tones(&mut self, tones: Vec<Availability>) {
+        assert_eq!(tones.len(), TONES.len(), "one availability per tone");
+        self.tones = tones;
+    }
+
+    /// Choose the tone a session plays. Refused (`false`) when the tone is not
+    /// imported or a session is connecting, running or checking sensors.
+    pub fn select_tone(&mut self, tone: &Tone) -> bool {
+        let Some(index) = TONES.iter().position(|t| t == tone) else {
+            return false;
+        };
+        if self.tones[index] != Availability::Ready || !self.idle() {
+            return false;
+        }
+        self.tone = index;
+        true
     }
 
     /// Start a session with the current properties.
@@ -113,6 +175,23 @@ impl UiModel {
         self.snapshot = None;
         self.notice.clear();
         Some(Command::Start(self.properties.clone()))
+    }
+
+    /// Start showing the sensor status from the B-2 stream. It plays no tone, so no
+    /// tone needs to be imported.
+    pub fn check_sensors(&mut self) -> Option<Command> {
+        if !self.idle() {
+            return None;
+        }
+        self.checking = true;
+        self.notice.clear();
+        Some(Command::CheckSensors)
+    }
+
+    /// Stop the sensor check.
+    #[must_use]
+    pub fn stop_check(&self) -> Option<Command> {
+        self.checking.then_some(Command::StopCheck)
     }
 
     /// Stop the session that is connecting or running.
@@ -137,13 +216,21 @@ impl UiModel {
                 }
                 self.snapshot = Some(snapshot);
             }
+            Event::Sensor(status) => self.sensor = status,
+            Event::SensorCheckEnded(why) => {
+                self.checking = false;
+                self.sensor = SensorStatus::NotAvailable;
+                if let Some(why) = why {
+                    self.notice = format!("Sensor check stopped: {why}");
+                }
+            }
             Event::Failed(why) => self.fail(&why),
             Event::Cancelled => {
                 self.stage = Stage::Setup;
                 self.notice = "Cancelled.".to_owned();
             }
             Event::Imported => {
-                self.instrument = Instrument::Ready;
+                self.tones[tone::default_index()] = Availability::Ready;
                 self.notice = "Instrument imported.".to_owned();
             }
             Event::ImportFailed(why) => self.notice = format!("Import failed: {why}"),
@@ -156,9 +243,27 @@ impl UiModel {
         View {
             can_start: self.startable(),
             can_stop: matches!(self.stage, Stage::Connecting | Stage::Running),
-            needs_import: matches!(self.instrument, Instrument::Missing(_)),
+            can_check: self.idle(),
+            checking: self.checking,
+            needs_import: matches!(self.tones[tone::default_index()], Availability::Missing(_)),
+            can_choose_tone: self.idle(),
+            tones: TONES
+                .iter()
+                .zip(&self.tones)
+                .enumerate()
+                .map(|(i, (tone, state))| ToneView {
+                    label: tone.label.to_owned(),
+                    available: *state == Availability::Ready,
+                    selected: i == self.tone,
+                    status: match state {
+                        Availability::Ready => String::new(),
+                        Availability::Missing(why) => why.clone(),
+                    },
+                })
+                .collect(),
             notice: self.notice.clone(),
             connection: self.connection(),
+            sensor: self.sensor_label().to_owned(),
             channels: CHANNEL_LABELS
                 .iter()
                 .enumerate()
@@ -180,6 +285,7 @@ impl UiModel {
                 Some(note) => format!("{}, last note {note}", plural(s.triggers.into(), "note")),
                 None => "No notes yet".to_owned(),
             }),
+            control: snapshot.map_or_else(String::new, |s| format!("Control code {}", s.control)),
             elapsed: snapshot.map_or_else(String::new, |s| {
                 format!(
                     "{} of {}",
@@ -190,8 +296,21 @@ impl UiModel {
         }
     }
 
+    /// The engine is off while a session connects or runs (`sensor-status.md`).
+    fn sensor_label(&self) -> &'static str {
+        match self.stage {
+            Stage::Setup | Stage::Done => self.sensor.label(),
+            Stage::Connecting | Stage::Running => SensorStatus::NotAvailable.label(),
+        }
+    }
+
     fn startable(&self) -> bool {
-        self.instrument == Instrument::Ready && matches!(self.stage, Stage::Setup | Stage::Done)
+        self.tones[self.tone] == Availability::Ready && self.idle()
+    }
+
+    /// No session or sensor check is under way.
+    fn idle(&self) -> bool {
+        !self.checking && matches!(self.stage, Stage::Setup | Stage::Done)
     }
 
     fn fail(&mut self, why: &str) {

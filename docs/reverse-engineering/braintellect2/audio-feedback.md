@@ -18,7 +18,7 @@ This record summarizes authorized analysis of the BRAINtellect2 executable and a
 |---|---:|---|
 | `BT-LOD-v5.1.11` | 207 | lead-off detection |
 | `BT-SMART-2-v5.1.2` | 1,137 | active exercise design and audio feedback |
-| `B-2-Circle-Balance-fromBAGSD-v5.1.1` | 1,162 | balance display design |
+| `B-2-Circle-Balance-fromBAGSD-v5.1.1` | 1,162 | post-session Balance Meter report over stored LMH series (`BAGSD.report`; "Circle-Balance design") |
 | `BAGSD-4-chnl-wDiscreteFFT-v5.1.0` | 3,807 | four-channel discrete-FFT design |
 
 ## SMART-2 EEG-to-Audio Path
@@ -129,7 +129,7 @@ One SMART-2 session (guest profile, no wearer, sensors off) captured with one Fr
 - **Quantile index:** the threshold is the sorted window's element at `trunc(n·lower)`, zero-based, clamped to `n − 1`, with `lower` the single-precision `0.65`. This replaces the static `round(n·lower)` reading.
 - **Window capacity:** a fixed 2,500 values (500 Hz × 5,000 ms). The threshold is recomputed after every input block and applies to the next block's samples.
 - **Pass flags:** the clone reproduces every recorded pass flag of the fixture's blocks (0 mismatches).
-- **Counter clock:** the timer is read once per block, as the static reading said. The clone reproduces every recorded fire given the observed per-block timer reading and a timer start at least 250 ms before the first block (the baseline's first fire is 250 ms after the first block). The exact start offset is unresolved.
+- **Counter clock:** the timer is read once per block, as the static reading said. The clone reproduces every recorded fire given the observed per-block timer reading and a timer start at least 250 ms before the first block (the baseline's first fire is 250 ms after the first block). The start offset is recovered in "Counter timer start" (ticket 54).
 - **Decision stream:** `Trigger` and `Note` decisions are in `feedback_decisions.tsv`. The clone reproduces the `Trigger` decisions only.
 
 Gaps (not reproducible from this evidence, so not implemented):
@@ -160,7 +160,23 @@ The key table is at `0x13f1144`–`0x13f1253`, the setter at `0x63dc28`–`0x63d
 
 So **111 is `defaultControlValue`**, meaning no test passed. It is not an `ExprNoteSelection` code: it falls to "otherwise" and averages channels 3 and 4. **82** is Band 80, Ch1/Ch2 pair, channel 1 larger.
 
-**Design mismatch:** for the Ch3/Ch4 pair the Evaluator produces 112/113 and 182/183. `ExprNoteSelection` lists 102/103 and 101 instead, so 112/113 also fall to "otherwise" (average of channels 3 and 4). `ExprTriggerAll` does decode 112/113. The clone must keep this mismatch to stay at parity.
+**Design mismatch:** for the Ch3/Ch4 pair the Evaluator produces 112/113 and 182/183. `ExprNoteSelection` lists 102/103 and 101 instead, so 112/113 also fall to "otherwise" (average of channels 3 and 4). `ExprTriggerAll` does decode 112/113. The clone keeps this mismatch in original mode; fixed mode corrects it ("Channels 3n4 note codes").
+
+### Channels 3n4 note codes (ticket 64)
+
+**Source.** The four designs in the 2026-11-07 guest datadir (`flowdesign` table, the `tmp/s59/datadir` copy read with a throwaway `mysql:5.7` container, blobs decoded as in `session-storage.md`; decrypted XML in the main checkout's `tmp/s64/`).
+
+Observed:
+
+- **The Evaluator never emits 101, 102 or 103.** Its codes are 111 (default) or a band base 11, 81, 111 or 181 plus 1 or 2 ("Observed" above).
+- **`ExprTriggerAll` pairs the bands by +70 for both channel pairs.** It decodes 11/81, 12/82 and 13/83 for Ch1/Ch2, and 111/181, 112/182 and 113/183 for Ch3/Ch4, where 112 and 182 read channel 3 (E, G) and 113 and 183 read channel 4 (F, H). Both expressions take the same Evaluator output (`InSignalJ`, `InSignalE`).
+- **`ExprNoteSelection` keeps that pairing for Ch1/Ch2 only.** It lists `(11 || 81)`, `(12 || 82)` and `(13 || 83)`, then `(101 || 181)`, `(102 || 182)` and `(103 || 183)`, with A..D = PeakFreq Ch1..Ch4. 181 − 101 = 80 breaks the +70 step its first three branches and every branch of `ExprTriggerAll` keep. 182 → C (Ch3) and 183 → D (Ch4) match `ExprTriggerAll`'s 182 → G and 183 → H.
+- **No other design decodes these codes.** `B-2-Circle-Balance-fromBAGSD-v5.1.1` (eight balance `ExpressionTransform`s, `ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)`, into `CircleGraphChart`s) and `BAGSD-4-chnl-wDiscreteFFT-v5.1.0` have no Evaluator and no code expression. `BT-LOD-v5.1.11` has none either.
+- **The literature corpus gives no code table.** It names the aim (`literature/2013_Gerdes-Tegeler_HIRREM-allostatic-methodology_BrainBehav.md`: the tone follows the dominant frequency, toward hemispheric symmetry, with asymmetry measured in 23–36 Hz, the design's Band 80), but not which channel a code selects.
+
+Inferred: 101, 102 and 103 are typos for 111, 112 and 113. By the design's own +70 pairing and `ExprTriggerAll`, the intended note selection is 112 → channel 3 and 113 → channel 4. 182/183 already decode as intended. 101 and 111 both reach the channel 3 and 4 average (111 through "otherwise"), so that typo changes nothing.
+
+The clone's fixed mode selects channel 3 for 112 and channel 4 for 113. Original mode keeps the average. `tests/parity_feedback.rs` shows both. No recorded stream has reached 112/113 (run 8: 111, 12, 82; #53 and run 6: 111, 183; #33: 111, 82, 12), so the run-8 comparison in "Fixed mode against original mode" is unchanged.
 
 ### Observed sessions
 
@@ -175,6 +191,46 @@ The stored type-5 logs (2026-11-04) show:
 - With no sensors, floating inputs give near-equal band amplitudes and low coherence, so neither test passes and 111 holds.
 - Which path produced 82 in exercise 125 is not determined; it needs the per-epoch input values.
 - No dispatch on `style` or `evaluatorLogic` was found in `processLogic`. Whether another style changes the logic is unresolved.
+
+### Replay capture of the Evaluator inputs (#53, observed unless marked)
+
+**Method.** The run-8 rx stream was replayed into the original (`replay-rig.md`) with `hook12.js` (`frida-inject -f`) writing one binary log of f64 records `[tag, length, ...]`: tag 20 is the series push (`0x63d9c0`: `[ts, series, countBefore, vectorSize, last, scale]`, one per block per series), tag 21 the series key dump (the name is in words 39 to 86), tag 22 the Evaluator decision (`0x63eb70`: `[ts, evaluator, ret, currentCode]`), tag 24 the code setter (`0x63ea70`), and tag 11 the `ExpressionTransform` inputs. The log is `g-s53.bin` in the main checkout's `tmp/s53/r3/` (341 MB, 30004 blocks, wearer-free: the stream is the recorded no-wearer run). `scripts/replay-extract.py` reduces it to `amps.tsv` (A..H, 32 float32 words per block), `evaluator.tsv` (the six series inputs per block) and the existing replay files; `replay_s48` reads them with `S48_REPLAY_DIR`.
+
+- **Bands A..D.** Tag 11's nine-record group is `recs[0:4]` = A..D, `recs[4:8]` = E..H, `recs[8]` = the control code, four samples each (a five-record group is the peaks, a two-record group the aggregates). The earlier "A..D are not logged" is withdrawn.
+- **Series.** The Balance series are `Bal1n2B10`, `Bal1n2B80`, `Bal3n4B10`, `Bal3n4B80` and the Coherence series `Coh3n4B10`, `Coh3n4B80`.
+- **Epoch timing.** An epoch is 30000 samples, 7500 blocks of 4. It ends at blocks 7499, 14999, 22499, 29999 (zero-based) and the code decided there applies to the block that completes the epoch (first block with the new code: 14999 in this capture and in run 8).
+- **Balance.** Every logged Balance value of the capture (30001 blocks, four series) is reproduced bit for bit. The Aggregator's `float32` mean over the 30000-sample trailing window (an `f64` running sum cast to `float32`) feeds double arithmetic `(B·g − A)/min(A, B·g)`, cast to `float32` once. `g` is 1.0 for the Ch1/Ch2 series. For the Ch3/Ch4 series `g` = 1.08, applied to the Ch4 average (F, H): the design's own expression is `((1.08*B)-A)/(A min (B*1.08))` (`Expr Balance Ch3n4 Band 10/80`, observed).
+- **Codes.** 111 for blocks 0 to 14998, then 183 to the end (111 at the first epoch end because `valuesToCheck` = 2). The Balance bases are 11, 81, 111, 181, plus 1 if the latest is below 0, else 2.
+- **Coherence.** Every logged Coherence value (30001 blocks, both series) is reproduced bit for bit by the algorithm in "Coherence" below. The values at the epoch ends stay below 0.80, so the Coherence path decided no epoch of this capture; the value is 1.0 before the first estimate (693 blocks above 0.80, from block 0).
+- **Clone.** `feedback::Evaluator` decides the code from the clone's own band-pass amplitudes and Coherence elements, both paths: it reproduces every per-block code of the capture (`replay_s48`, which asserts all six series bit for bit), and run 8's 111, then 12 from block 14999, then 82 from block 22499, in `parity_smart2_exercise`. Run 8 carries no A..D ranks, so its stand-in ranks are used; a different order moves an amplitude by one `float32` unit and cannot move a Balance across 0.15 there.
+
+### Coherence (static, matched bit for bit against the #53 capture)
+
+The design's two `Coherence` elements (Ch3/Ch4, Band 10 and Band 80, `processingStyle` `Relaxed`) each feed an `AggregatorFilter` whose 60 s mean is the Evaluator's Coherence input, as the band-pass amplitudes feed the Balance series. Observed by the static reading below and confirmed by the bit-exact match of every logged value; nothing here is fitted.
+
+- **Element** (process `0x646990`): each input goes through the element's own FIR band-pass, built as the band-pass elements' (same band and order). The filtered samples are held in `float32` and gathered 16 blocks (64 samples) at a time (`+0x1ac`, 16 under `Relaxed`). A block that completes a packet outputs the new estimate for each of its samples; any other block repeats the last one, and 1.0 before the first.
+- **`DSPCoherence`** (constructor `0x644ac0`, process `0x645aa0`): Welch's magnitude-squared coherence over a history of 4 s (constant `4.0` at `0x1895398` times the rate: 2000 samples, newest first). Segments of N = rate = 500 samples, hop N/2 = 250 (half overlap under `Relaxed`), (2000 − 250)/250 = 7 segments. Each segment is multiplied by a symmetric 500-point Hamming window (`0.54 − 0.46 cos`, constants `0x18cb358`/`0x18cb360`; IPP generic kernel `0x67535c`, the cosine by an angle-addition recurrence from both ends in `f64`, each value rounded to `float32`) and zero padded to the FFT length 512.
+- **Bins:** bins per Hz = `float32(512/rate)`, first bin = `trunc(bins/Hz · low)`, count = `ceil(float32(bins/Hz · high)) − first + 1`: bins 1..4 for Band 10 (1–3 Hz) and 23..37 for Band 80 (23–36 Hz).
+- **Estimate:** per bin, `float32` sums over the segments of `|X|²`, `|Y|²` and `X·conj(Y)`; each sum divided by the segment count in `f64` and rounded to `float32`; `power = float32(Syy·Sxx)`; when it is non-zero, the bin's coherence is `float32((re² + im²)/power)` in `f64`, clamped to 1.0. The mean over the bins (an `f64` division of the `float32` sum) enters an 8-value mean that starts full of 1.0 (`0x6447b0`, built as `(8, 1.0, 0)`); its output is the estimate.
+- **FFT:** `ippsFFTInitAlloc_R_32f(order 9, flag 8)`, forward `0x66ff20`, dispatched through the table at `0x1eed1e8` (six CPU variants; variant 1, kernel wrapper `0x67831c`, was traced, and variants 1 to 5 gave identical outputs under Unicorn). The 512 reals are read as 256 complex `z[n] = (x[2n], x[2n+1])`. The complex FFT (`0x6c7de0`, power-of-4 path `0x6c82d0`) is radix-4 decimation in time: a twiddle-free 4-point DFT of `z[a], z[a+64], z[a+128], z[a+192]` with `a` the 6-bit bit reversal of the output group, then three stages with quarters 4, 16, 64 computing `dft4(w[p], w[p+2Q]·W^i, w[p+Q]·W^2i, w[p+3Q]·W^3i)` with twiddles `float32(cos)`, `float32(−sin)` of the stage length (exact at the quarter turns). The 4-point DFT sums `a = x2+x0, b = x0−x2, s = x3+x1, d = x1−x3` and outputs `s+a`, `b − i·d`, `a−s`, `b + i·d`; the complex product is `(xr·wr − xi·wi, xi·wr + xr·wi)`. The split pass (`0x6c89c0`) forms bin 0 = `re0+im0`, Nyquist = `re0−im0`, and for k = 1..127, with `T0 = float32(0.5 cos(2πk/512))` and `T1 = float32(0.5 − 0.5·float32(sin))`: `dr = R−Rm`, `si = Im_m + I`, `p = si·T0 + dr·T1`, `q = T1·si − T0·dr`, bin k = `(Rm+p, q−Im_m)`, bin 256−k = `(R−p, q−I)`; then the imaginary part of bin 128 is negated. The kernel was run under Unicorn on a synthetic vector; the clone's port (`feedback/ipp_fft.rs`) matches its 514 output words bit for bit (`tests/fixtures/ipp_real_fft_512.txt`). A textbook FFT differs in the last bits and moves Coherence values by one `float32` unit.
+
+### Live replay of the #33 capture (tickets #60 and #66, observed unless marked)
+
+The #33 capture was read back through `live::run` over an in-memory transport (`tests/replay_live.rs`, ignored): its handshake, then every stream frame the original consumed, without the 124 frames its host skipped, under the original's logged counter clock reads. The original's graph started at consumed sample 15616 (located by `replay_s48`).
+
+- **Codes.** The live engine's Evaluator gives the original's per-block codes exactly: 111, 82 from block 14999, 12 from block 22499 (26022 blocks).
+- **Trigger and Note, ticket #60 engine.** 351 of the clone's 366 notes were the original's 367 (same block and note). Ticket #66 attributed all 16 original notes it missed by replaying the extract through the harness (`run8::replay_from`), changing one input at a time from an original-mode replay that gives all 367 notes exactly:
+
+| Notes | Original blocks (read ms) | Input that reproduces them alone | Cause |
+| --- | --- | --- | --- |
+| 10 | 44 to 664 (157 to 4841 ms) | Source chain cold at the graph start (all 10) | the original's Source filters had run the 31 s of stream before Play |
+| 3 | 7995, 17191, 21025 (63401, 137028, 167720 ms) | one clock read per block, lap read = block read (each fires one block early) | the original's counter takes a second read to restart its timer on a fire, 4 to 6 ms after the block read |
+| 3 | 19451, 24268, 24330 (155107, 193969, 194479 ms) | fixed mode's threshold window (only variants with it) | fixed mode's one-entry erase, a deliberate correction ("Fixed mode against original mode") |
+| 0 | none | all-scalar-head sum order against the logged flags (367 of 367) | none; all-SIMD moves 4 triggers (blocks 10108, 20950, 21025, 22655) one to three blocks early |
+
+- The cold-start, one-read and fixed-window variants together reproduce the #60 engine's 351 exactly. Of the 10 start notes, 7 also move with the 45 Hz low-pass switched in at the graph start and not four samples later; a fixed-mode replay with a warm chain still differs on those 7, because fixed mode switches at the graph start by design.
+- **Warm-up length.** A fixed-mode replay warmed for 0 samples before the graph start differs from one warmed for the full 15616 on 9 notes, 128 samples on 1, and 256, 500, 1000, 1500, 2500 or 5000 samples on none. `live::run` warms the Source filters, with the interference filter off, for `GraphStart::LIVE.warmup_samples` (500 samples, 1 s) of the stream before the graph's first block.
+- **Ticket #66 engine.** With the warm-up and the counter's second read on a fire, `live::run` in original mode, given the original's start (15616 samples of warm-up, switch 4 graph samples in) and its clock and lap reads, reproduces the block and note of all 367 triggers; `replay_live` asserts it (`assertions::trigger_notes`). The live engine sets the all-scalar-head order in original mode too, since the graph's original-mode default is all-SIMD. Inferred, from the harness replays above: a fixed-mode live run on the same stream differs from the original only on the 7 start notes and the 3 threshold-window notes, all deliberate fixed-mode corrections.
 
 ## PeakFrequency and Note Hook Points (static, braintellect.exe 5.1.57)
 
@@ -206,7 +262,7 @@ One complete SMART-2 session (guest profile, no wearer, sensors off, 240 s, 30,0
 - **PeakFrequency:** exact algorithm recovered from `0x632d90`, see "Recovered upstream stages" below. 99.7 % of 1000 samples match once the Source software filters (25 Hz notch, 1.5 Hz high-pass) are applied before the window; the earlier 97.8 % was the raw channel windowed directly.
 - **ExprNoteSelection:** input `x` is PeakFreq D when `J == 183`, else `(C + D) / 2`. Per sample `x` feeds a tracker (trailing 15000 samples, min and max) and a smoother (trailing 62-sample mean). The note is `trunc((hi - lo) * ratio) + lo` with `lo = 40`, `hi = 76`, `ratio = (mean - min) / (max - min)` (0 when the range is not positive), in float32 through the map at `0x578240`. The note is taken at each counter fire. Exact against the logged inputs.
 - **ExprTriggerAll:** one branch per Evaluator code, read from the design's own expression (`tmp/s26/run4/130-t1.xml`): 11 gives `A + B + C + D`, 12 `A`, 13 `B`, 81 `C + D`, 82 `C`, 83 `D`, 112 `E`, 113 `F`, 181 `G + H`, 182 `G`, 183 `H`, and any other code (111 included) `E + F + G + H`. The sums are formed in double precision and rounded to `float32` once. The Threshold input is that value in volts, smoothed in microvolts by a 62-sample smoother. Exact against the logged inputs for codes 111, 183 (run 6) and 12, 82 (run 8). Inputs A..D are the Band 10 (1-3 Hz) then Band 80 (23-36 Hz) BPF amplitudes of Ch1, Ch2 and E..H the same for Ch3, Ch4 (A, B = Ch1, Ch2 Band 10; C, D = Ch1, Ch2 Band 80; E, F = Ch3, Ch4 Band 10; G, H = Ch3, Ch4 Band 80).
-- **Evaluator J:** 111 until 120000 ms, 183 afterwards (first block with 183 is 14999) in run 6; 111 for blocks 0 to 14998, 12 for the next 7500 and 82 for the last 7502 in run 8 (a different SMART-2 setting). The Evaluator is not replicated: its code is a per-block input.
+- **Evaluator J:** 111 until 120000 ms, 183 afterwards (first block with 183 is 14999) in run 6; 111 for blocks 0 to 14998, 12 for the next 7500 and 82 for the last 7502 in run 8 (a different SMART-2 setting). The clone's Evaluator reproduces both sequences from band amplitudes ("Replay capture of the Evaluator inputs"); the parity tests can still feed the logged codes.
 
 ### Not resolved
 
@@ -341,7 +397,7 @@ Observed:
 - **Conversion.** The app converts each sample as `raw / DIV` in `f64` with `DIV = 12 * (2^23 - 1) * 10 / 2.4`, then rounds to `float32` when the graph takes it. This is exact for all 272,793 logged ch0 samples. Channel `c` reads payload slots `c` and `4 + c` (`b2-protocol.md`).
 - **Graph start.** The graph's first block takes the consumed sample at index 25600 and block `b` takes the four samples from `25600 + 4b`. Observed: the Source chain is warm there. Its logged output matches, 1600 of 1600 samples, a chain that ran the earlier stream with the interference filter off and has a zero-history 45 Hz low-pass switched in at consumed sample 25601, while the band-stop, 150 Hz low-pass and high-pass keep their state. Inferred: the exercise start calls `setInterferenceFilter` (`0x554fe0`), which builds a new interference filter. The clone does this with `SourceFilters::set_interference1`; the fixtures carry 4000 consumed samples before the graph start to warm the chain.
 - **Band-pass to object mapping.** The eight band-pass objects map to bands A..H by matching each object's logged amplitudes to the clone's (exact, 3200 of 3200 blocks per band); the 16-tap-mean sum order is taken from the logged destination alignment of each object's call (scalar head when `dst % 16 == 8`).
-- **Counter timer.** The counter tests `now - start >= 500` with `now` the GetLocalTime time of day in ms read at evaluation. On a fire the app takes a second read as the new start, which differs from the evaluation read by 1 to 6 ms in 17 of 415 fires. The clone models both reads as inputs (`BlockClock`) and that removes the one-block fire shifts of run 6.
+- **Counter timer.** The counter tests `now - start >= 500` with `now` the GetLocalTime time of day in ms read at evaluation. On a fire the app takes a second read as the new start, which differs from the evaluation read by 1 to 6 ms in 17 of 415 fires. The clone's counter takes both reads (`CounterClock`): a replay supplies them as logged (`BlockClock`), and `live::run` reads its clock again on a fire. That removes the one-block fire shifts of run 6.
 - **Evaluator code.** 111 for blocks 0 to 14998, 12 for the next 7500, 82 for the last 7502 (`ExprTriggerAll` branches above).
 
 Replay from the consumed EEG, Source warm from the 4000-sample pre-roll, with the logged codes, clocks and sum orders (`apps/braintellect-linux/tests/parity_smart2_exercise.rs`):
@@ -356,13 +412,96 @@ Replay from the consumed EEG, Source warm from the 4000-sample pre-roll, with th
 The #48 replay of the run-8 stream into the original (`replay-rig.md`) differed from the clone at the first Source/band amplitude (block 0 sample 1 band E, 4.4359e-10 against 4.4354e-10 logged; 4 of 128 logged E..H values in blocks 0..7 exact, first Note at block 67 40 against 42). Two inputs were wrong, neither a Source or band-pass defect:
 
 - **Interference switch sample.** The replay's own `app.log` (`tmp/s48/rep8.fi`) shows one `setInterferenceFilter(45Hz LP)` on all 8 channels, from the UI thread (`0x108c`) 16 ms after `playSlot()`, with the same Source settings as run 8 (interference filter Off at init, band-stop 25 Hz, low-pass 150, high-pass 1.5; no second switch). The sample processing runs on another thread, so the consumed sample at which the zero-history 45 Hz low-pass takes over is not fixed against the graph start. With the graph start 25640 (unique: every other start in the range matches 0 to 4 values), switching at 25641 matches 4 of 128, at 25644 (start + 4) matches 128 of 128, and every other switch in start-300 to start+300 matches at most 16. Run 8's switch was at start + 1. The app log cannot place the switch to the sample: `playSlot()` to `setInterferenceFilter` is 15 ms in run 8 and 16 ms in the replay, one tick of the log clock (about 8 samples).
-- **Band to object mapping.** The 16-tap-mean sum-order flag of each band comes from the band-pass object that owns it, ranked by address among the 18 graph-call objects. Heap addresses differ per process, so run 8's ranks (E, F, G, H = 9, 16, 12, 0) do not carry over. Over blocks 0 to 299, band E reproduces the logged amplitudes exactly under rank 7, F under 3, G under 1, H under 5 (1200 of 1200 each; no other rank gives more than 1109). With the wrong flags only the scalar-head samples (the first two of a block) differed, by one `float32` unit in the last place, which is why 118 of 128 matched at the right switch. A..D are not logged, so their ranks stay undetermined and `replay_s48` uses run 8's. In the run-8 replay no decision read them (Evaluator codes 111 and 183 sum E..H). In #33's replay codes 82 and 12 read C and A (`ExprTriggerAll`), and `ExprNoteSelection` reads C/D whenever the code is not 183, so decisions did read A..D under run 8's stand-in ranks and still matched 734/734. The stand-ins are unverified, not shown correct. `replay_s48` locates the E..H ranks per run (one rank per band reproduces the logged amplitudes over blocks 0..299).
+- **Band to object mapping.** The 16-tap-mean sum-order flag of each band comes from the band-pass object that owns it, ranked by address among the 18 graph-call objects. Heap addresses differ per process, so run 8's ranks (E, F, G, H = 9, 16, 12, 0) do not carry over. Over blocks 0 to 299, band E reproduces the logged amplitudes exactly under rank 7, F under 3, G under 1, H under 5 (1200 of 1200 each; no other rank gives more than 1109). With the wrong flags only the scalar-head samples (the first two of a block) differed, by one `float32` unit in the last place, which is why 118 of 128 matched at the right switch. Run 8 did not log A..D, so it keeps stand-in ranks for them (unverified). From #53 the replay captures log A..D too, and `replay_s48` locates all eight ranks per run, one rank per band reproducing the logged amplitudes over blocks 0..299 (s48: A..H = 13, 9, 0, 10, 7, 3, 1, 5; s53: 10, 0, 1, 2, 3, 6, 4, 5) and then asserts every logged A..H amplitude bit for bit over all 30001 blocks. The graph start and the 45 Hz switch are located first (s53: start 107408, 340 samples under the logged count, switch at the start; s48: 25640 and 25644). The start is found from block 0's first sample, where the bands are cold, so it does not depend on the switch.
 
 With both, `replay_s48` matches the logged E..H amplitudes bit for bit over all 30001 blocks and all 874 Trigger/Note decisions. The graph start (25640) and the switch (25644) are still located from the logged amplitudes, not logged; `parity_smart2_exercise` keeps run 8's start + 1.
 
 Not resolved:
 
 - Which IPP IIR kernel variant the VM CPU dispatched (`_DAT_0200f428` was not read) and the x87 precision control at run time; neither changes the output observed here.
+
+### Counter timer start (ticket 54)
+
+Observed. The first logged counter evaluation of each exercise (hook tag 3, `now - start`, where `start` is the timer object's start at `+0x200`) gives the timer's age at the first graph block. No hook read the constructor's own clock, so the start is taken from that first record:
+
+| Log | Timer age at block 0 | Consumed samples before the start | Samples from the start to graph start |
+| --- | --- | --- | --- |
+| Run 8 | 14882 ms | 18480 | 7120 |
+| Run 8 replay (`rep8.bin`) | 21018 ms | 15452 | 10188 |
+| #33 live-capture replay (`rep33.bin`) | 3707 ms | 14104 | 1512 |
+
+- The offset is not fixed: it varies from 3.7 to 21 s, and neither the age, the sample count before the start nor the distance to the graph start repeats. The start is not derived from the graph start; it is whenever the counter was constructed before streaming reached the graph.
+- Every offset is above the 500 ms epoch, so the first block was already eligible: the first fire is the first block with a passing sample, whatever the exact offset. The first fire of the run-8 original is at block 52 (first logged lap read).
+- Rule used by the clone: the timer starts one epoch (500 ms) before the first block. Any start at or beyond one epoch fires identically; an earlier start (a timer started at the first block) holds the first fire back until 500 ms have passed. `live::run` takes the clock at the graph's construction and subtracts the epoch; the replay harness uses the first block's read minus 500 ms.
+- Inferred: a start under 500 ms before the first block would delay the first fire, but no log shows one.
+
+### Live sum order (ticket 54)
+
+Observed. The 16-tap-mean sum order (the IPP scalar-head flag, from the destination buffer's heap alignment) depends on the process and cannot be derived, so a live session fixes one order for every band-pass. Run 8's logged flags set the scalar head on 120462 of 240008 band-pass calls. Replaying the same stream with every flag false (all-SIMD) and every flag true (all-scalar-head), against the logged flags (`parity_smart2_exercise`, `replay_s48`):
+
+| Stream | Policy | Band amplitudes differing | Blocks with a difference | Trigger or Note decisions differing |
+| --- | --- | --- | --- | --- |
+| Run 8 | all-SIMD | 126070 of 960032 (13.1 %) | 28702 of 30001 | 0 of 830 |
+| Run 8 | all-scalar-head | 125013 of 960032 (13.0 %) | 28655 of 30001 | 0 of 830 |
+| Run 8 replay (`rep8.bin`; A..D flags are run 8's, so E..H are exact and A..D stand in) | all-SIMD | 127499 of 960032 (13.3 %) | 28317 of 30001 | 0 of 874 |
+| Run 8 replay | all-scalar-head | 125236 of 960032 (13.0 %) | 28163 of 30001 | 0 of 874 |
+
+- Chosen policy: all-scalar-head, the smaller deviation on both streams (rule: smaller measured deviation, a tie goes to all-SIMD). The gap is under 2 % of the differing amplitudes, so the choice is nearly a coin flip.
+- Every difference is the last `float32` bit of an amplitude; no decision changes. Only the first two outputs of a block can differ (`BandPass::set_scalar_head`), so the last sample of each block, which the live session stores, is identical under either order.
+
+### Fixed mode against original mode (ticket 63)
+
+Observed. The clone's feedback graph has two modes (`apps/braintellect-linux/CLAUDE.md`, "Two feedback modes"): original reproduces the defects below and carries every parity test; fixed is what live sessions run. Fixed corrects (1) the threshold window erase-by-value (see "Threshold window erases by value": one entry leaves, so the window stays at the ring size), (2) the 45 Hz low-pass switch sample (the first graph sample, not the thread-timed one that was start + 1 in run 8 and start + 4 in the #48 replay), and (3) the 16-tap-mean sum order (all-scalar-head, "Live sum order").
+
+Measured by replaying run 8 (30001 blocks, logged Evaluator codes and clock reads as inputs in both modes; `parity_smart2_exercise`):
+
+| Run 8 | Original mode (baseline) | Fixed mode | Differing |
+| --- | --- | --- | --- |
+| Trigger decisions | 415 | 415 | 24 blocks fire differently |
+| Note decisions at a fire | 415 | 415 | 24 blocks sound a different note |
+
+The 24 and 24 are counts of blocks whose decision differs, so a fire that moves to the next block counts in both blocks. The sum order alone changes no decision (0 of 830, "Live sum order"), so the difference comes from the threshold window and the switch sample; the split between those two is not measured.
+
+## Circle-Balance design (ticket 62)
+
+`B-2-Circle-Balance-fromBAGSD-v5.1.1`, decrypted by #64 into `tmp/s64/design171.xml` (never committed). Static evidence from that XML and from `braintellect.exe` under `analyzeHeadless`.
+
+### Observed: a report design, not a live one
+
+- `flowEngine.configuration.designRole` is `BAGSD.report`. Its one `Source` feeds only `BAGSDataTypeBandFilter` elements (`InBAGSD`), which take stored BAGSData, not EEG. The design that writes that data is `designRole` `BAGSD.generate` (`design172.xml`, flow name "Session Assess 3.4-v3.3", the type-9 generator in `session-storage.md`). Strings on the report path: `run(): processing BAGSD data with design:`, `Unable to find BAGSD design`, `open(): parsing BAGSD data, type:`.
+- Its input is the `LMH` data type. Every stored SMART-2 record's type-9 XML holds it: `exerciseDataChannel channelName="Channel1..4" dataType="LMH"`, series `High 1&2`, `Mid 1&2`, `Low 1&2` (Channel1 `side="left"`, Channel2 `right`; `3&4` for Channels 3 and 4), 49 points each, x every 5000 ms. The generator makes them with order-1 Butterworth band-passes (Low 1.5..6.8, Mid 6.8..15.8, High 15.8..34 Hz) into `discrete` Aggregators, epoch 5 s, the same chain #56 fitted for the `00-90` bands.
+
+### Observed: element graph (59 elements, 72 connections)
+
+Per chart input: `Source` `OutN` -> `BAGSDataTypeBandFilter` (`BAGSDataType` LMH, band `High` or `Low`) -> `TimeFilter` -> `AggregatorFilter` (`flowStyle` absolute, `averageEpoch` 3) -> `ExpressionTransform` (`InSignalA` channel 1 or 3, `InSignalB` channel 2 or 4) -> `CircleGraphChart`. The full wiring is `apps/braintellect-linux/tests/fixtures/circle_balance_design.tsv`.
+
+| Chart (`chartTitle` B-2 Balance Meter) | Channels A, B | Labels | `Chart1` "Before" | `Chart2` "After" |
+|---|---|---|---|---|
+| `Emotional State` | 1, 2 | SELF / FEELINGS ABOUT / OTHERS | Start anchor, 60..120 s | End anchor, 120..60 s before the end |
+| `Activation State` | 3, 4 | BRAKE / STUCK ON THE / GAS | Start anchor, 60..120 s | End anchor, 120..60 s before the end |
+
+- Each graph takes two series: High on `rangeAxis` top ("OUTWARD ... STATE") and Low on bottom ("INWARD ... STATE"), both `valuesScale` 1.0, `valuesScaleAdd` 0.0. `graphMaxRangeValue` is 4 on every graph.
+- All eight expressions are `ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)`: the B gain 1.08 applies to channels 1n2 too, unlike the SMART-2 Evaluator.
+
+### Observed in code
+
+- `TimeFilter` (vtable `0x18bb0ac`, constructor `0x6244f0` with defaults begin 15, end 75, validation `0x6248a0`, receive `0x624a90`). On the start message (type 2; header `+0x90` the exercise length in seconds) a Start anchor keeps `(begin*1000, end*1000]` ms and an End anchor `((length-begin)*1000, (length-end)*1000]`, and the matching sample counts at the rate. A series message (type 8) is re-emitted with only the points `lo < x <= hi`; a sample block (type 7) is dropped outside the sample range. Validation: "End time must be greater than Begin time." (Start), "Begin time must be greater than End time." (End), "Time values must be greater than zero."
+- `absolute` `AggregatorFilter` (receive `0x649cc0`; style strings as in "Aggregator (static, partial)"). A type-8 message adds every point to the `0x18bf978` accumulator (virtual `+8`) and marks a pending emit; nothing is emitted per point and `averageEpoch` is not read on this path. The pending value (sum / count, `0x649850`) is emitted once, on the stop message (type `0xc`) or the next start (type 2), through `0x649580`.
+- `ExpressionTransform` (vtable `0x18bde84`, receive `0x63c1b0`): messages are paired by the first x of each (`this+0x3b8`, sentinel `0x18bda40`); `0x63a620` copies each variable's values as `float32` times a per-variable double scale cast to `float32`; `0x63b120` evaluates once per point and writes 0 for a non-finite result. The parser is muParser (RTTI `mu::ParserError`, its `Unexpected operator "$TOK$" found at position $POS$` message).
+- `CircleGraphChart` (vtable `0x18a899c`, receive `0x5c7e20`, input `0x5c4b40` matching the pipe name): a series or block goes to `0x5c4550`, which adds each value times a `float32` scale (`+0x18c` of the input's property block) to a running `float32` sum held in a double, and adds the value count to a counter.
+
+### Inferred, not replayed
+
+- The report runs over one stored exercise: each band filter sends the whole series as one type-8 message, and the exercise length is the record's (240 s). So Before keeps x in (60000, 120000] ms (12 points) and After x in (120000, 180000] ms for 240 s.
+- Each chart value is therefore one expression result per graph and band, `ln(1 + |10*(1.08*B - A) / min(A, 1.08*B)|) * sign(1.08*B - A)` evaluated in double over the two `float32` window means (muParser's default `double` value type; the scale `+0x30` is taken as 1), rounded to `float32`.
+- The chart's scale at `+0x18c` is the connection's `valuesScale` (1.0), and it draws sum / count, clipped to `graphMaxRangeValue` 4. Not read: the drawing code (`0x5c7c60`, `0x5c5c80`).
+
+### Clone status
+
+- Has: the design wiring, `TimeFilter` window and `absolute` mean and the expression over stored `High`/`Low` LMH series (`src/feedback/circle_balance.rs`); the wiring is asserted against the fixture.
+- Lacks: the LMH series themselves (the clone stores one band-pass amplitude series per channel, not the generator's 16 series, and the #56 fit of that generator is not exact), the BAGSD report runner, the `CircleGraphChart` drawing, and a session-window entry. A report design cannot run a live session; it would be selectable only as a post-session report once the clone stores LMH series.
+- Blocker for an exact assertion: no capture of the original's chart inputs exists. Needed: a run of the original's report over a stored no-wearer exercise with a hook on `0x5c4550` (values and count per chart input) and on `0x63b120`'s result, plus that exercise's decoded type-9 XML. `tests/replay_s62.rs` reports the clone's values over such an XML (`scripts/lmh-extract.py`); until then they are reported, not asserted.
+- Reported, not asserted: over the stored LMH series of the no-wearer exercise 146 (#56, 240 s), the clone gives Emotional Before High/Low -1.0614 / 0.0603, After -1.1350 / -0.5883, and Activation Before 0.9281 / 0.4452, After 0.9628 / 0.4069. Every window keeps 12 points.
 
 ## Export Completeness and Startup
 
@@ -413,6 +552,15 @@ Observed in `dll1002.BT.dll` (the Qt resource inside the DLL, parsed by `apps/br
 - Per-note matching of the clone's rendering against the recording is weak (correlation 0.6 to 0.77, overlapping notes), so the sample bytes themselves are not asserted.
 
 Decision (`docs/adrs/0004-read-instrument-samples-from-the-original-install.md`): the clone does not carry the sample bytes. `braintellect-linux import <original lib dir>` copies the owner's own `dll<id>.BT.dll` banks into the clone's data directory; no vendor bytes are in the repository.
+
+## Recorded tones (ticket 65, ADR 0006)
+
+The set-up screen lists the feedback tones; the note decisions are the same for all of them and the parity tests keep bank 1002.
+
+- Original banks (observed in the resource names of the install's `lib` directory): 1002 `AcousticStrings` (default), 1001 `Piano`, 1003 `Celeste`. None of the three shares a PCM blob with another, so all three are listed.
+- Recorded tones: Harp, Acoustic guitar and Xylophone are General MIDI programs 46, 24 and 13 of FluidR3_GM, licence MIT (Frank Wen, Toby Smithe; the package `copyright` file). Source: `https://deb.debian.org/debian/pool/main/f/fluid-soundfont-gm/fluid-soundfont-gm_3.1-6_all.deb`, package sha256 `9965fbcc6acee17d6f72b685d28c7f968ec64eba14645445b476d5c6cc2eee4c`; `usr/share/sounds/sf2/FluidR3_GM.sf2` inside it has sha256 `74594e8f4250680adf590507a306655a299935343583256f3b722c48a1bc1cb0`. The font is downloaded by the clinician and is never committed.
+- Rendering (`apps/braintellect-linux/src/audio/soundfont.rs`, `tone.rs`): per MIDI note 40 to 76, the instrument zone whose key range holds the note (left mono samples only), played at rate `sample_rate / 96000 * 2^(((note - root) * scaleTuning + coarse * 100 + fine) / 1200)` with linear interpolation, looping when `sampleModes` loops (the instrument's global zone gives the defaults), zero after an unlooped sample ends, a 480-frame linear fade-out, 76800 frames (0.8 s) at 96 kHz. The root key is `overridingRootKey` when set, else the sample header's pitch. Envelopes, filters and modulators are ignored.
+- Observed with the real font: all three programs cover notes 40 to 76; the harp renders note 60 at 261.7 Hz and note 69 at 440.0 Hz. Pitch for every note is checked with a synthetic SoundFont in `tests/audio_tone.rs`, not with the real one.
 
 ## SoundManager requires a host audio output device (session-setup crash)
 

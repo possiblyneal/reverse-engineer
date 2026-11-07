@@ -159,11 +159,69 @@ it at `0x444a8a`.
 - `Engine::State` values `3` and `4` are read as paused/stopped and running from their
   callers. The enum names were not recovered.
 
+## Observed: band objects and floors (static, `0x560f40`, `0x562400`, `0x568db5`)
+
+- Each channel has five band levels, `20 * log10(bin)` of the spectrum bin nearest the frequency (a bin of exactly 0.0 keeps the previous level): 50 Hz and 60 Hz (mains), and 12, 40 and 70 Hz.
+- The line-noise level `m` is the mains level. The pair test compares the vector [70, 40, 12] Hz of each channel with its partner (order does not affect the count).
+- Head2D `+0x94` is `max(mean 50 Hz level, mean 60 Hz level)` over the channels (`0x562400`); the dispatcher compares it with the ground item's thresholds.
+- `deviceMinFloor` and `deviceOffHeadFloor` are stored at Head2D `+0x44` / `+0x48` (moderate confidence) and logged. They are read only at `0x569e61`, on the path for a data source other than "Line noise" (red when a level is below `+0x48`). They are unused for BT-LOD "Line noise".
+- The clone feeds this through `SensorMonitor` (`src/sensor.rs`): 512-sample blocks per channel, Bartlett-windowed FFT, these five levels, then the evaluator. The scale and bin rule are in the next section.
+
+## Observed: levels against the original (2026-11-07 sensors-off replay)
+
+Run 8's no-wearer stream was replayed into `braintellect.exe` under `frida-inject`
+(`replay-rig.md`), with hooks on the FFT (`DSPFFT::process`), the Head2D update, the
+evaluator exit and the pair test, over the first 78 blocks per channel. The clone reproduces the
+evaluator's fault flag exactly in each of the 11 committed blocks (blocks 0 to 3, 15 to 17, 20, 31,
+58 and 77), which is asserted. Its levels are not bit exact (largest deviation 9.2e-5 dB), so
+`tests/parity_sensor_status.rs` prints their largest deviation and does not assert them
+(fixtures `sensor_inputs.tsv` / `sensor_levels.tsv`; see "Level bit exactness" below):
+
+- FFT: Bartlett window (order 9), 512-sample blocks, output scale `8/511` of the mean-
+  normalized magnitude (the clone's `1/128 / mean(window)`); level = `20 log10(bin / 0.04)`,
+  that is the bin plus 27.9588 dB.
+- A band reads the bin `trunc(freq / 0.9766)`: 51 (50 Hz), 61 (60 Hz), 12 (12 Hz), 40
+  (40 Hz), 71 (70 Hz).
+- The line-noise level is the -120 dB floor for the first two blocks (8 channel updates),
+  then the 60 Hz level. Head2D picks 60 Hz when the channel-mean 60 Hz level exceeds the
+  70 Hz level.
+- The pair test faulted T3/T4 on blocks 16, 20 and 31 and FP1/FP2 on blocks 58 and 77;
+  the outlier and ceiling tests never fired.
+
+Not observed: the overlay state itself (the `setVisible` hook did not fire), so the
+`stateChangeDelay` timing is checked on synthetic levels only; the 50 Hz branch of the
+line rule and its operand order (decompile only; the captured stream picks 60 Hz).
+
+## Level bit exactness (2026-11-07, static and emulated, no VM)
+
+Checked against the same capture (FFT input and output per call, the window, the Head2D
+spectrum and levels):
+
+- Level path (Head2D `0x560f40`, x87 at 53-bit precision): `x = f32(bin / f32(0.04))`,
+  `y = f32(log10(x))` (CRT `log10`), `level = f32(20.0 * y)`, then the identity scaler
+  `0x6543f0` (a = 1, b = 0, no filter). From the original's own spectrum this reproduces all
+  2100 captured levels bit exact. A zero bin skips the log and reuses the last level computed
+  in the same call (initially `+0x70`, -120); the clone keeps the band's own previous level
+  instead.
+- Window: IPP Bartlett (`0x66fea0`, variant-1 kernel `0x6b53f0`) accumulates four SSE lanes:
+  `s = f32(2/(n-1))`, lane j starts at `f32(j*s)` and adds `f32(4*s)` per step, front half
+  mirrored. This reproduces the captured window bit exact; the clone's f64
+  `1 - |2i/(n-1) - 1|` does not. Its mean (`+0x50`) is the sequential f32 sum / 512,
+  0.499022156, which the clone matches.
+- `DSPFFT::process` (`0x637940`): window multiply (`0x66ff30`), IPP order-9 real FFT
+  (`0x66ff20`, the Coherence spec), `0x66ff10`, magnitude (`0x66ff00`), then x87
+  `f32((mag * f32(+0x54 * scale)) / +0x50)` with `+0x54 * scale` = 1/128.
+- The FFT output is not reproducible from the capture: the app's own IPP kernels run under
+  Unicorn (variants 1 to 5) on the captured input differ from the captured output in about
+  40% of bins by 1 to 3 f32 ulp, and even the DC bin (a plain sum) matches under no
+  summation order tried. No buffer offset or MXCSR mode closes it. The cause (the captured
+  input against what the FFT read, or a kernel path Unicorn does not take) needs a VM capture.
+
 ## Unresolved
 
-- Which of the five band objects (`+0x84`, `+0xe4`, `+0x144`, `+0x1a4`, `+0x204`) are the
-  three levels the pair test compares, and their frequencies.
-- Where `deviceMinFloor` and `deviceOffHeadFloor` are consumed. They do not enter the
-  "Image overlay" evaluator. One floor reaches Head2D `+0x94`, which is compared with
-  the ground item's thresholds at `0x569d62`.
+- Bit-exact sensor levels: the FFT residual above.
+
+- The overlay state and its debounce timing on a captured stream, and whether a ground
+  item sets an `errorThreshold`.
+- The 50 Hz branch and the operand order of the 50/60 Hz rule (`0x565300`).
 - The source string compared with `"placebo"` in `launchExercise` (`0x4e4410`).
