@@ -175,3 +175,30 @@ fn settings_that_cannot_run_are_refused_with_a_reason() {
     assert!(model.view().notice.contains("high-pass"));
     assert_eq!(model.stage(), &Stage::Setup);
 }
+
+#[test]
+fn the_sensor_status_shows_before_a_session_and_is_not_available_while_one_runs() {
+    use braintellect_linux::sensor::SensorStatus;
+
+    let mut model = ready();
+    assert_eq!(model.view().sensor, "Not Available");
+
+    model.apply(Event::Sensor(SensorStatus::AdjustFit));
+    assert_eq!(model.view().sensor, "Adjust Fit");
+    model.apply(Event::Sensor(SensorStatus::Ready));
+    assert_eq!(model.view().sensor, "Ready");
+
+    model.start().expect("starts");
+    assert_eq!(model.view().sensor, "Not Available");
+    model.apply(Event::Update(snapshot(Phase::Running, Health::Streaming)));
+    assert_eq!(model.view().sensor, "Not Available");
+
+    // A status that arrives during the run does not show until the run ends.
+    model.apply(Event::Sensor(SensorStatus::Ready));
+    assert_eq!(model.view().sensor, "Not Available");
+    model.apply(Event::Update(snapshot(
+        Phase::Saved { id: 1 },
+        Health::Streaming,
+    )));
+    assert_eq!(model.view().sensor, "Ready");
+}

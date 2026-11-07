@@ -10,6 +10,7 @@ pub mod audio;
 pub mod fixtures;
 pub mod peer;
 pub mod run8;
+pub mod sensor;
 pub mod session;
 pub mod synthetic_bank;
 pub mod tolerance;

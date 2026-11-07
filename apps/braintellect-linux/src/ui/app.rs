@@ -181,6 +181,7 @@ impl eframe::App for App {
             ui.separator();
 
             ui.label(&view.connection);
+            ui.label(format!("Sensors: {}", view.sensor));
             egui::Grid::new("channels").show(ui, |ui| {
                 for channel in &view.channels {
                     ui.label(&channel.label);
