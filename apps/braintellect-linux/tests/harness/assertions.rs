@@ -323,6 +323,29 @@ pub fn stored_record(expected: &StoredRecord, actual: &StoredRecord) -> Parity {
     Ok(())
 }
 
+/// The Circle-Balance chart values match the ones the original's chart inputs received, bit for
+/// bit and in input order. No tolerance applies: both are the same `float32` arithmetic.
+pub fn chart_values(expected: &[f32], actual: &[Option<f32>]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "chart value count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected
+        .iter()
+        .zip(actual)
+        .position(|(e, a)| a.map(f32::to_bits) != Some(e.to_bits()))
+    {
+        Some(i) => mismatch(format!(
+            "chart input {i}: expected {:?}, got {:?}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
 /// The Circle-Balance chart inputs match the original's design one for one, in order (labels,
 /// windows and channel numbers: no tolerance applies).
 pub fn circle_balance_design(

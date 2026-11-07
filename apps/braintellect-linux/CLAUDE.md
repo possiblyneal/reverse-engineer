@@ -105,11 +105,14 @@ those findings, it cites them.
   is a post-session report (`BAGSD.report`) over a stored exercise's `High`/`Low` LMH series, not a
   live design, so it is not in the session window. `CircleBalanceDesign::circle_balance` is its
   wiring, asserted against `tests/fixtures/circle_balance_design.tsv` (`make-fixtures.py --src64`,
-  `tests/parity_circle_balance.rs`); `report` runs the `TimeFilter` window, the `absolute` mean
-  and the Balance Meter expression. Its values are reported only: no capture of the original's
-  chart inputs exists, and the clone stores no LMH series. The ignored `tests/replay_s62.rs`
-  prints them over `S62_LMH` (`scripts/lmh-extract.py` output from a decoded type-9 XML, under
-  `tmp/`). Evidence and the capture needed: `audio-feedback.md`, "Circle-Balance design".
+  `tests/parity_circle_balance.rs`); `report` runs the `TimeFilter` window, the `absolute` mean (double sum, `float32` result) and the
+  Balance Meter expression. Its eight values equal the original's chart inputs bit for bit over
+  exercise 146 (`circle_balance_lmh.tsv` and `circle_balance_chart.tsv`, `make-fixtures.py
+  --src62/--lmh62`, the asserting test in `tests/parity_circle_balance.rs`; the chart fixture is in
+  the original's call order, see `fixtures::circle_balance_report_in_call_order`). The ignored
+  `tests/replay_s62.rs` holds it to the raw hook log under `tmp/s62/` (`S62_CAPTURE`, `S62_LMH`).
+  The clone stores no LMH series of its own and the live B-2 selection is not exercised.
+  Evidence: `audio-feedback.md`, "Circle-Balance design".
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
   database (`rusqlite`, bundled SQLite), at `$XDG_DATA_HOME/braintellect-linux/sessions.db`,
   else `~/.local/share/braintellect-linux/sessions.db` (a relative

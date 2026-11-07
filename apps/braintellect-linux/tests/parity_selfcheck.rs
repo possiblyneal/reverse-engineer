@@ -311,6 +311,27 @@ fn circle_balance_design_green_on_baseline_red_on_wrong() {
 }
 
 #[test]
+fn circle_balance_chart_values_green_on_baseline_red_on_wrong() {
+    let baseline = fixtures::circle_balance_chart();
+    assert_eq!(baseline.len(), 8, "eight chart inputs");
+    let same: Vec<Option<f32>> = baseline.iter().copied().map(Some).collect();
+    assertions::chart_values(&baseline, &same).expect("baseline vs itself");
+
+    let mut ulp = same.clone();
+    ulp[3] = Some(f32::from_bits(baseline[3].to_bits() + 1));
+    let err = assertions::chart_values(&baseline, &ulp).expect_err("one ulp is red");
+    assert!(err.0.contains("chart input 3"), "{}", err.0);
+
+    let mut empty = same.clone();
+    empty[5] = None;
+    assert!(assertions::chart_values(&baseline, &empty).is_err());
+
+    let mut short = same;
+    short.pop();
+    assert!(assertions::chart_values(&baseline, &short).is_err());
+}
+
+#[test]
 fn smart2_fixtures_are_well_formed() {
     let triggers = fixtures::smart2_trigger_blocks();
     let notes = fixtures::smart2_note_blocks();
