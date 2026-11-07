@@ -45,13 +45,35 @@ impl Iir {
 
 /// One IPP biquad section in transposed direct form II, as the `ippsIIR` kernel at
 /// `0x68f350` evaluates it. The tap layout is `b0 b1 b2 a0 a1 a2` and `a0` is 1.
-struct Biquad {
+pub(super) struct Biquad {
     taps: [f64; 6],
     delay: [f64; 2],
 }
 
 impl Biquad {
-    fn push(&mut self, x: f64) -> f64 {
+    /// The order-1 Butterworth band-pass of a `BandPassFilter` with `filterType`
+    /// `infinite` (design kind 2 at `0x653220`, prototype `0x652ac0`): the bilinear
+    /// transform with both edges prewarped by `tan`, one section
+    /// (`session-storage.md`, "Stored series (#56)").
+    pub(super) fn band_pass(low_hz: f64, high_hz: f64, rate_hz: f64) -> Self {
+        let lo = (PI * low_hz / rate_hz).tan();
+        let hi = (PI * high_hz / rate_hz).tan();
+        let (width, product) = (hi - lo, lo * hi);
+        let d = 1.0 + width + product;
+        Self {
+            taps: [
+                width / d,
+                0.0,
+                -width / d,
+                1.0,
+                (2.0 * product - 2.0) / d,
+                (1.0 - width + product) / d,
+            ],
+            delay: [0.0; 2],
+        }
+    }
+
+    pub(super) fn push(&mut self, x: f64) -> f64 {
         let [b0, b1, b2, _, a1, a2] = self.taps;
         let y = b0 * x + self.delay[0];
         self.delay[0] = b1 * x + self.delay[1] - a1 * y;

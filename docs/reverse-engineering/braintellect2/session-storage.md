@@ -144,11 +144,14 @@ read with a throwaway `mysql:5.7` container, blobs decoded as above.
   `C:\bsttest\configuration\log4j.properties` against the working directory, so launch
   it from `C:\bsttest`.
 
-## Observed: the clone's stored series do not reproduce the original's (#56)
+## Stored series (#56)
 
-On 2026-11-07 the original's record for the #48 replay (exercise 138: the run-8 EEG stream plus 61
-frame-drop insertions, no wearer) was decoded as above and compared with the clone's
-`live.rs` series. Decoded XML is kept under `tmp/s56/`, never committed.
+The type-9 `00-90` series are not the SMART-2 graph's band amplitudes. They come from a second
+flow design, BAGSD "Session Assess 3.4-v3.3" (`flowDesign` blob; run `0x44b700`), that the
+original runs over the session's stored filtered data after the exercise. The clone reproduces
+the Band-10 and Band-80 series of exercise 146 within `RECORD_EPSILON` (largest difference
+4.3e-7 µV over 8 series x 49 points): `feedback::StoredSeries`, asserted by the ignored
+`tests/replay_s56.rs`. Decoded records and the capture stay under `tmp/s56/`, never committed.
 
 Field map (clone -> original type 9):
 
@@ -156,47 +159,69 @@ Field map (clone -> original type 9):
 |---|---|
 | `Channel<n>` | `exerciseDataChannel channelName="Channel1..4"` |
 | series `Band 10`, `Band 80` | `dataType="00-90"` series `Band-10`, `Band-80` |
-| point `x` (ms) | `xValue`, every 5000 ms from 5000 |
+| point `x` (ms) | `xValue`: every 5000 ms, then a closing point at the stop |
 | point `y` (µV) | `yValue`, 1e-6 volt units |
 | `duration_s` | `properties` / header duration, 240 s |
 
-- Shape differs: the original has 49 points per series (5000, 10000, ..., 240000, then a closing point at 240008, one block after the stop); the clone stores 48 and no closing point.
-- Values differ: the clone stores an instantaneous per-sample band value that moves by tens of percent between blocks; the original's points are steady (Channel4 Band-80 holds 2.64..2.74 µV) and its first point is a startup transient (2.94, 2.25, 2.90, 2.85 for Band-80 Channel1..4 against 1.36, 1.25, 2.43, 2.73 at 10 s).
+### Observed (exercise 146, 2026-11-07)
 
-### Recovered mechanism (offline fit, not exact)
+Run 8's stream replayed through `braintellect-linux emulate` (`replay-rig.md`), with hooks on the
+consumed volts of all four channels (tag 12/13, 262,516 samples per channel from the stream
+start), the aggregator emit `0x649580`, and the first 400 inputs of every band-pass object at the
+BandPassFilter process `0x66ea7c` (tag 9).
 
-The type-9 `00-90` series come from the BAGSD flow design "Session Assess 3.4-v3.3" (`flowDesign` blob): `Source` Out1..4 feed `Band-NN` BandPassFilter elements (Band-10 1..3 Hz, Band-80 23..36 Hz; Butterworth, `infinite`, order 1) to OutAmplitude, then an AggregatorFilter ("discrete", averageEpoch 5 s, 2500 samples), then x1e6.
+- The 14 SMART-2 band-pass objects get their inputs during the exercise. The 64 BAGSD band-pass
+  objects (16 per channel) get theirs 240 s later, all fed the same stream from the same first
+  sample, the graph start (consumed sample 107504).
+- Every BAGSD input is the SMART-2 Source output `x` as stored: `f32(trunc(x * d) / d)`, with
+  `d` the calibration divisor (counts per volt, `b2-protocol.md`) and truncation toward zero.
+  1600/1600 inputs bit exact (4 channels x 400). Rounding to nearest matches 810/1600,
+  `f32(f32(n) / f32(d))` 961/1600.
+- The SMART-2 inputs fix the 45 Hz low-pass switch per channel, 400/400 each: consumed sample
+  107508 for Channel1, 107507 for Channel2..4. The Source chain runs warm from the first
+  streamed sample with the interference filter off before that.
+- The aggregator emits 49 times per series, all at the end of the exercise; x is 5000 ..
+  240000 ms, then 240016 ms.
 
-Reproduced offline against b138 from the #48 replay inputs (`tmp/s48/replay/eeg.txt`, 4 x 24-bit counts per sample, volts = counts / `ChannelCalibration::new(12.0, 10.0).divisor(F12)`; fit program kept at `tmp/s56/fit56.rs`):
+### Recovered model (matches the stored values within `RECORD_EPSILON`)
 
-- Source chain in volts: 25 Hz notch, 150 Hz low-pass, 1.5 Hz high-pass, warm from sample 0 with the 45 Hz low-pass switched in at sample 25644. Without the notch the Band-10 error is ten times larger and Band-80 far worse.
-- Band-pass: standard bilinear order-1 Butterworth band-pass, tan prewarp, unit gain at the digital centre `2*atan(sqrt(tan(w1/2)*tan(w2/2)))`, applied in transposed direct form II (decompiled design: kind 2 at 0x653220, prototype 0x652ac0).
-- OutAmplitude: sliding max of |y| over W samples (Band-10 W = 83, Band-80 W = 6, the clone's `max(rate/(2*high), 4)` rule), then the 16-tap mean with gain 2/16 (the clone's FIR `BandPass` tail).
-- Aggregate: plain mean of 2500 OutAmplitude samples times 1e6; window k covers samples s0 + 2500k .. s0 + 2500(k+1), s0 about 25639..25642 in the b138 run (consumed sample 107504 in the exercise 146 run, see below).
+Per channel and band, from the graph start:
 
-Fit quality on points 1..48: mean absolute error 1.2e-3..3e-3 µV (relative about 6e-4..1e-3), maximum 3e-3..0.3 µV on the transient first point; the best start sample differs per channel by up to three samples. A first-order highpass-times-lowpass cascade instead of the bilinear band-pass is ruled out (error 0.7..1.2 µV).
+1. The stored Source output above (whole ADC counts, read back as `f32` volts).
+2. An order-1 Butterworth band-pass (`infinite`; Band-10 1..3 Hz, Band-80 23..36 Hz): the
+   bilinear transform with both edges prewarped by `tan`, one section in transposed direct
+   form II, `f64` (design kind 2 at `0x653220`, prototype `0x652ac0`).
+3. `OutAmplitude`: sliding maximum of `|y|` over `W = max(rate / (2 * high), 4)` samples (83 and
+   6), then the 16-tap mean times 2/16, in `f64`.
+4. The `discrete` Aggregator (averageEpoch 5 s): every 2500 samples, the `f64` mean of the last
+   2500 amplitudes times 1e6, at x = samples x 2 ms. At the stop it emits once more: the mean of
+   the last 2500 amplitudes (relative samples 117508..120008 for the 240016 ms point), not of
+   the 8 samples since the last point.
 
-### Capture result (#56, exercise 146)
+Variants that fit worse (offline, over the same data): an `f32` running sum in the aggregator,
+or the band-pass output rounded to `f32`, each exceed 1e-6 µV on many points; the plain
+unquantised Source output leaves the per-channel gain deficit of 3.5e-4..7.9e-4 relative that
+blocked the previous attempt, which the truncation explains (it removes on average half a count
+from every sample's magnitude).
 
-A second replay (run 8, no wearer, stored as exercise 146 on 2026-11-07) was captured with hooks on the consumed volts of all four channels (tag 12, 262,516 samples per channel since the stream started, none missing) and on the aggregator emit 0x649580. Decoded records are kept under `tmp/s56/` (`vol146.txt`, `b146/`, `fit146.rs`), never committed.
+### Inferred, not observed
 
-- The exercise window starts at consumed sample 107504 (0-based) for every one of the eight stored series, found by scanning; the 25644 of the b138 run was that run's own start. The Source chain runs warm from the first streamed sample and the 45 Hz low-pass is switched in near the exercise start (the exact switch sample is not constrained by the fit).
-- The aggregator emits 49 times per series (counts 2500/2500, dt 2 ms, 64 series), all in a burst at the end of the exercise; the point x values are 5000 .. 240000 ms plus the closing 240016 ms point.
-- With the real consumed volts and that start, all 46 steady points of every Band-10 and Band-80 series follow the model with a constant relative deficit per channel, uniform across windows and nearly equal for both bands: model above stored by 6.2e-4, 7.5e-4, 3.6e-4, 3.5e-4 (Band-10) and 6.8e-4, 7.9e-4, 4.2e-4, 4.0e-4 (Band-80) for Channel1..4; after a linear map the residual rms is 3e-5..9e-5 µV. The first point (startup transient) differs by 7e-3 (Band-10) to 0.13 (Band-80, Channel2) relative.
-- So the volts input and the band-pass, OutAmplitude and aggregation structure are right, and the remaining gap (up to 8e-4 relative) is a per-channel gain not explained by the consumed volts (bit exact per #55), the band-pass, or an f32 running sum (a truncating f32 sum would give a channel-independent 1e-4 loss). The per-channel values do not track the channels' mean level or rms.
+- The `discrete` series keeps the last 2500 values (a ring) rather than a running sum, from the
+  closing point's fit. The static read of `0x649cc0` with the AbsoluteDataSeries vtable
+  `0x18bf978` (a `float` sum in a `double` slot, mean `(float)sum / (float)count` at `0x649850`)
+  is another series class: its push and reset hooks (`0x6497b0`, `0x649820`, `0x649840`) never
+  fired, and its `float` sum fits worse.
+- A stream that stops exactly on a 5 s boundary is taken to add no closing point; no such stop
+  was captured.
+- The per-channel switch sample is the app's thread timing (Channel1 one sample later here; run
+  8 switched at the graph start + 1). A live clone run switches at the graph start
+  (`Mode::Fixed`), and its stored series start at its first sample.
 
-### Blocker
+Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the
+`LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, the 256-point `FFT-Normal-Order`
+series, and the `flowDesign` (type 1) and `flowControlMessage` (type 5) blobs. Follow-up: the
+other bands use the same element types, so their design edges are the only new input.
 
-The fit does not reach the harness record tolerance (`RECORD_EPSILON` = 1e-6), so no stored-series value assertion exists and none is added. Ruled out: HP x LP cascade instead of the bilinear band-pass; f32-quantised band-pass coefficients; a dropped first sample per window; a per-window start offset; the volts conversion; a window start other than 107504; a channel-independent f32 sum bias. Not recovered:
-
-- The per-channel gain above (3.5e-4..7.9e-4) and the startup transient of the first point (cold or warm state of the 45 Hz low-pass and the filters at the exercise start).
-- The aggregator's reset between windows and the f32 values entering the mean: the hooks on the series push (0x6497b0, 0x649820) and reset (0x649840) never fired, so the real accumulation path is a different function, and the series pointer read at `this+0x1e4` did not hold the accumulator (the sum slot read garbage). The emit hook did fire with `this+0x1d0` = `this+0x1d8` = 2500.
-- The Band-10 ranks for Channels 1..4 (A..D) are unlogged stand-ins.
-
-Next capture: find the function that adds samples into the aggregator (callers of 0x649580's accumulator vtable 0x18bf978 slots, or hook the OutAmplitude output at 0x650a20 / 0x652020) and log its float input and the Source output per channel, so the first stage where the per-channel gain appears can be named.
-
-Aggregator static read (0x649cc0 with the AbsoluteDataSeries vtable 0x18bf978): the running sum is a float32 held in a double slot, the mean is `(float)sum / (float)count` (0x649850), the point x is `(float)count * (float)dt` (0x649580), and a type-0xc (stop) message emits the partial window once, which is the closing point.
-
-Code located: BAGSD run 0x44b700; GeneralDataCollector 0x5c1300, 0x5c1c80, 0x5c2070; IIR design 0x66dc00, 0x6536a0, 0x653220, 0x652e90, 0x652ac0, 0x652020, 0x650a20; aggregator message handler 0x649cc0, emit 0x649580, accumulator 0x6497b0/0x649820/0x649850/0x649840.
-
-Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the `LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, the 256-point `FFT-Normal-Order` series, and the `flowDesign` (type 1) and `flowControlMessage` (type 5) blobs. Follow-up: name the stage that introduces the per-channel gain, build the IIR band-pass and 5 s aggregator in `src/feedback/`, then add an exact harness assertion with a `parity_selfcheck` red case.
+Code located: BAGSD run 0x44b700; GeneralDataCollector 0x5c1300, 0x5c1c80, 0x5c2070; IIR design
+0x66dc00, 0x6536a0, 0x653220, 0x652e90, 0x652ac0, 0x652020, 0x650a20; BandPassFilter process
+0x66e9f0 (input at 0x66ea7c); aggregator message handler 0x649cc0, emit 0x649580.

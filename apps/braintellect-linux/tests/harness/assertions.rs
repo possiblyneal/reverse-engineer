@@ -2,6 +2,7 @@
 //! a [`Mismatch`] describing the first difference.
 
 use braintellect_linux::audio::player::AudioEvent;
+use braintellect_linux::storage::Channel;
 
 use super::fixtures::{Decision, StoredRecord};
 use super::tolerance::{RECORD_EPSILON, SAMPLE_EPSILON_UV, TIMING_WINDOW_MS};
@@ -193,6 +194,41 @@ pub fn float32_bits(what: &str, expected: &[f32], actual: &[f32]) -> Parity {
         )),
         None => Ok(()),
     }
+}
+
+/// Stored series match: the same channels, series and point count in order, every
+/// point `x` exactly and every `y` (microvolts) within [`RECORD_EPSILON`].
+pub fn stored_series(expected: &[Channel], actual: &[Channel]) -> Parity {
+    let shape = |channels: &[Channel]| {
+        channels
+            .iter()
+            .flat_map(|c| {
+                c.series
+                    .iter()
+                    .map(move |s| (c.name.clone(), s.name.clone(), s.points.len()))
+            })
+            .collect::<Vec<_>>()
+    };
+    if shape(expected) != shape(actual) {
+        return mismatch(format!(
+            "stored series: expected {:?}, got {:?}",
+            shape(expected),
+            shape(actual)
+        ));
+    }
+    for (ec, ac) in expected.iter().zip(actual) {
+        for (es, as_) in ec.series.iter().zip(&ac.series) {
+            for (i, (e, a)) in es.points.iter().zip(&as_.points).enumerate() {
+                if e.x != a.x || (e.y - a.y).abs() > RECORD_EPSILON {
+                    return mismatch(format!(
+                        "{} {} point {i}: expected ({}, {}), got ({}, {})",
+                        ec.name, es.name, e.x, e.y, a.x, a.y
+                    ));
+                }
+            }
+        }
+    }
+    Ok(())
 }
 
 /// Threshold pass flags match sample for sample (boolean: no tolerance applies).

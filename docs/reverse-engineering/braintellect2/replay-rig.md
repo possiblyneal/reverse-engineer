@@ -214,8 +214,9 @@ clicker and a 310 s wait so the exercise stored (exercise 146). The clicker wait
 
 - Logged: 262,516 consumed samples per channel from the stream start (tag 12 and 13, none
   dropped), and 49 emits for each of 64 aggregators. The push and reset hooks never fired.
-- The stored Band-10 and Band-80 series match the offline model to 3.5e-4..7.9e-4 relative, with a
-  per-channel gain residual; see `session-storage.md` for the fit and the open questions.
+- The stored Band-10 and Band-80 series are reproduced within `RECORD_EPSILON` from the consumed
+  volts once the Source output is truncated to whole counts, as stored; see `session-storage.md`,
+  "Stored series (#56)".
 - The datadir was copied off the stopped guest's NTFS disk after `ntfsfix -d`; a throwaway
   `mysql:5.7` container read it. The log (`s56.bin`, 350 MB) stays in the main checkout's
   `tmp/s56/`.

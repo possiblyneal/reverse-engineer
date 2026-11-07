@@ -151,9 +151,12 @@ those findings, it cites them.
   reads per block are the block's. The clinician sets the Source device settings
   (`SessionProperties`, default the run-8 baseline) and the length; the design is
   `Smart2Design::smart2`, checked against the design fixture in `tests/parity_feedback.rs`.
-  The stored series are one point per band-pass amplitude (microvolts) every 5 s of stream
-  time under `Channel<n>` / the band label; which signals the original's 16 stored series
-  hold is unresolved. The UI shows signal level and stream health, plus the sensor status
+  The stored series are `feedback::StoredSeries` (`assess.rs`), the original's BAGSD design
+  fed the Source output from the first sample: per channel `Band 10` and `Band 80`, one
+  microvolt point every 5 s of stream time and a closing point at the stop
+  (`session-storage.md`, "Stored series (#56)"). The ignored `tests/replay_s56.rs` holds them to
+  the original's exercise 146 record within `RECORD_EPSILON` (`assertions::stored_series`;
+  inputs `vol146.txt` and `b146/series.tsv` in `tmp/s56`, `S56_REPLAY_DIR`). The UI shows signal level and stream health, plus the sensor status
   (`src/sensor.rs`: the Head2D evaluator's three fault tests, the `stateChangeDelay` debounce
   and the engine lifecycle, off while a session connects or runs; `ui::state::Event::Sensor`
   carries it). `sensor::SensorMonitor` is the pre-session feed (512-sample FFT blocks per
