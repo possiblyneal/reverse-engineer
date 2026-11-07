@@ -5,6 +5,7 @@
 mod harness;
 
 use braintellect_linux::audio::player::AudioEvent;
+use braintellect_linux::storage::{Channel, Point, Series};
 
 use harness::fixtures::{self, Dir};
 use harness::tolerance::{RECORD_EPSILON, SAMPLE_EPSILON_UV, TIMING_WINDOW_MS};
@@ -108,6 +109,54 @@ fn stored_record_green_on_baseline_red_on_wrong() {
     let mut missing = baseline.clone();
     missing.0.remove("exercise.duration");
     assert!(assertions::stored_record(&baseline, &missing).is_err());
+}
+
+fn stored_channels() -> Vec<Channel> {
+    (1..=2)
+        .map(|c| Channel {
+            name: format!("Channel{c}"),
+            series: ["Band 10", "Band 80"]
+                .map(|name| Series {
+                    name: name.into(),
+                    points: (1..=3)
+                        .map(|k| Point {
+                            x: f64::from(5000 * k),
+                            y: f64::from(c * 10 + k) * 0.37,
+                        })
+                        .collect(),
+                })
+                .into(),
+        })
+        .collect()
+}
+
+#[test]
+fn stored_series_green_inside_the_record_epsilon_red_outside() {
+    let baseline = stored_channels();
+    assertions::stored_series(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut near = baseline.clone();
+    near[1].series[0].points[2].y += RECORD_EPSILON / 2.0;
+    assertions::stored_series(&baseline, &near).expect("inside the record epsilon");
+
+    let mut far = baseline.clone();
+    far[1].series[0].points[2].y += RECORD_EPSILON * 2.0;
+    let err = assertions::stored_series(&baseline, &far).expect_err("outside is red");
+    assert!(err.0.contains("Channel2 Band 10 point 2"), "{}", err.0);
+
+    let mut moved = baseline.clone();
+    moved[0].series[1].points[0].x += 2.0;
+    assert!(assertions::stored_series(&baseline, &moved).is_err());
+
+    let mut short = baseline.clone();
+    short[0].series[1].points.pop();
+    assert!(assertions::stored_series(&baseline, &short).is_err());
+
+    let mut renamed = baseline.clone();
+    renamed[0].series[0].name = "Band 20".into();
+    assert!(assertions::stored_series(&baseline, &renamed).is_err());
+
+    assert!(assertions::stored_series(&baseline, &baseline[..1]).is_err());
 }
 
 #[test]

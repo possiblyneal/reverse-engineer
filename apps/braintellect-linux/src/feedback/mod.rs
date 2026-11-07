@@ -6,10 +6,12 @@
 //! [`SourceFilters`] is the `Source` software filter chain the caller runs on the
 //! decoded EEG; [`Smart2Graph`] runs the rest from its output: band-pass
 //! `OutAmplitude`, Aggregator and `PeakFrequency`, then the two paths, which also
-//! take those stages' logged values directly.
+//! take those stages' logged values directly. [`StoredSeries`] is the separate design
+//! that writes the stored Band 10 and Band 80 series from the same Source output.
 //! Not implemented: `OutAmplitude` of the sound element and the `SoundElement` note
 //! playback.
 
+mod assess;
 mod band_pass;
 pub mod circle_balance;
 mod coherence;
@@ -27,6 +29,7 @@ mod source;
 mod threshold;
 mod trigger_all;
 
+pub use assess::StoredSeries;
 pub use band_pass::{BandPass, BandPassDesign};
 pub use counter::{BlockClock, Counter, TRIGGER_EPOCH_MS};
 pub use evaluator::{balances, Evaluator, BALANCES, COHERENCES, DEFAULT_CODE};

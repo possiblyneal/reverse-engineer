@@ -35,10 +35,10 @@ use crate::audio::player::Player;
 use crate::audio::sink::{AlsaSink, SinkError};
 use crate::feedback::{
     Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
-    BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
+    StoredSeries, BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
 };
 use crate::sensor::{SensorDesign, SensorMonitor, SensorStatus, BLOCK_SAMPLES};
-use crate::storage::{Channel, Header, Point, Series, SessionRecord, Store};
+use crate::storage::{Channel, Header, SessionRecord, Store};
 
 /// Output rate of the sink: the sample rate of instrument bank 1002
 /// (`audio-feedback.md`, "Wave device and instrument 1002").
@@ -64,8 +64,6 @@ pub fn stream_config() -> Result<StreamConfig, String> {
 
 /// A link with no frame for this long reads as [`Health::NoData`].
 const NO_DATA_MS: i64 = 2_000;
-/// Spacing of the stored series points (`tests/fixtures/record.tsv`).
-const POINT_EVERY_MS: u64 = 5_000;
 /// Blocks between status reports while frames arrive (200 ms).
 const REPORT_EVERY_BLOCKS: u64 = 25;
 /// Stream time of one block.
@@ -200,7 +198,11 @@ pub fn run<T: Read + Write>(
     };
     let (family, model) = (session.family(), session.info().system1.model);
     let start_ms = (env.clock)();
-    let built = Engine::new(properties, env.bank, start_ms);
+    let built = ChannelCalibration::new(CHANNEL_GAIN, SENSOR_GAIN)
+        .map_err(|e| format!("{e:?}"))
+        .and_then(|calibration| {
+            Engine::new(properties, env.bank, start_ms, calibration.divisor(family))
+        });
     let mut engine = match built {
         Ok(engine) => engine,
         Err(why) => return finish(&mut env, snapshot, Phase::Failed(why)),
@@ -320,7 +322,6 @@ fn finish(env: &mut Environment<'_>, mut snapshot: Snapshot, phase: Phase) -> Sn
 
 /// The per-run processing state.
 struct Engine<'a> {
-    design: Smart2Design,
     source: Vec<SourceFilters>,
     graph: Smart2Graph,
     player: Player<'a>,
@@ -328,10 +329,8 @@ struct Engine<'a> {
     block: Vec<[f64; CHANNELS]>,
     /// The last second of Source output per channel, microvolts.
     window: [VecDeque<f64>; CHANNELS],
-    /// The latest amplitude of each band-pass, volts.
-    latest_bands: Vec<f32>,
-    /// Stored points per band-pass, in design order.
-    points: Vec<Vec<Point>>,
+    /// The stored series, fed the Source output from the first sample.
+    stored: StoredSeries,
     blocks: u64,
     start_ms: i64,
     now_ms: i64,
@@ -339,24 +338,26 @@ struct Engine<'a> {
 }
 
 impl<'a> Engine<'a> {
-    fn new(properties: &SessionProperties, bank: &'a Bank, start_ms: i64) -> Result<Self, String> {
+    fn new(
+        properties: &SessionProperties,
+        bank: &'a Bank,
+        start_ms: i64,
+        counts_per_volt: f64,
+    ) -> Result<Self, String> {
         let design = Smart2Design::smart2(properties.source());
         let source = (0..CHANNELS)
             .map(|_| SourceFilters::new(&design.source, RATE_HZ))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        let graph = Smart2Graph::new(design.clone(), start_ms - TRIGGER_EPOCH_MS, Mode::Fixed)
+        let graph = Smart2Graph::new(design, start_ms - TRIGGER_EPOCH_MS, Mode::Fixed)
             .map_err(|e| e.to_string())?;
-        let bands = design.band_passes.len();
         Ok(Self {
-            design,
             source,
             graph,
             player: Player::new(bank, OUTPUT_RATE_HZ, 0),
             block: Vec::with_capacity(BLOCK_LEN),
             window: std::array::from_fn(|_| VecDeque::with_capacity(RATE_HZ)),
-            latest_bands: vec![0.0; bands],
-            points: vec![Vec::new(); bands],
+            stored: StoredSeries::new(counts_per_volt, RATE_HZ),
             blocks: 0,
             start_ms,
             now_ms: start_ms,
@@ -401,6 +402,7 @@ impl<'a> Engine<'a> {
                 }
                 window.push_back(volts[c] * 1e6);
             }
+            self.stored.push(&volts);
             self.block.push(volts);
             if self.block.len() == BLOCK_LEN {
                 self.process_block(env, snapshot)?;
@@ -443,19 +445,7 @@ impl<'a> Engine<'a> {
         env.sink
             .write(&self.player.mix(first_frame, BLOCK_OUTPUT_FRAMES))
             .map_err(|e| e.to_string())?;
-        if let Some(last) = decision.samples.last() {
-            self.latest_bands.clone_from(&last.bands);
-        }
         self.blocks += 1;
-        let at_ms = self.blocks * BLOCK_MS;
-        if at_ms.is_multiple_of(POINT_EVERY_MS) {
-            for (points, &volts) in self.points.iter_mut().zip(&self.latest_bands) {
-                points.push(Point {
-                    x: at_ms as f64,
-                    y: f64::from(volts) * 1e6,
-                });
-            }
-        }
         Ok(())
     }
 
@@ -489,20 +479,14 @@ impl<'a> Engine<'a> {
             device_low_pass_cutoff: properties.low_pass_hz,
             data_storage_style: "filtered".to_owned(),
         };
-        let channels = (0..CHANNELS)
-            .map(|channel| Channel {
+        let channels = self
+            .stored
+            .series()
+            .into_iter()
+            .enumerate()
+            .map(|(channel, series)| Channel {
                 name: format!("Channel{}", channel + 1),
-                series: self
-                    .design
-                    .band_passes
-                    .iter()
-                    .zip(&self.points)
-                    .filter(|(spec, _)| spec.channel == channel)
-                    .map(|(spec, points)| Series {
-                        name: spec.label.clone(),
-                        points: points.clone(),
-                    })
-                    .collect(),
+                series,
             })
             .collect();
         SessionRecord {
