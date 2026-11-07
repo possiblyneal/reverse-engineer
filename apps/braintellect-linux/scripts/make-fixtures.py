@@ -53,7 +53,11 @@ ticket-55 replay log `tmp/s55/s55.bin` (`--src55`, never committed; `hook13.js` 
 original fed run 8's no-wearer stream by `emulate`): the first `S55_FRAMES` frames the original
 consumed, and its logged volts for channels 0 to 3 of each consumed sample as float64 bit patterns.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src57 FILE] [--src58 DIR] [--src55 FILE] [--baseline DIR] [--out DIR]
+`circle_balance_design.tsv` is the Balance Meter wiring of the decrypted
+`B-2-Circle-Balance-fromBAGSD-v5.1.1` design XML (`--src64`, `tmp/s64/design171.xml`, never
+committed): one row per chart input, traced back to its LMH band, time window and channels.
+
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src57 FILE] [--src58 DIR] [--src55 FILE] [--src64 FILE] [--baseline DIR] [--out DIR]
 """
 import argparse
 import collections
@@ -389,6 +393,63 @@ def design_rows(src, header):
     if len(aggregators) != 1:
         raise SystemExit("Aggregators differ in style or epoch")
     rows.append(("aggregator", *aggregators.pop()))
+    return rows
+
+
+def circle_balance_rows(path):
+    """One row per Balance Meter input of the decrypted Circle-Balance design XML.
+
+    Traces each `CircleGraphChart` input back through its `ExpressionTransform`, the two
+    `AggregatorFilter`/`TimeFilter`/`BAGSDataTypeBandFilter` chains, to the `Source` outputs:
+    chart, graph title, range axis, LMH band, time anchor, begin and end (s), the channels
+    feeding `A` and `B`, and the expression. Refuses any other chain shape.
+    """
+    root = ET.fromstring(path.read_text())
+
+    def keyed(node):
+        # `flowEngine.display.graphTitle.Chart1` -> `graphTitle.Chart1`
+        return {p.get("key").split(".", 2)[2]: (p.text or "").strip()
+                for p in node.iter() if local(p.tag) == "property"}
+
+    impl, props, feeds, charts = {}, {}, {}, []
+    for e in root.iter():
+        if local(e.tag) == "element":
+            name = e.get("name")
+            impl[name] = next(c.text for c in e if local(c.tag) == "implClass").rsplit(".", 1)[1]
+            props[name] = keyed(e)
+    for c in root.iter():
+        if local(c.tag) != "connection":
+            continue
+        f = {local(x.tag): (x.text or "").strip() for x in c}
+        feeds[(f["destElementName"], f["destPipeName"])] = (f["sourceElementName"], f["sourcePipeName"])
+        if impl[f["destElementName"]] == "CircleGraphChart":
+            charts.append((f["destElementName"], f["destPipeName"], keyed(c)["rangeAxis"],
+                           f["sourceElementName"]))
+
+    def chain(aggregator):
+        """The band, time window and Source output (channel) behind one aggregator."""
+        time_filter = feeds[(aggregator, "InSignal")][0]
+        band_filter = feeds[(time_filter, "InSignal")][0]
+        source, out = feeds[(band_filter, "InBAGSD")]
+        kinds = [impl[n] for n in (aggregator, time_filter, band_filter, source)]
+        if kinds != ["AggregatorFilter", "TimeFilter", "BAGSDataTypeBandFilter", "Source"]:
+            raise SystemExit(f"unexpected chain behind {aggregator}: {kinds}")
+        if props[aggregator]["flowStyle"] != "absolute" or props[band_filter]["BAGSDataType"] != "LMH":
+            raise SystemExit(f"unexpected aggregator or data type behind {aggregator}")
+        t = props[time_filter]
+        window = (t["exerciseTimeAnchorPoint"], t["beginTime"], t["endTime"])
+        return props[band_filter]["BAGSDataTypeBand"], window, out.removeprefix("Out")
+
+    rows = []
+    for chart, pipe, axis, expression in sorted(charts):
+        if impl[expression] != "ExpressionTransform":
+            raise SystemExit(f"{chart} {pipe} is not fed by an expression")
+        (band, window, a), (band_b, window_b, b) = (
+            chain(feeds[(expression, f"InSignal{v}")][0]) for v in "AB")
+        if (band, window) != (band_b, window_b):
+            raise SystemExit(f"{expression} pairs different bands or windows")
+        rows.append((chart, props[chart][f"graphTitle.{pipe}"], axis, band, *window, a, b,
+                     props[expression]["expression"]))
     return rows
 
 
@@ -928,6 +989,7 @@ def main():
     ap.add_argument("--src57", type=pathlib.Path, default=root / "tmp/s57/s57.bin")
     ap.add_argument("--src58", type=pathlib.Path, default=root / "tmp/s58")
     ap.add_argument("--src55", type=pathlib.Path, default=root / "tmp/s55/s55.bin")
+    ap.add_argument("--src64", type=pathlib.Path, default=root / "tmp/s64/design171.xml")
     ap.add_argument("--baseline", type=pathlib.Path, default=root / "tmp/s43/baseline")
     ap.add_argument(
         "--out", type=pathlib.Path,
@@ -989,6 +1051,8 @@ def main():
     (args.out / "smart2_bandpass_stages.tsv").write_text(bandpass_stages(hook_text))
     (args.out / "smart2_design.tsv").write_text("".join(
         "\t".join(r) + "\n" for r in design_rows(args.src4, header4)))
+    (args.out / "circle_balance_design.tsv").write_text("".join(
+        "\t".join(r) + "\n" for r in circle_balance_rows(args.src64)))
 
     for name, text in run8(args.src8).items():
         (args.out / name).write_text(text)

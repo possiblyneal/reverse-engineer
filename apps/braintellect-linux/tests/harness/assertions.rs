@@ -2,6 +2,7 @@
 //! a [`Mismatch`] describing the first difference.
 
 use braintellect_linux::audio::player::AudioEvent;
+use braintellect_linux::feedback::circle_balance::CircleBalanceDesign;
 
 use super::fixtures::{Decision, StoredRecord};
 use super::tolerance::{RECORD_EPSILON, SAMPLE_EPSILON_UV, TIMING_WINDOW_MS};
@@ -235,4 +236,31 @@ pub fn stored_record(expected: &StoredRecord, actual: &StoredRecord) -> Parity {
         }
     }
     Ok(())
+}
+
+/// The Circle-Balance chart inputs match the original's design one for one, in order (labels,
+/// windows and channel numbers: no tolerance applies).
+pub fn circle_balance_design(
+    expected: &CircleBalanceDesign,
+    actual: &CircleBalanceDesign,
+) -> Parity {
+    if expected.inputs.len() != actual.inputs.len() {
+        return mismatch(format!(
+            "chart input count: expected {}, got {}",
+            expected.inputs.len(),
+            actual.inputs.len()
+        ));
+    }
+    match expected
+        .inputs
+        .iter()
+        .zip(&actual.inputs)
+        .position(|(e, a)| e != a)
+    {
+        Some(i) => mismatch(format!(
+            "chart input {i}: expected {:?}, got {:?}",
+            expected.inputs[i], actual.inputs[i]
+        )),
+        None => Ok(()),
+    }
 }

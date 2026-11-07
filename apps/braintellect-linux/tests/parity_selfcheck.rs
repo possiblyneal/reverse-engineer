@@ -216,6 +216,37 @@ fn audio_events_green_on_baseline_within_window_red_outside() {
 }
 
 #[test]
+fn circle_balance_design_green_on_baseline_red_on_wrong() {
+    use braintellect_linux::feedback::circle_balance::{Anchor, LmhBand};
+
+    let baseline = fixtures::circle_balance_design();
+    assert_eq!(baseline.inputs.len(), 8, "eight chart inputs");
+    assertions::circle_balance_design(&baseline, &baseline).expect("baseline vs itself");
+
+    let mut window = baseline.clone();
+    window.inputs[6].window.anchor = Anchor::Start;
+    let err = assertions::circle_balance_design(&baseline, &window).expect_err("anchor is red");
+    assert!(err.0.contains("chart input 6"), "{}", err.0);
+
+    let mut band = baseline.clone();
+    band.inputs[0].band = LmhBand::High;
+    band.inputs[1].band = LmhBand::Low;
+    assert!(assertions::circle_balance_design(&baseline, &band).is_err());
+
+    let mut channels = baseline.clone();
+    channels.inputs[7].channels = (2, 1);
+    assert!(assertions::circle_balance_design(&baseline, &channels).is_err());
+
+    let mut gain = baseline.clone();
+    gain.inputs[2].expression = gain.inputs[2].expression.replace("1.08", "1.0");
+    assert!(assertions::circle_balance_design(&baseline, &gain).is_err());
+
+    let mut short = baseline.clone();
+    short.inputs.pop();
+    assert!(assertions::circle_balance_design(&baseline, &short).is_err());
+}
+
+#[test]
 fn smart2_fixtures_are_well_formed() {
     let triggers = fixtures::smart2_trigger_blocks();
     let notes = fixtures::smart2_note_blocks();

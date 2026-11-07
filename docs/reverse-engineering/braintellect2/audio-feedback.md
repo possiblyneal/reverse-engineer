@@ -18,7 +18,7 @@ This record summarizes authorized analysis of the BRAINtellect2 executable and a
 |---|---:|---|
 | `BT-LOD-v5.1.11` | 207 | lead-off detection |
 | `BT-SMART-2-v5.1.2` | 1,137 | active exercise design and audio feedback |
-| `B-2-Circle-Balance-fromBAGSD-v5.1.1` | 1,162 | balance display design |
+| `B-2-Circle-Balance-fromBAGSD-v5.1.1` | 1,162 | post-session Balance Meter report over stored LMH series (`BAGSD.report`; "Circle-Balance design") |
 | `BAGSD-4-chnl-wDiscreteFFT-v5.1.0` | 3,807 | four-channel discrete-FFT design |
 
 ## SMART-2 EEG-to-Audio Path
@@ -450,6 +450,47 @@ Measured by replaying run 8 (30001 blocks, logged Evaluator codes and clock read
 | Note decisions at a fire | 415 | 415 | 24 blocks sound a different note |
 
 The 24 and 24 are counts of blocks whose decision differs, so a fire that moves to the next block counts in both blocks. The sum order alone changes no decision (0 of 830, "Live sum order"), so the difference comes from the threshold window and the switch sample; the split between those two is not measured.
+
+## Circle-Balance design (ticket 62)
+
+`B-2-Circle-Balance-fromBAGSD-v5.1.1`, decrypted by #64 into `tmp/s64/design171.xml` (never committed). Static evidence from that XML and from `braintellect.exe` under `analyzeHeadless`.
+
+### Observed: a report design, not a live one
+
+- `flowEngine.configuration.designRole` is `BAGSD.report`. Its one `Source` feeds only `BAGSDataTypeBandFilter` elements (`InBAGSD`), which take stored BAGSData, not EEG. The design that writes that data is `designRole` `BAGSD.generate` (`design172.xml`, flow name "Session Assess 3.4-v3.3", the type-9 generator in `session-storage.md`). Strings on the report path: `run(): processing BAGSD data with design:`, `Unable to find BAGSD design`, `open(): parsing BAGSD data, type:`.
+- Its input is the `LMH` data type. Every stored SMART-2 record's type-9 XML holds it: `exerciseDataChannel channelName="Channel1..4" dataType="LMH"`, series `High 1&2`, `Mid 1&2`, `Low 1&2` (Channel1 `side="left"`, Channel2 `right`; `3&4` for Channels 3 and 4), 49 points each, x every 5000 ms. The generator makes them with order-1 Butterworth band-passes (Low 1.5..6.8, Mid 6.8..15.8, High 15.8..34 Hz) into `discrete` Aggregators, epoch 5 s, the same chain #56 fitted for the `00-90` bands.
+
+### Observed: element graph (59 elements, 72 connections)
+
+Per chart input: `Source` `OutN` -> `BAGSDataTypeBandFilter` (`BAGSDataType` LMH, band `High` or `Low`) -> `TimeFilter` -> `AggregatorFilter` (`flowStyle` absolute, `averageEpoch` 3) -> `ExpressionTransform` (`InSignalA` channel 1 or 3, `InSignalB` channel 2 or 4) -> `CircleGraphChart`. The full wiring is `apps/braintellect-linux/tests/fixtures/circle_balance_design.tsv`.
+
+| Chart (`chartTitle` B-2 Balance Meter) | Channels A, B | Labels | `Chart1` "Before" | `Chart2` "After" |
+|---|---|---|---|---|
+| `Emotional State` | 1, 2 | SELF / FEELINGS ABOUT / OTHERS | Start anchor, 60..120 s | End anchor, 120..60 s before the end |
+| `Activation State` | 3, 4 | BRAKE / STUCK ON THE / GAS | Start anchor, 60..120 s | End anchor, 120..60 s before the end |
+
+- Each graph takes two series: High on `rangeAxis` top ("OUTWARD ... STATE") and Low on bottom ("INWARD ... STATE"), both `valuesScale` 1.0, `valuesScaleAdd` 0.0. `graphMaxRangeValue` is 4 on every graph.
+- All eight expressions are `ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)`: the B gain 1.08 applies to channels 1n2 too, unlike the SMART-2 Evaluator.
+
+### Observed in code
+
+- `TimeFilter` (vtable `0x18bb0ac`, constructor `0x6244f0` with defaults begin 15, end 75, validation `0x6248a0`, receive `0x624a90`). On the start message (type 2; header `+0x90` the exercise length in seconds) a Start anchor keeps `(begin*1000, end*1000]` ms and an End anchor `((length-begin)*1000, (length-end)*1000]`, and the matching sample counts at the rate. A series message (type 8) is re-emitted with only the points `lo < x <= hi`; a sample block (type 7) is dropped outside the sample range. Validation: "End time must be greater than Begin time." (Start), "Begin time must be greater than End time." (End), "Time values must be greater than zero."
+- `absolute` `AggregatorFilter` (receive `0x649cc0`; style strings as in "Aggregator (static, partial)"). A type-8 message adds every point to the `0x18bf978` accumulator (virtual `+8`) and marks a pending emit; nothing is emitted per point and `averageEpoch` is not read on this path. The pending value (sum / count, `0x649850`) is emitted once, on the stop message (type `0xc`) or the next start (type 2), through `0x649580`.
+- `ExpressionTransform` (vtable `0x18bde84`, receive `0x63c1b0`): messages are paired by the first x of each (`this+0x3b8`, sentinel `0x18bda40`); `0x63a620` copies each variable's values as `float32` times a per-variable double scale cast to `float32`; `0x63b120` evaluates once per point and writes 0 for a non-finite result. The parser is muParser (RTTI `mu::ParserError`, its `Unexpected operator "$TOK$" found at position $POS$` message).
+- `CircleGraphChart` (vtable `0x18a899c`, receive `0x5c7e20`, input `0x5c4b40` matching the pipe name): a series or block goes to `0x5c4550`, which adds each value times a `float32` scale (`+0x18c` of the input's property block) to a running `float32` sum held in a double, and adds the value count to a counter.
+
+### Inferred, not replayed
+
+- The report runs over one stored exercise: each band filter sends the whole series as one type-8 message, and the exercise length is the record's (240 s). So Before keeps x in (60000, 120000] ms (12 points) and After x in (120000, 180000] ms for 240 s.
+- Each chart value is therefore one expression result per graph and band, `ln(1 + |10*(1.08*B - A) / min(A, 1.08*B)|) * sign(1.08*B - A)` evaluated in double over the two `float32` window means (muParser's default `double` value type; the scale `+0x30` is taken as 1), rounded to `float32`.
+- The chart's scale at `+0x18c` is the connection's `valuesScale` (1.0), and it draws sum / count, clipped to `graphMaxRangeValue` 4. Not read: the drawing code (`0x5c7c60`, `0x5c5c80`).
+
+### Clone status
+
+- Has: the design wiring, `TimeFilter` window and `absolute` mean and the expression over stored `High`/`Low` LMH series (`src/feedback/circle_balance.rs`); the wiring is asserted against the fixture.
+- Lacks: the LMH series themselves (the clone stores one band-pass amplitude series per channel, not the generator's 16 series, and the #56 fit of that generator is not exact), the BAGSD report runner, the `CircleGraphChart` drawing, and a session-window entry. A report design cannot run a live session; it would be selectable only as a post-session report once the clone stores LMH series.
+- Blocker for an exact assertion: no capture of the original's chart inputs exists. Needed: a run of the original's report over a stored no-wearer exercise with a hook on `0x5c4550` (values and count per chart input) and on `0x63b120`'s result, plus that exercise's decoded type-9 XML. `tests/replay_s62.rs` reports the clone's values over such an XML (`scripts/lmh-extract.py`); until then they are reported, not asserted.
+- Reported, not asserted: over the stored LMH series of the no-wearer exercise 146 (#56, 240 s), the clone gives Emotional Before High/Low -1.0614 / 0.0603, After -1.1350 / -0.5883, and Activation Before 0.9281 / 0.4452, After 0.9628 / 0.4069. Every window keeps 12 points.
 
 ## Export Completeness and Startup
 

@@ -1,0 +1,8 @@
+Activation State	Before	bottom	Low	Start	60	120	3	4	ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)
+Activation State	Before	top	High	Start	60	120	3	4	ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)
+Activation State	After	bottom	Low	End	120	60	3	4	ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)
+Activation State	After	top	High	End	120	60	3	4	ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)
+Emotional State	Before	bottom	Low	Start	60	120	1	2	ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)
+Emotional State	Before	top	High	Start	60	120	1	2	ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)
+Emotional State	After	bottom	Low	End	120	60	1	2	ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)
+Emotional State	After	top	High	End	120	60	1	2	ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)
