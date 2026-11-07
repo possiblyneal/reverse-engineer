@@ -160,7 +160,23 @@ The key table is at `0x13f1144`–`0x13f1253`, the setter at `0x63dc28`–`0x63d
 
 So **111 is `defaultControlValue`**, meaning no test passed. It is not an `ExprNoteSelection` code: it falls to "otherwise" and averages channels 3 and 4. **82** is Band 80, Ch1/Ch2 pair, channel 1 larger.
 
-**Design mismatch:** for the Ch3/Ch4 pair the Evaluator produces 112/113 and 182/183. `ExprNoteSelection` lists 102/103 and 101 instead, so 112/113 also fall to "otherwise" (average of channels 3 and 4). `ExprTriggerAll` does decode 112/113. The clone must keep this mismatch to stay at parity.
+**Design mismatch:** for the Ch3/Ch4 pair the Evaluator produces 112/113 and 182/183. `ExprNoteSelection` lists 102/103 and 101 instead, so 112/113 also fall to "otherwise" (average of channels 3 and 4). `ExprTriggerAll` does decode 112/113. The clone keeps this mismatch in original mode; fixed mode corrects it ("Channels 3n4 note codes").
+
+### Channels 3n4 note codes (ticket 64)
+
+**Source.** The four designs in the 2026-11-07 guest datadir (`flowdesign` table, the `tmp/s59/datadir` copy read with a throwaway `mysql:5.7` container, blobs decoded as in `session-storage.md`; decrypted XML in the main checkout's `tmp/s64/`).
+
+Observed:
+
+- **The Evaluator never emits 101, 102 or 103.** Its codes are 111 (default) or a band base 11, 81, 111 or 181 plus 1 or 2 ("Observed" above).
+- **`ExprTriggerAll` pairs the bands by +70 for both channel pairs.** It decodes 11/81, 12/82 and 13/83 for Ch1/Ch2, and 111/181, 112/182 and 113/183 for Ch3/Ch4, where 112 and 182 read channel 3 (E, G) and 113 and 183 read channel 4 (F, H). Both expressions take the same Evaluator output (`InSignalJ`, `InSignalE`).
+- **`ExprNoteSelection` keeps that pairing for Ch1/Ch2 only.** It lists `(11 || 81)`, `(12 || 82)` and `(13 || 83)`, then `(101 || 181)`, `(102 || 182)` and `(103 || 183)`, with A..D = PeakFreq Ch1..Ch4. 181 − 101 = 80 breaks the +70 step its first three branches and every branch of `ExprTriggerAll` keep. 182 → C (Ch3) and 183 → D (Ch4) match `ExprTriggerAll`'s 182 → G and 183 → H.
+- **No other design decodes these codes.** `B-2-Circle-Balance-fromBAGSD-v5.1.1` (eight balance `ExpressionTransform`s, `ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)`, into `CircleGraphChart`s) and `BAGSD-4-chnl-wDiscreteFFT-v5.1.0` have no Evaluator and no code expression. `BT-LOD-v5.1.11` has none either.
+- **The literature corpus gives no code table.** It names the aim (`literature/2013_Gerdes-Tegeler_HIRREM-allostatic-methodology_BrainBehav.md`: the tone follows the dominant frequency, toward hemispheric symmetry, with asymmetry measured in 23–36 Hz, the design's Band 80), but not which channel a code selects.
+
+Inferred: 101, 102 and 103 are typos for 111, 112 and 113. By the design's own +70 pairing and `ExprTriggerAll`, the intended note selection is 112 → channel 3 and 113 → channel 4. 182/183 already decode as intended. 101 and 111 both reach the channel 3 and 4 average (111 through "otherwise"), so that typo changes nothing.
+
+The clone's fixed mode selects channel 3 for 112 and channel 4 for 113. Original mode keeps the average. `tests/parity_feedback.rs` shows both. No recorded stream has reached 112/113 (run 8: 111, 12, 82; #53 and run 6: 111, 183; #33: 111, 82, 12), so the run-8 comparison in "Fixed mode against original mode" is unchanged.
 
 ### Observed sessions
 

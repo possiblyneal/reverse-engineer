@@ -50,11 +50,13 @@ those findings, it cites them.
   `Smart2Graph::new` / `TriggerPath::smart2` / `Threshold::smart2`; no global or flag).
   `Mode::Original` reproduces the original's feedback defects and is the mode of every
   parity test; parity is asserted in original mode only. `Mode::Fixed` is what `live::run`
-  runs and corrects three defects: the threshold window erases one entry when a value
+  runs and corrects four defects: the threshold window erases one entry when a value
   leaves it, not every equal one (`multiset::erase(key)`, `audio-feedback.md`); the 45 Hz
   interference low-pass takes over at the first graph sample (`Mode::interference_switch`),
   not a thread-timed one; every band-pass uses the all-scalar-head 16-tap-mean sum order
-  (`set_scalar_heads` is ignored in fixed mode). The measured run-8 decision difference
+  (`set_scalar_heads` is ignored in fixed mode); `NoteSelection` reads Evaluator code 112 as
+  channel 3 and 113 as channel 4, not the channel 3 and 4 average (`audio-feedback.md`,
+  "Channels 3n4 note codes"). The measured run-8 decision difference
   between the modes is in `audio-feedback.md`, "Fixed mode against original mode".
 - **One seam: the parity-replay harness** (`tests/harness/`). Every layer's tests
   (`tests/parity_<layer>.rs`) go through its loaders and per-layer assertions
