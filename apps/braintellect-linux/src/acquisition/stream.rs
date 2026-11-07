@@ -23,13 +23,13 @@ pub const CHANNELS: usize = 4;
 /// Samples of each channel in one frame.
 pub const SAMPLES_PER_CHANNEL: usize = SAMPLES_PER_FRAME / CHANNELS;
 
-/// What converts raw samples to microvolts. The device family and channel gain
-/// are not decoded from the handshake (device-vs-app family is unresolved), so
-/// the caller supplies them.
+/// What converts raw samples to microvolts. The channel gain is supplied by the
+/// caller; the device family is read from the 110 reply, `family` only overrides it.
 #[derive(Debug, Clone, Copy)]
 pub struct StreamConfig {
     pub calibration: ChannelCalibration,
-    pub family: DeviceFamily,
+    /// Overrides the family the B-2 reports (`None`: use the device's).
+    pub family: Option<DeviceFamily>,
 }
 
 /// One validated frame, decoded: the frame counter and each channel's two
@@ -119,12 +119,13 @@ impl FrameParser {
 #[must_use]
 pub fn decode_payload(
     payload: &[u8; 24],
-    config: StreamConfig,
+    calibration: ChannelCalibration,
+    family: DeviceFamily,
 ) -> [[f64; SAMPLES_PER_CHANNEL]; CHANNELS] {
     let slot = |i: usize| {
         let s = &payload[3 * i..3 * i + 3];
         let raw = decode_sample_i24_be([s[0], s[1], s[2]]);
-        config.calibration.to_volts(raw, config.family) * 1e6
+        calibration.to_volts(raw, family) * 1e6
     };
     std::array::from_fn(|c| std::array::from_fn(|n| slot(c + CHANNELS * n)))
 }

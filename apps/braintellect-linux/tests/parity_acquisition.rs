@@ -5,7 +5,7 @@
 
 mod harness;
 
-use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
+use braintellect_linux::acquisition::decode::ChannelCalibration;
 use braintellect_linux::acquisition::session::{Error, Session};
 use braintellect_linux::acquisition::stream::{SampleFrame, StreamConfig, StreamStats};
 use harness::transport::ReplayTransport;
@@ -22,7 +22,7 @@ fn config() -> StreamConfig {
             record.number("header.sensorGain"),
         )
         .expect("baseline calibration is valid"),
-        family: DeviceFamily::F12,
+        family: None,
     }
 }
 

@@ -37,7 +37,13 @@ A..H flags, Evaluator code, eval clock, lap clock), the baseline Trigger and Not
 decisions (`run8_decisions.tsv`) and the logged E..H band amplitudes of blocks 0..6599
 (`run8_amplitudes_N.tsv`). Clocks are milliseconds from block 0.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--baseline DIR] [--out DIR]
+The live-handshake fixtures (`handshake_live_a.txt`, `handshake_live_b.txt`) come from the
+2026-11-07 live handshakes under `tmp/s58/` (`--src58`, never committed; `hs_A.txt` is the
+first connection after the B-2 was switched on, `hs_B.txt` a reconnect), laid out like
+`wire.txt` with the commands the clone writes (stop, a query pass, mode, injection, a second
+query pass) and the 101 serial scrubbed.
+
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src58 DIR] [--baseline DIR] [--out DIR]
 """
 import argparse
 import collections
@@ -107,6 +113,35 @@ def scrub_serial(events):
     if serial in b"".join(data for _, data in scrubbed):
         raise SystemExit("serial survived scrubbing")
     return scrubbed
+
+
+def live_handshake(path):
+    """The clone's handshake as `wire.txt` lines, from `<tag> <code> <reply hex>` lines."""
+    replies = {}
+    for line in path.read_text().splitlines():
+        _, code, hexed = line.split(" ")
+        replies.setdefault(int(code), []).append(bytes.fromhex(hexed))
+    plain = ["!*#48,0,0,0,0,0,0", "!*#40,1,0,0,0,0,0", "!*#46,0,0,0,0,0,0"]
+    lines = []
+
+    def tx(text):
+        lines.append("TX " + (text + "\r\n").encode().hex())
+
+    def query_pass(n):
+        for code in [101, 110, 112, *range(131, 139)]:
+            tx(f"!*#{code},0,0,0,0,0,0")
+            reply = replies[code][n]
+            if code == 101:
+                found = reply[10:28]
+                reply = reply.replace(found, with_separators(SERIAL_PLACEHOLDER))
+            lines.append("RX " + reply.hex())
+
+    tx(plain[0])
+    query_pass(0)
+    tx(plain[1])
+    tx(plain[2])
+    query_pass(1)
+    return "\n".join(lines) + "\n"
 
 
 def stream_chunks(trace):
@@ -779,6 +814,7 @@ def main():
     ap.add_argument("--src4", type=pathlib.Path, default=root / "tmp/s26/run4")
     ap.add_argument("--src5", type=pathlib.Path, default=root / "tmp/s43/live")
     ap.add_argument("--src8", type=pathlib.Path, default=root / "tmp/s43/run8/run8.bin")
+    ap.add_argument("--src58", type=pathlib.Path, default=root / "tmp/s58")
     ap.add_argument("--baseline", type=pathlib.Path, default=root / "tmp/s43/baseline")
     ap.add_argument(
         "--out", type=pathlib.Path,
@@ -798,6 +834,9 @@ def main():
 
     (args.out / "wire.txt").write_text(
         "".join(f"{d} {data.hex()}\n" for d, data in events))
+    for tag in "ab":
+        (args.out / f"handshake_live_{tag}.txt").write_text(
+            live_handshake(args.src58 / f"hs_{tag.upper()}.txt"))
     (args.out / "stream.txt").write_text(
         "".join(f"{c.hex()}\n" for c in chunks))
     (args.out / "microvolts.tsv").write_text("".join(

@@ -21,15 +21,18 @@ those findings, it cites them.
   by inspection of internal structure.
 - **No guessing past the evidence.** The protocol source of truth is
   `docs/reverse-engineering/braintellect2/b2-protocol.md`. Items it marks
-  unresolved — the 110/112/131 reply layouts,
-  the device family the B-2 reports, and the 110/112 payload meaning — are not
-  implemented. Implemented so far (`src/acquisition/`): the `decode` arithmetic
+  unresolved — the 110 and 112 bytes the app never reads, and the 131-138 mode
+  and gain readings (inferred) — are not claimed as known. Implemented so far (`src/acquisition/`): the `decode` arithmetic
   (the sensor gain is not floored; the live app runs with 10), command encoding
   (`command`), the 32-byte frame parser with counter and `sampleValidation`
   error counters (`stream`), the handshake/start/stop/stream `Session` over any
-  `Read + Write` (`session`), and the RFCOMM socket adapter (`rfcomm`). Frames
+  `Read + Write` (`session`), the decoded 110/112/131-138 replies (`info`), and
+  the RFCOMM socket adapter (`rfcomm`). Frames
   surface 4 channels in resolved order (channel c reads payload slots c and 4+c,
-  oldest first); the device family and gains are supplied by the caller, not read from the device.
+  oldest first); the device family is read from the 110 reply (`StreamConfig.family`
+  only overrides it; an unaccepted code is `Error::UnknownFamily`), the gains are
+  supplied by the caller. `tests/parity_handshake.rs` replays the live handshakes
+  (`handshake_live_{a,b}.txt`) and asserts decoded fields only.
 - **Transport boundary.** Protocol logic runs over `Read + Write`; only
   `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
   (`scripts/run braintellect-linux -- ui --mac <MAC>`, or `-- --mac <MAC>` for a raw frame dump) uses the server's BlueZ, the adapter's only
@@ -152,7 +155,7 @@ those findings, it cites them.
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and
   no MAC, host id, machine/profile/user name, or timestamp. Regenerate it only with
   `python3 -I scripts/make-fixtures.py`; its docstring maps each raw capture under the
-  repo's `tmp/` to its flag and fixtures. Raw captures stay in `tmp/`, never in Git;
+  repo's `tmp/` (the live handshakes under `tmp/s58`, `--src58`) to its flag and fixtures. Raw captures stay in `tmp/`, never in Git;
   every fixture file stays under 500 KB. Grep the fixtures for the MAC and serial
   before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
