@@ -27,6 +27,7 @@ use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::audio::import;
 use braintellect_linux::emulate::{self, Capture};
 use braintellect_linux::live;
+use braintellect_linux::storage;
 use braintellect_linux::ui;
 
 const ACTIVE_CHANNELS: u8 = 4;
@@ -102,7 +103,7 @@ fn emulate_capture(capture: &str, socket: &str) -> Result<(), Box<dyn std::error
 }
 
 fn import_banks(lib_dir: &str) -> Result<(), Box<dyn std::error::Error>> {
-    let dest = import::default_dir().ok_or("neither XDG_DATA_HOME nor HOME is set")?;
+    let dest = import::default_dir().ok_or(storage::NO_DATA_DIR)?;
     for path in import::import_banks(Path::new(lib_dir), &dest)? {
         println!("{}", path.display());
     }

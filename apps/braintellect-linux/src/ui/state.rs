@@ -121,12 +121,6 @@ impl UiModel {
         matches!(self.stage, Stage::Connecting | Stage::Running).then_some(Command::Stop)
     }
 
-    /// Import the instrument banks from `lib_dir`.
-    #[must_use]
-    pub fn import(&self, lib_dir: PathBuf) -> Command {
-        Command::Import(lib_dir)
-    }
-
     pub fn apply(&mut self, event: Event) {
         match event {
             Event::Update(snapshot) => {

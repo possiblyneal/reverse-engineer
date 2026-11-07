@@ -167,6 +167,9 @@ pub fn resolve_data_dir(
     Some(base.join("braintellect-linux"))
 }
 
+/// Why [`default_data_dir`] and the paths under it are `None`.
+pub const NO_DATA_DIR: &str = "neither XDG_DATA_HOME nor HOME is set";
+
 /// [`resolve_data_dir`] over the process environment.
 pub fn default_data_dir() -> Option<PathBuf> {
     resolve_data_dir(std::env::var_os("XDG_DATA_HOME"), std::env::var_os("HOME"))

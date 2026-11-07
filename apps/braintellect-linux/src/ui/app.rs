@@ -1,5 +1,6 @@
-//! The egui window. It only draws [`UiModel`] and turns widget input into model
-//! calls and [`Command`]s; there is no logic here to test.
+//! The egui window. It draws [`UiModel`], turns widget input into model calls and
+//! [`Command`]s, and carries out the import and the instrument check by calling
+//! `import::import_banks` and `audio::load_instrument` (tested in their own modules).
 
 use std::path::PathBuf;
 
@@ -8,6 +9,7 @@ use eframe::egui;
 use crate::audio::{self, import};
 use crate::feedback::{Interference1, Interference2};
 use crate::live::INSTRUMENT_ID;
+use crate::storage;
 
 use super::state::{Command, Event, Instrument, UiModel};
 use super::worker::Worker;
@@ -63,7 +65,7 @@ impl App {
             }
             Command::Import(lib_dir) => {
                 let event = match import::default_dir()
-                    .ok_or_else(|| "neither XDG_DATA_HOME nor HOME is set".to_owned())
+                    .ok_or_else(|| storage::NO_DATA_DIR.to_owned())
                     .and_then(|dest| {
                         import::import_banks(&lib_dir, &dest).map_err(|e| e.to_string())
                     }) {
@@ -85,7 +87,7 @@ impl App {
 
 fn instrument() -> Instrument {
     let loaded = import::default_dir()
-        .ok_or_else(|| "neither XDG_DATA_HOME nor HOME is set".to_owned())
+        .ok_or_else(|| storage::NO_DATA_DIR.to_owned())
         .and_then(|dir| audio::load_instrument(&dir, INSTRUMENT_ID).map_err(|e| e.to_string()));
     match loaded {
         Ok(_) => Instrument::Ready,
@@ -111,7 +113,7 @@ impl eframe::App for App {
                     ui.text_edit_singleline(&mut self.lib_dir);
                 });
                 if ui.button("Import instrument").clicked() {
-                    command = Some(self.model.import(PathBuf::from(self.lib_dir.trim())));
+                    command = Some(Command::Import(PathBuf::from(self.lib_dir.trim())));
                 }
                 ui.separator();
             }

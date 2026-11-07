@@ -397,7 +397,7 @@ impl<'a> Engine<'a> {
 
     /// The session as stored. The header fields are the baseline record's
     /// (`tests/fixtures/record.tsv`): the app version and design, the montage,
-    /// the calibration of `main.rs` and the device settings in use.
+    /// the calibration constants above and the device settings in use.
     fn record(&self, properties: &SessionProperties) -> SessionRecord {
         let header = Header {
             version: "5.1.57".to_owned(),
@@ -409,7 +409,7 @@ impl<'a> Engine<'a> {
             number_channels: CHANNELS as u32,
             device_gain: CHANNEL_GAIN,
             sensor_gain: SENSOR_GAIN,
-            device_family: 12,
+            device_family: FAMILY.code(),
             device_model: "0002.0004".to_owned(),
             interference_filter: match properties.interference1 {
                 Interference1::Off => "Off",

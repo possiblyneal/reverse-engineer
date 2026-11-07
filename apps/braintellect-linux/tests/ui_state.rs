@@ -1,8 +1,6 @@
 //! The session UI's state model: actions and engine events in, what the window
 //! shows out. No window is drawn.
 
-use std::path::PathBuf;
-
 use braintellect_linux::acquisition::stream::StreamStats;
 use braintellect_linux::live::{Health, Phase, SessionProperties, Snapshot};
 use braintellect_linux::ui::state::{Command, Event, Instrument, Stage, UiModel};
@@ -38,8 +36,6 @@ fn a_session_cannot_start_until_the_instrument_is_imported() {
     assert!(model.view().needs_import);
     assert_eq!(model.start(), None);
 
-    let command = model.import(PathBuf::from("/original/lib"));
-    assert_eq!(command, Command::Import(PathBuf::from("/original/lib")));
     model.apply(Event::Imported);
     assert!(model.view().can_start);
     assert!(!model.view().needs_import);
