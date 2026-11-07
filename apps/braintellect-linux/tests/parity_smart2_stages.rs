@@ -11,7 +11,7 @@
 mod harness;
 
 use braintellect_linux::feedback::{
-    BandPass, BandPassDesign, BlockDecision, Interference1, Interference2, PeakDesign,
+    BandPass, BandPassDesign, BlockDecision, Interference1, Interference2, Mode, PeakDesign,
     PeakFrequency, Smart2Graph, Smoother, SourceDesign, SourceFilters, BLOCK_LEN, RATE_HZ,
 };
 use harness::assertions;
@@ -26,8 +26,12 @@ const AGGREGATOR_WINDOW: usize = RATE_HZ * 60;
 /// Run the graph over the live Source output, block by block, under the logged
 /// Evaluator codes, block times and 16-tap-mean sum orders.
 fn replay() -> Vec<BlockDecision> {
-    let mut graph =
-        Smart2Graph::new(fixtures::smart2_design(), -TIMER_BEFORE_FIRST_BLOCK_MS).expect("design");
+    let mut graph = Smart2Graph::new(
+        fixtures::smart2_design(),
+        -TIMER_BEFORE_FIRST_BLOCK_MS,
+        Mode::Original,
+    )
+    .expect("design");
     fixtures::smart2_trigger_blocks()
         .iter()
         .zip(fixtures::smart2_stage_inputs())
@@ -299,12 +303,12 @@ fn a_design_at_another_sample_rate_is_refused() {
     // The trigger and note windows are sized for 500 Hz.
     let mut design = fixtures::smart2_design();
     design.rate_hz = 250;
-    assert!(Smart2Graph::new(design, 0).is_err());
+    assert!(Smart2Graph::new(design, 0, Mode::Original).is_err());
 }
 
 #[test]
 fn a_design_with_a_zero_aggregator_epoch_is_refused() {
     let mut design = fixtures::smart2_design();
     design.aggregator_epoch_s = 0;
-    assert!(Smart2Graph::new(design, 0).is_err());
+    assert!(Smart2Graph::new(design, 0, Mode::Original).is_err());
 }

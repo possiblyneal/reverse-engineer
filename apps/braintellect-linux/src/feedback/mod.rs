@@ -15,6 +15,7 @@ mod counter;
 mod fir;
 mod graph;
 mod iir;
+mod mode;
 mod note;
 mod peak_frequency;
 mod smoother;
@@ -28,6 +29,7 @@ pub use graph::{
     BandPassSpec, BlockDecision, DesignError, PeakSpec, SampleOutput, Smart2Design, Smart2Graph,
     BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,
 };
+pub use mode::Mode;
 pub use note::{NoteSelection, PeakFrequencies};
 pub use peak_frequency::{Peak, PeakDesign, PeakFrequency};
 pub use source::{Interference1, Interference2, SourceDesign, SourceFilters};
@@ -63,11 +65,12 @@ pub struct TriggerPath {
 impl TriggerPath {
     /// The SMART-2 configuration at the 500 Hz sample rate. `timer_start_ms` is
     /// the counter timer's reading at construction, on the same clock as the
-    /// clock passed to [`TriggerPath::process_block`].
-    pub fn smart2(timer_start_ms: i64) -> Self {
+    /// clock passed to [`TriggerPath::process_block`]. `mode` selects the threshold
+    /// window's erase rule.
+    pub fn smart2(timer_start_ms: i64, mode: Mode) -> Self {
         Self {
             smoother: Smoother::new(RATE_HZ * AVERAGE_EPOCH_MS / 1000),
-            threshold: Threshold::smart2(RATE_HZ),
+            threshold: Threshold::smart2(RATE_HZ, mode),
             counter: Counter::smart2(timer_start_ms),
         }
     }

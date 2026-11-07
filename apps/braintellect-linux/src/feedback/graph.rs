@@ -15,7 +15,8 @@ use super::band_pass::{BandPass, BandPassDesign};
 use super::peak_frequency::{Peak, PeakDesign, PeakFrequency};
 use super::source::SourceDesign;
 use super::{
-    BandAmplitudes, BlockClock, NoteSelection, PeakFrequencies, Smoother, TriggerPath, RATE_HZ,
+    BandAmplitudes, BlockClock, Mode, NoteSelection, PeakFrequencies, Smoother, TriggerPath,
+    RATE_HZ,
 };
 
 /// Channels the graph carries (the B-2's four, in resolved order).
@@ -91,6 +92,7 @@ pub struct BlockDecision {
 }
 
 pub struct Smart2Graph {
+    mode: Mode,
     design: Smart2Design,
     bands: Vec<BandPass>,
     aggregators: Vec<Smoother>,
@@ -101,14 +103,16 @@ pub struct Smart2Graph {
 
 impl Smart2Graph {
     /// `timer_start_ms` is the counter timer's reading at construction (see
-    /// [`TriggerPath::smart2`]).
+    /// [`TriggerPath::smart2`]). `mode` is the one explicit choice between the original's
+    /// behaviour and the fixed one ([`Mode`]); in [`Mode::Fixed`] every band-pass takes
+    /// the scalar-head sum order.
     ///
     /// # Errors
     /// Fails if a band-pass or PeakFrequency names a channel outside 1..4, or the
     /// design lacks a PeakFrequency for a channel or the Band 10/80 elements
     /// `ExprTriggerAll` reads, its sample rate is not the 500 Hz the trigger and
     /// note windows are sized for, or its Aggregator `averageEpoch` is zero.
-    pub fn new(design: Smart2Design, timer_start_ms: i64) -> Result<Self, DesignError> {
+    pub fn new(design: Smart2Design, timer_start_ms: i64, mode: Mode) -> Result<Self, DesignError> {
         let err = |msg: String| Err(DesignError(msg));
         if design.rate_hz != RATE_HZ {
             return err(format!(
@@ -141,10 +145,15 @@ impl Smart2Graph {
         let rate = design.rate_hz;
         let window = rate * design.aggregator_epoch_s;
         Ok(Self {
+            mode,
             bands: design
                 .band_passes
                 .iter()
-                .map(|b| BandPass::new(&b.design, rate, BLOCK_LEN))
+                .map(|b| {
+                    let mut band = BandPass::new(&b.design, rate, BLOCK_LEN);
+                    band.set_scalar_head(mode == Mode::Fixed);
+                    band
+                })
                 .collect(),
             aggregators: design
                 .band_passes
@@ -156,7 +165,7 @@ impl Smart2Graph {
                 .iter()
                 .map(|p| PeakFrequency::new(&p.design, rate))
                 .collect(),
-            trigger: TriggerPath::smart2(timer_start_ms),
+            trigger: TriggerPath::smart2(timer_start_ms, mode),
             notes: NoteSelection::smart2(),
             design,
         })
@@ -165,12 +174,17 @@ impl Smart2Graph {
     /// Which band-pass output blocks start on the IPP kernel's scalar head (see
     /// [`BandPass::set_scalar_head`]), in the design's `band_passes` order, from the
     /// next block on. The app's choice follows the output buffer's heap address, so a
-    /// replay has to supply it; the default is all `false`.
+    /// replay has to supply it; the default is all `false`. [`Mode::Fixed`] ignores the
+    /// call: its order is the fixed all-scalar-head policy (`audio-feedback.md`, "Live
+    /// sum order").
     ///
     /// # Panics
     /// Panics if `heads` is not one flag per band-pass.
     pub fn set_scalar_heads(&mut self, heads: &[bool]) {
         assert_eq!(heads.len(), self.bands.len(), "one flag per band-pass");
+        if self.mode == Mode::Fixed {
+            return;
+        }
         for (band, &head) in self.bands.iter_mut().zip(heads) {
             band.set_scalar_head(head);
         }

@@ -393,6 +393,19 @@ Observed. The 16-tap-mean sum order (the IPP scalar-head flag, from the destinat
 - Chosen policy: all-scalar-head, the smaller deviation on both streams (rule: smaller measured deviation, a tie goes to all-SIMD). The gap is under 2 % of the differing amplitudes, so the choice is nearly a coin flip.
 - Every difference is the last `float32` bit of an amplitude; no decision changes. Only the first two outputs of a block can differ (`BandPass::set_scalar_head`), so the last sample of each block, which the live session stores, is identical under either order.
 
+### Fixed mode against original mode (ticket 63)
+
+Observed. The clone's feedback graph has two modes (`apps/braintellect-linux/CLAUDE.md`, "Two feedback modes"): original reproduces the defects below and carries every parity test; fixed is what live sessions run. Fixed corrects (1) the threshold window erase-by-value (see "Threshold window erases by value": one entry leaves, so the window stays at the ring size), (2) the 45 Hz low-pass switch sample (the first graph sample, not the thread-timed one that was start + 1 in run 8 and start + 4 in the #48 replay), and (3) the 16-tap-mean sum order (all-scalar-head, "Live sum order").
+
+Measured by replaying run 8 (30001 blocks, logged Evaluator codes and clock reads as inputs in both modes; `parity_smart2_exercise`):
+
+| Run 8 | Original mode (baseline) | Fixed mode | Differing |
+| --- | --- | --- | --- |
+| Trigger decisions | 415 | 415 | 24 blocks fire differently |
+| Note decisions at a fire | 415 | 415 | 24 blocks sound a different note |
+
+The 24 and 24 are counts of blocks whose decision differs, so a fire that moves to the next block counts in both blocks. The sum order alone changes no decision (0 of 830, "Live sum order"), so the difference comes from the threshold window and the switch sample; the split between those two is not measured.
+
 ## Export Completeness and Startup
 
 The first tablet export survives as the extracted `tmp/bst-export/` tree; its original ZIP was not found in the worktree. Its `STATUS.txt` reports install capture succeeded, database capture failed, and registry capture did not complete. The retry archive's `STATUS.txt` reports that install capture was intentionally skipped, the raw database was captured without an SQL dump because `mysqld.exe` was not found, and no registry keys were found within the collector's bounded search. Neither export proves a complete tablet backup.

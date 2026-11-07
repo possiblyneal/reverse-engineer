@@ -37,11 +37,21 @@ those findings, it cites them.
   `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
   (`scripts/run braintellect-linux -- ui --mac <MAC>`, or `-- --mac <MAC>` for a raw frame dump) uses the server's BlueZ, the adapter's only
   owner (`device-connection.md`, #38), and is manual.
-- **Do not copy the original's bugs.** Reproduce intended behavior, not defects.
-  Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
+- **Do not copy the original's bugs outside parity.** Reproduce intended behavior, not
+  defects. Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
   audio endpoint exists, and the validation-induced null cascades where the
   original assumes a valid license/device/calibration state and faults when it
   is absent. Handle missing devices, endpoints, and invalid input as errors.
+- **Two feedback modes** (`feedback::Mode`, one explicit value passed to
+  `Smart2Graph::new` / `TriggerPath::smart2` / `Threshold::smart2`; no global or flag).
+  `Mode::Original` reproduces the original's feedback defects and is the mode of every
+  parity test; parity is asserted in original mode only. `Mode::Fixed` is what `live::run`
+  runs and corrects three defects: the threshold window erases one entry when a value
+  leaves it, not every equal one (`multiset::erase(key)`, `audio-feedback.md`); the 45 Hz
+  interference low-pass takes over at the first graph sample (`Mode::interference_switch`),
+  not a thread-timed one; every band-pass uses the all-scalar-head 16-tap-mean sum order
+  (`set_scalar_heads` is ignored in fixed mode). The measured run-8 decision difference
+  between the modes is in `audio-feedback.md`, "Fixed mode against original mode".
 - **One seam: the parity-replay harness** (`tests/harness/`). Every layer's tests
   (`tests/parity_<layer>.rs`) go through its loaders and per-layer assertions
   (command bytes, microvolts, note/trigger decisions, stored record) and assert
@@ -116,7 +126,7 @@ those findings, it cites them.
   the transport, sink, clock and stop flag are all injected. Live inputs the clone does not
   derive: every block runs under the Evaluator's `defaultControlValue`
   (`live::DEFAULT_CONTROL`, 111; the Evaluator is unimplemented). The IPP scalar-head
-  flags are all `true`: the original's sum order follows heap alignment per process and
+  flags are all `true` (`Mode::Fixed`): the original's sum order follows heap alignment per process and
   cannot be derived, so a live run fixes the order that departs less from run 8's logged
   one. Measured on run 8 and its replay, all-scalar-head differs from the logged order in
   about 13.0 % of band amplitudes (last `float32` bit) against 13.1 % to 13.3 % for all-SIMD,

@@ -16,7 +16,9 @@ use braintellect_linux::feedback::BLOCK_LEN;
 
 use harness::assertions;
 use harness::fixtures::{self, Decision};
-use harness::run8::{deviation, replay, replay_with_flags, Deviation};
+use harness::run8::{
+    deviation, replay, replay_fixed, replay_switching_at, replay_with_flags, Deviation,
+};
 
 fn expected(kind: &str) -> Vec<Decision> {
     fixtures::run8_decisions()
@@ -118,4 +120,27 @@ fn the_live_sum_order_choice_moves_amplitudes_but_no_decision() {
         }
     );
     assert!(scalar.amplitudes < simd.amplitudes);
+}
+
+/// Fixed mode switches the 45 Hz low-pass in at the first graph sample, where the app's
+/// switch lands on a thread-timed sample (start + 1 in run 8). Observable as the band
+/// amplitudes: with the sum order held equal (fixed mode's all-scalar-head), the fixed
+/// replay is the original replay switched at the start and not the one switched at
+/// start + 1.
+#[test]
+fn fixed_mode_switches_the_low_pass_at_the_first_graph_block() {
+    let fixed = replay_fixed();
+    let at_start = replay_switching_at(0, true);
+    let one_late = replay_switching_at(1, true);
+    assert_eq!(deviation(fixed, &at_start).amplitudes, 0);
+    assert!(deviation(fixed, &one_late).amplitudes > 0);
+}
+
+/// Run 8's decisions under fixed mode against original mode (`audio-feedback.md`, "Fixed
+/// mode against original mode"): 24 of the 415 fires move to another block and 24 of the 415
+/// notes at a fire differ, a count of blocks whose decision differs.
+#[test]
+fn fixed_mode_changes_24_trigger_and_24_note_decisions_of_run_8() {
+    let d = deviation(replay(), replay_fixed());
+    assert_eq!((d.triggers, d.notes), (24, 24));
 }

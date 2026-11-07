@@ -13,7 +13,7 @@ use std::sync::OnceLock;
 
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::feedback::{
-    BlockClock, Interference1, Interference2, Smart2Graph, SourceFilters, BLOCK_LEN, RATE_HZ,
+    BlockClock, Interference1, Interference2, Mode, Smart2Graph, SourceFilters, BLOCK_LEN, RATE_HZ,
 };
 
 use super::fixtures::{self, Run8Block};
@@ -36,6 +36,12 @@ pub struct Replay {
 pub fn replay() -> &'static Replay {
     static RUN: OnceLock<Replay> = OnceLock::new();
     RUN.get_or_init(build)
+}
+
+/// The fixed-mode replay (see [`replay_in`]), run once and shared by the tests.
+pub fn replay_fixed() -> &'static Replay {
+    static RUN: OnceLock<Replay> = OnceLock::new();
+    RUN.get_or_init(|| replay_in(Mode::Fixed))
 }
 
 /// How far one replay's output departs from another's over the same blocks.
@@ -94,28 +100,59 @@ pub fn replay_with_flags(scalar_head: bool) -> Replay {
         GRAPH_START,
         GRAPH_START + 1,
         blocks,
+        Mode::Original,
     )
 }
 
-fn build() -> Replay {
+/// The replay in `mode` under the logged per-block inputs. [`Mode::Fixed`] ignores the
+/// logged sum orders and switches the 45 Hz low-pass in at the first graph sample.
+pub fn replay_in(mode: Mode) -> Replay {
     replay_from(
         &fixtures::run8_eeg(),
         GRAPH_START - PREROLL,
         GRAPH_START,
         GRAPH_START + 1,
         fixtures::run8_blocks(),
+        mode,
     )
+}
+
+/// The original-mode replay with every 16-tap-mean flag set to `scalar_head` and the
+/// 45 Hz low-pass switched in at consumed sample `graph_start + offset`, in place of the
+/// app's logged `+ 1`.
+pub fn replay_switching_at(offset: usize, scalar_head: bool) -> Replay {
+    let blocks = fixtures::run8_blocks()
+        .into_iter()
+        .map(|b| Run8Block {
+            scalar_heads: [scalar_head; 8],
+            ..b
+        })
+        .collect();
+    replay_from(
+        &fixtures::run8_eeg(),
+        GRAPH_START - PREROLL,
+        GRAPH_START,
+        GRAPH_START + offset,
+        blocks,
+        Mode::Original,
+    )
+}
+
+fn build() -> Replay {
+    replay_in(Mode::Original)
 }
 
 /// The replay of an exercise whose consumed EEG starts at consumed sample `first`, before
 /// `graph_start`, under the app's logged per-block inputs. The 45 Hz low-pass is
-/// switched in at consumed sample `graph_start + 1`.
+/// switched in at consumed sample `interference_switch` in [`Mode::Original`] (the app's
+/// thread-timed sample, an input) and at `graph_start` in [`Mode::Fixed`].
 pub fn replay_from(
     eeg: &[[i32; 8]],
     first: usize,
     graph_start: usize,
     interference_switch: usize,
     blocks: Vec<Run8Block>,
+    mode: Mode,
 ) -> Replay {
     let mut design = fixtures::smart2_design();
     design.source.interference1 = Interference1::LowPass45;
@@ -146,6 +183,7 @@ pub fn replay_from(
     warm.interference1 = Interference1::Off;
     let mut source: [SourceFilters; 4] =
         std::array::from_fn(|_| SourceFilters::new(&warm, RATE_HZ).unwrap());
+    let interference_switch = mode.interference_switch(graph_start, interference_switch);
     let mut filtered = |s: usize| -> [f64; 4] {
         if s == interference_switch {
             for chain in &mut source {
@@ -161,6 +199,7 @@ pub fn replay_from(
     let mut graph = Smart2Graph::new(
         design.clone(),
         blocks[0].read_ms - TIMER_BEFORE_FIRST_BLOCK_MS,
+        mode,
     )
     .expect("design");
     let decisions = blocks
