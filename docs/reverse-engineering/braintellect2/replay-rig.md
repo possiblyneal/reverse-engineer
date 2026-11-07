@@ -47,6 +47,9 @@ share): partitioned MBR, FAT32 (`mkfs.fat -F 32 --offset 2048`), loop-mounted on
 
 ## Run steps
 
+0. Turbo on: `echo 0 | sudo tee /sys/devices/system/cpu/intel_pstate/no_turbo` on the host
+   (see "Host CPU clock" below); after the run, `sudo systemctl start cpu-turbo-schedule.service`
+   puts the schedule's state back.
 1. Forward the serial socket to where the emulator runs:
    `ssh -fN -L <local>.sock:/srv/local/windows/braintellect-offline/b2/b2.sock neal@10.10.10.10`.
 2. Start the emulator first: `braintellect-linux emulate <rx capture> <local>.sock 2> emu.log`.
@@ -177,13 +180,37 @@ A replay of the run-8 rx stream with hooks on the Evaluator (each Balance and Co
   forced stop it needs `ntfsfix -d` on the loop device first). It reached user select, the
   licence wizard, the gear dialog, OK and Play unattended. The app's title has two spaces
   (`BRAINtellect 2  Version 5.1.57`), so a single-space `-like` pattern waits out its timeout.
-- The guest's slowness was the host, not the guest (observed): `cpu-turbo-schedule.timer` sets
-  `intel_pstate/no_turbo=1` from 22:00 to 07:00, which capped the host at 800 MHz, and the
-  graph then consumed about 10 blocks a second instead of 125. Before a rig run check
-  `cat /sys/devices/system/cpu/intel_pstate/no_turbo` and run
-  `sudo systemctl stop cpu-turbo-schedule.service` (or write 0) first; start the service
-  again afterwards. With turbo on, the capture ran in real time: 30004 blocks, `hook12.js`
-  loaded, no Evaluator record dropped.
+- The guest's slowness was the host's night turbo cap ("Host CPU clock" below). With turbo on, the capture ran in real time: 30004 blocks, `hook12.js` loaded, no Evaluator record dropped.
 - The log (`g-s53.bin`, 341 MB) stays in the main checkout's `tmp/s53/r3/`. `replay-extract.py`
   turns it into the replay directory; `replay_s48` reads it through `S48_REPLAY_DIR` and
   asserts the A..H amplitudes, the Balance values and the per-block codes.
+
+## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
+
+The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00
+(#53's three runs): GUI clicks took minutes, titles read `(Not Responding)`. The cause is the
+host's clock, not the guest, the hooks or Defender.
+
+- Host config (observed): `cpu-turbo-schedule.timer` runs `/usr/local/bin/cpu-turbo-schedule.sh 22 7`,
+  which writes `intel_pstate/no_turbo=1` from 22:00 to 07:00. Its comment intends "base clock",
+  but this host's firmware reports a base ratio of 8 (MSR `0xCE` bits 15:8 and HWP guaranteed
+  performance in `0x771` are both 8), so `no_turbo=1` caps every core at 800 MHz
+  (`cpuinfo_max_freq` 800000, HWP request max ratio 8). With `no_turbo=0` the cap is 3.8 GHz.
+  Prometheus (`node_cpu_scaling_frequency_max_hertz`, instance `node-exporter:9100`) shows the
+  cap at 800 MHz from 22:05 on 2026-11-06; the real-time #48 and #33 replays ran before 22:00.
+- A/B in one rig run (observed; run-8 rx stream, the `hook11.js` hook set, tag 12 = one consumed
+  ch0 sample, 500/s at real time, binned per 30 s from the first tag 12):
+
+  | Host cap | Tag 12 per s | Serial reads (tag 1) per s | Heartbeats per 30 s |
+  |---|---|---|---|
+  | 3.8 GHz (`no_turbo=0`), before and after Play | 500 | ~120 | 6 |
+  | 800 MHz (`no_turbo=1`), toggled mid-run | 5 to 9 | 0.3 | 1 to 3 |
+  | back to 3.8 GHz | 500 from the next bin | ~120 | 6 |
+  | 2.3 GHz (`no_turbo=0`, `max_perf_pct=60`), separate run, 60 s past Play | 500 | ~119 | 6 |
+
+  With the cap lifted the gear dialog opened 0.8 s after the click (about one minute at 800 MHz).
+- Inferred: at 800 MHz the app needs more than its one busy core and never catches up; the
+  drop (about 60-fold for a 4.75-fold clock cut) is not explained further here.
+- Fix: run step 0 (turbo on for the run). 2.3 GHz also held the rate, so capping the night
+  window with `max_perf_pct=60` instead of `no_turbo=1` would keep both night-time rigs and
+  the schedule's "base clock" intent; that host change is not made.
