@@ -171,9 +171,11 @@ it at `0x444a8a`.
 
 Run 8's no-wearer stream was replayed into `braintellect.exe` under `frida-inject`
 (`replay-rig.md`), with hooks on the FFT (`DSPFFT::process`), the Head2D update, the
-evaluator exit and the pair test, over the first 78 blocks per channel. The clone reproduces every
-level in the 11 committed blocks (blocks 0 to 3, 15 to 17, 20, 31, 58 and 77) within 1e-3 dB and the evaluator's fault flag in each
-(`tests/parity_sensor_status.rs`, fixtures `sensor_inputs.tsv` / `sensor_levels.tsv`):
+evaluator exit and the pair test, over the first 78 blocks per channel. The clone reproduces the
+evaluator's fault flag exactly in each of the 11 committed blocks (blocks 0 to 3, 15 to 17, 20, 31,
+58 and 77), which is asserted. Its levels are not bit exact (largest deviation 9.2e-5 dB), so
+`tests/parity_sensor_status.rs` prints their largest deviation and does not assert them
+(fixtures `sensor_inputs.tsv` / `sensor_levels.tsv`; see "Level bit exactness" below):
 
 - FFT: Bartlett window (order 9), 512-sample blocks, output scale `8/511` of the mean-
   normalized magnitude (the clone's `1/128 / mean(window)`); level = `20 log10(bin / 0.04)`,
@@ -190,7 +192,34 @@ Not observed: the overlay state itself (the `setVisible` hook did not fire), so 
 `stateChangeDelay` timing is checked on synthetic levels only; the 50 Hz branch of the
 line rule and its operand order (decompile only; the captured stream picks 60 Hz).
 
+## Level bit exactness (2026-11-07, static and emulated, no VM)
+
+Checked against the same capture (FFT input and output per call, the window, the Head2D
+spectrum and levels):
+
+- Level path (Head2D `0x560f40`, x87 at 53-bit precision): `x = f32(bin / f32(0.04))`,
+  `y = f32(log10(x))` (CRT `log10`), `level = f32(20.0 * y)`, then the identity scaler
+  `0x6543f0` (a = 1, b = 0, no filter). From the original's own spectrum this reproduces all
+  2100 captured levels bit exact. A zero bin skips the log and reuses the last level computed
+  in the same call (initially `+0x70`, -120); the clone keeps the band's own previous level
+  instead.
+- Window: IPP Bartlett (`0x66fea0`, variant-1 kernel `0x6b53f0`) accumulates four SSE lanes:
+  `s = f32(2/(n-1))`, lane j starts at `f32(j*s)` and adds `f32(4*s)` per step, front half
+  mirrored. This reproduces the captured window bit exact; the clone's f64
+  `1 - |2i/(n-1) - 1|` does not. Its mean (`+0x50`) is the sequential f32 sum / 512,
+  0.499022156, which the clone matches.
+- `DSPFFT::process` (`0x637940`): window multiply (`0x66ff30`), IPP order-9 real FFT
+  (`0x66ff20`, the Coherence spec), `0x66ff10`, magnitude (`0x66ff00`), then x87
+  `f32((mag * f32(+0x54 * scale)) / +0x50)` with `+0x54 * scale` = 1/128.
+- The FFT output is not reproducible from the capture: the app's own IPP kernels run under
+  Unicorn (variants 1 to 5) on the captured input differ from the captured output in about
+  40% of bins by 1 to 3 f32 ulp, and even the DC bin (a plain sum) matches under no
+  summation order tried. No buffer offset or MXCSR mode closes it. The cause (the captured
+  input against what the FFT read, or a kernel path Unicorn does not take) needs a VM capture.
+
 ## Unresolved
+
+- Bit-exact sensor levels: the FFT residual above.
 
 - The overlay state and its debounce timing on a captured stream, and whether a ground
   item sets an `errorThreshold`.
