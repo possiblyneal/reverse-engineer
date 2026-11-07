@@ -175,17 +175,44 @@ for ~2m41s with zero bytes written and no sleep. So once the app opens and holds
 the COM port, no separate keepalive/ping is needed; the sustained open prevents
 the idle-sleep drop that looks like a connection failure.
 
-## Inferred: one Bluetooth adapter must have one guest owner
+## Inferred: one Bluetooth adapter must have one owner
 
-Each Windows guest keeps its own Bluetooth bond (link key) to the B-2, but every guest
-that passes through the same USB adapter (Broadcom BCM20702A0, `0a5c:21e8`) shows the
-controller the same host Bluetooth address. Re-pairing in one guest gives the B-2 a new
-link key, so another guest's stored bond goes stale and its connect fails until that
-guest removes and re-pairs the device. Observed 2026-11-04: after a pairing in the
-homelab `windows` VM, the B-2 would not connect in `braintellect-offline`, and
-power-cycling the controller did not help. Confirming this from the guest's bond registry
-(`HKLM:\SYSTEM\CurrentControlSet\Services\BTHPORT\Parameters\Devices`) and log is
-tracked in #38.
+Observed: every stack that uses the server's USB adapter (Broadcom BCM20702A0, `0a5c:21e8`)
+shows the B-2 the same Bluetooth address: the host's BlueZ and any Windows guest it is
+passed through to. Each stack keeps its own bond (link key). Inferred: the B-2 keeps only
+the key from the latest pairing, so pairing on one stack makes every other stack's key
+stale, and its connect fails until it re-pairs. Whether the B-2 can hold more than one bond
+is not established.
+
+Evidence, none of it conclusive:
+
+- 2026-11-04: after a pairing in the homelab `windows` VM, the B-2 would not connect in
+  `braintellect-offline`. That failure ended in the `0x17` back-off below, which persisted
+  after the guest's bond was removed, so it does not isolate a stale key.
+- 2026-11-06 (#38), after the B-2 was paired in the host's BlueZ: the two stores hold
+  different keys for the same adapter and device. Read from `braintellect-offline`'s
+  SYSTEM hive (`ControlSet001\Services\BTHPORT\Parameters\Keys\<adapter>`, value
+  `<B-2>`, offline from the stopped VM's disk with `hivexsh`) and from BlueZ
+  (`/var/lib/bluetooth/<adapter>/<B-2>/info`); the key values are bond secrets and are not
+  recorded. This shows both stacks bonded with different keys, not that the B-2 rejects
+  the guest's. A guest connect on its old key was not tried: the guest no longer has the
+  adapter, and re-pairing there would replace BlueZ's bond.
+
+## Observed: the server's BlueZ owns the adapter
+
+The adapter's only owner is the server's BlueZ, for the clone (`apps/braintellect-linux`).
+No guest passes it through: neither the homelab `windows` quadlet (homelab#118) nor
+`braintellect-offline` (`replay-rig.md`). The original reads recorded B-2 streams through
+the replay rig, never the live B-2. Pair the B-2 only in BlueZ (`btmgmt bondable on` first,
+or the bond is not kept).
+
+Observed 2026-11-06, with no re-pairing (btmon on the host): the B-2 connected on the stored
+BlueZ bond after a host reboot (bond file written 19:21, booted 21:25, connected 22:34) and
+again after the B-2 was powered off and on (23:33). Each time BlueZ answered
+`Link_Key_Request` from its store, `Encryption_Change` succeeded with no IO capability
+exchange, and the B-2 answered `!*#101` with its 56-byte reply.
+
+## Observed: reason `0x17` with the adapter passed through to a guest
 
 Observed 2026-11-04 (host usbmon capture of the passed-through adapter during an "Add a
 device" attempt in `braintellect-offline`): the guest pages the B-2,
@@ -204,17 +231,21 @@ bound to the host's `btusb` (which resets it), and reattached. The next pairing 
 completed Secure Simple Pairing on the first try: `Link_Key_Request`, IO capability
 exchange, user confirmation, `Simple_Pairing_Complete` status 0, `Authentication_Complete`
 status 0. The B-2 was not power-cycled in between. Inferred: the `0x17` back-off was held in
-the passed-through adapter, so the remote fix is to reset it by re-enumerating:
+the passed-through adapter, and re-enumerating it resets it. These steps apply only while a
+guest holds the adapter, which is no longer the setup:
 
 1. Host: `device_del` the `usb-host` device in the QEMU monitor.
 2. Host: `sudo modprobe btusb`, wait for `hci0`, then `sudo modprobe -r btusb`.
 3. Host: `device_add usb-host,vendorid=0x0a5c,productid=0x21e8,id=bt0`.
 4. Guest: pair the B-2 once.
 
-A `PageTimeout` (`0x04`) on `Create_Connection` is a different failure: the B-2 is not
-answering pages at all, so it is asleep or off. Observed ~15 min after pairing with no open
-port.
+With BlueZ as the owner, `0x17` has not been seen; the matching reset would be
+`sudo modprobe -r btusb && sudo modprobe btusb` (untested).
 
-Since 2026-11-04 only `braintellect-offline` passes the adapter through. The homelab
-`windows` quadlet no longer carries the `usb-host` device. Pair the B-2 only in
-`braintellect-offline`.
+## Connect symptoms
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| Connect fails after the B-2 was paired on another stack sharing the adapter (a guest, or before #38 the host) | Inferred: that pairing replaced the B-2's key, so this stack's bond is stale | Re-pair in the server's BlueZ (`btmgmt bondable on` first) and take the adapter away from any guest; expected, not tested |
+| Pairing refused within ~100 ms, `Disconnection_Complete` reason `0x17`, no `Link_Key_Request` | The adapter holds an authentication back-off | Reset the adapter (previous section) |
+| `Create_Connection` ends `PageTimeout` (`0x04`) | The B-2 is asleep or off (observed ~15 min after pairing with no open port) | Wake or switch on the B-2 |

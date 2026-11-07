@@ -32,8 +32,8 @@ those findings, it cites them.
   oldest first); the device family and gains are supplied by the caller, not read from the device.
 - **Transport boundary.** Protocol logic runs over `Read + Write`; only
   `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
-  (`scripts/run braintellect-linux -- ui --mac <MAC>`, or `-- --mac <MAC>` for a raw frame dump) needs the adapter free of the
-  Windows VM (pairing on the host invalidates the VM's bond) and is manual.
+  (`scripts/run braintellect-linux -- ui --mac <MAC>`, or `-- --mac <MAC>` for a raw frame dump) uses the server's BlueZ, the adapter's only
+  owner (`device-connection.md`, #38), and is manual.
 - **Do not copy the original's bugs.** Reproduce intended behavior, not defects.
   Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
   audio endpoint exists, and the validation-induced null cascades where the
