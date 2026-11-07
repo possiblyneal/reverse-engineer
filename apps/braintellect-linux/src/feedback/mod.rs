@@ -23,7 +23,7 @@ mod threshold;
 mod trigger_all;
 
 pub use band_pass::{BandPass, BandPassDesign};
-pub use counter::{BlockClock, Counter};
+pub use counter::{BlockClock, Counter, TRIGGER_EPOCH_MS};
 pub use graph::{
     BandPassSpec, BlockDecision, DesignError, PeakSpec, SampleOutput, Smart2Design, Smart2Graph,
     BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,

@@ -129,7 +129,7 @@ One SMART-2 session (guest profile, no wearer, sensors off) captured with one Fr
 - **Quantile index:** the threshold is the sorted window's element at `trunc(n·lower)`, zero-based, clamped to `n − 1`, with `lower` the single-precision `0.65`. This replaces the static `round(n·lower)` reading.
 - **Window capacity:** a fixed 2,500 values (500 Hz × 5,000 ms). The threshold is recomputed after every input block and applies to the next block's samples.
 - **Pass flags:** the clone reproduces every recorded pass flag of the fixture's blocks (0 mismatches).
-- **Counter clock:** the timer is read once per block, as the static reading said. The clone reproduces every recorded fire given the observed per-block timer reading and a timer start at least 250 ms before the first block (the baseline's first fire is 250 ms after the first block). The exact start offset is unresolved.
+- **Counter clock:** the timer is read once per block, as the static reading said. The clone reproduces every recorded fire given the observed per-block timer reading and a timer start at least 250 ms before the first block (the baseline's first fire is 250 ms after the first block). The start offset is recovered in "Counter timer start" (ticket 54).
 - **Decision stream:** `Trigger` and `Note` decisions are in `feedback_decisions.tsv`. The clone reproduces the `Trigger` decisions only.
 
 Gaps (not reproducible from this evidence, so not implemented):
@@ -363,6 +363,35 @@ With both, `replay_s48` matches the logged E..H amplitudes bit for bit over all 
 Not resolved:
 
 - Which IPP IIR kernel variant the VM CPU dispatched (`_DAT_0200f428` was not read) and the x87 precision control at run time; neither changes the output observed here.
+
+### Counter timer start (ticket 54)
+
+Observed. The first logged counter evaluation of each exercise (hook tag 3, `now - start`, where `start` is the timer object's start at `+0x200`) gives the timer's age at the first graph block. No hook read the constructor's own clock, so the start is taken from that first record:
+
+| Log | Timer age at block 0 | Consumed samples before the start | Samples from the start to graph start |
+| --- | --- | --- | --- |
+| Run 8 | 14882 ms | 18480 | 7120 |
+| Run 8 replay (`rep8.bin`) | 21018 ms | 15452 | 10188 |
+| #33 live-capture replay (`rep33.bin`) | 3707 ms | 14104 | 1512 |
+
+- The offset is not fixed: it varies from 3.7 to 21 s, and neither the age, the sample count before the start nor the distance to the graph start repeats. The start is not derived from the graph start; it is whenever the counter was constructed before streaming reached the graph.
+- Every offset is above the 500 ms epoch, so the first block was already eligible: the first fire is the first block with a passing sample, whatever the exact offset. The first fire of the run-8 original is at block 52 (first logged lap read).
+- Rule used by the clone: the timer starts one epoch (500 ms) before the first block. Any start at or beyond one epoch fires identically; an earlier start (a timer started at the first block) holds the first fire back until 500 ms have passed. `live::run` takes the clock at the graph's construction and subtracts the epoch; the replay harness uses the first block's read minus 500 ms.
+- Inferred: a start under 500 ms before the first block would delay the first fire, but no log shows one.
+
+### Live sum order (ticket 54)
+
+Observed. The 16-tap-mean sum order (the IPP scalar-head flag, from the destination buffer's heap alignment) depends on the process and cannot be derived, so a live session fixes one order for every band-pass. Run 8's logged flags set the scalar head on 120462 of 240008 band-pass calls. Replaying the same stream with every flag false (all-SIMD) and every flag true (all-scalar-head), against the logged flags (`parity_smart2_exercise`, `replay_s48`):
+
+| Stream | Policy | Band amplitudes differing | Blocks with a difference | Trigger or Note decisions differing |
+| --- | --- | --- | --- | --- |
+| Run 8 | all-SIMD | 126070 of 960032 (13.1 %) | 28702 of 30001 | 0 of 830 |
+| Run 8 | all-scalar-head | 125013 of 960032 (13.0 %) | 28655 of 30001 | 0 of 830 |
+| Run 8 replay (`rep8.bin`; A..D flags are run 8's, so E..H are exact and A..D stand in) | all-SIMD | 127499 of 960032 | 28317 of 30001 | 0 of 874 |
+| Run 8 replay | all-scalar-head | 125236 of 960032 | 28163 of 30001 | 0 of 874 |
+
+- Chosen policy: all-scalar-head, the smaller deviation on both streams (rule: smaller measured deviation, a tie goes to all-SIMD). The gap is under 2 % of the differing amplitudes, so the choice is nearly a coin flip.
+- Every difference is the last `float32` bit of an amplitude; no decision changes. Only the first two outputs of a block can differ (`BandPass::set_scalar_head`), so the last sample of each block, which the live session stores, is identical under either order.
 
 ## Export Completeness and Startup
 
