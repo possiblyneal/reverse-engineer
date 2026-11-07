@@ -58,7 +58,15 @@ impl App {
                     ctx.request_repaint();
                 }));
             }
-            Command::Stop => {
+            Command::CheckSensors => {
+                let ctx = ctx.clone();
+                self.worker = Some(Worker::spawn_check(
+                    self.mac.clone(),
+                    self.model.properties.clone(),
+                    move || ctx.request_repaint(),
+                ));
+            }
+            Command::StopCheck | Command::Stop => {
                 if let Some(worker) = &self.worker {
                     worker.stop();
                 }
@@ -170,6 +178,18 @@ impl eframe::App for App {
                     .clicked()
                 {
                     command = self.model.start();
+                }
+                if ui
+                    .add_enabled(view.can_check, egui::Button::new("Check sensors"))
+                    .clicked()
+                {
+                    command = self.model.check_sensors();
+                }
+                if ui
+                    .add_enabled(view.checking, egui::Button::new("Stop check"))
+                    .clicked()
+                {
+                    command = self.model.stop_check();
                 }
                 if ui
                     .add_enabled(view.can_stop, egui::Button::new("Stop"))

@@ -23,6 +23,8 @@ pub enum Event {
     Update(Snapshot),
     /// The sensor status the engine reports while no session runs.
     Sensor(SensorStatus),
+    /// The sensor check ended: on a stop (`None`) or because it could not run.
+    SensorCheckEnded(Option<String>),
     /// The session could not start, and why.
     Failed(String),
     /// A stop ended the session before it streamed.
@@ -36,6 +38,9 @@ pub enum Event {
 pub enum Command {
     Start(SessionProperties),
     Stop,
+    /// Show the sensor status from the B-2 stream before a session.
+    CheckSensors,
+    StopCheck,
     /// Copy the instrument banks from the original's `lib` directory.
     Import(PathBuf),
 }
@@ -61,6 +66,9 @@ pub struct ChannelView {
 pub struct View {
     pub can_start: bool,
     pub can_stop: bool,
+    pub can_check: bool,
+    /// The sensor check is streaming.
+    pub checking: bool,
     pub needs_import: bool,
     /// The latest outcome or problem; empty when there is none.
     pub notice: String,
@@ -81,6 +89,7 @@ pub struct UiModel {
     stage: Stage,
     snapshot: Option<Snapshot>,
     sensor: SensorStatus,
+    checking: bool,
     notice: String,
 }
 
@@ -98,6 +107,7 @@ impl UiModel {
             stage: Stage::Setup,
             snapshot: None,
             sensor: SensorStatus::NotAvailable,
+            checking: false,
             notice,
         }
     }
@@ -120,6 +130,22 @@ impl UiModel {
         self.snapshot = None;
         self.notice.clear();
         Some(Command::Start(self.properties.clone()))
+    }
+
+    /// Start showing the sensor status from the B-2 stream.
+    pub fn check_sensors(&mut self) -> Option<Command> {
+        if !self.startable() {
+            return None;
+        }
+        self.checking = true;
+        self.notice.clear();
+        Some(Command::CheckSensors)
+    }
+
+    /// Stop the sensor check.
+    #[must_use]
+    pub fn stop_check(&self) -> Option<Command> {
+        self.checking.then_some(Command::StopCheck)
     }
 
     /// Stop the session that is connecting or running.
@@ -145,6 +171,13 @@ impl UiModel {
                 self.snapshot = Some(snapshot);
             }
             Event::Sensor(status) => self.sensor = status,
+            Event::SensorCheckEnded(why) => {
+                self.checking = false;
+                self.sensor = SensorStatus::NotAvailable;
+                if let Some(why) = why {
+                    self.notice = format!("Sensor check stopped: {why}");
+                }
+            }
             Event::Failed(why) => self.fail(&why),
             Event::Cancelled => {
                 self.stage = Stage::Setup;
@@ -164,6 +197,8 @@ impl UiModel {
         View {
             can_start: self.startable(),
             can_stop: matches!(self.stage, Stage::Connecting | Stage::Running),
+            can_check: self.startable(),
+            checking: self.checking,
             needs_import: matches!(self.instrument, Instrument::Missing(_)),
             notice: self.notice.clone(),
             connection: self.connection(),
@@ -208,7 +243,9 @@ impl UiModel {
     }
 
     fn startable(&self) -> bool {
-        self.instrument == Instrument::Ready && matches!(self.stage, Stage::Setup | Stage::Done)
+        self.instrument == Instrument::Ready
+            && !self.checking
+            && matches!(self.stage, Stage::Setup | Stage::Done)
     }
 
     fn fail(&mut self, why: &str) {

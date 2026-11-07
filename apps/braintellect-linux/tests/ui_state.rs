@@ -202,3 +202,36 @@ fn the_sensor_status_shows_before_a_session_and_is_not_available_while_one_runs(
     )));
     assert_eq!(model.view().sensor, "Ready");
 }
+
+#[test]
+fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
+    use braintellect_linux::sensor::SensorStatus;
+
+    let mut model = ready();
+    assert!(model.view().can_check);
+    assert!(!model.view().checking);
+
+    assert_eq!(model.check_sensors(), Some(Command::CheckSensors));
+    assert!(model.view().checking);
+    assert!(!model.view().can_check);
+    assert_eq!(model.check_sensors(), None);
+    model.apply(Event::Sensor(SensorStatus::Ready));
+    assert_eq!(model.view().sensor, "Ready");
+
+    assert_eq!(model.stop_check(), Some(Command::StopCheck));
+    model.apply(Event::SensorCheckEnded(None));
+    assert!(!model.view().checking);
+    assert_eq!(model.view().sensor, "Not Available");
+    assert_eq!(model.stop_check(), None);
+
+    // A check that cannot connect says why and leaves the status unavailable.
+    model.check_sensors();
+    model.apply(Event::SensorCheckEnded(Some("cannot connect".to_owned())));
+    assert!(!model.view().checking);
+    assert!(model.view().notice.contains("cannot connect"));
+
+    // No check during a session.
+    model.start().expect("starts");
+    assert!(!model.view().can_check);
+    assert_eq!(model.check_sensors(), None);
+}
