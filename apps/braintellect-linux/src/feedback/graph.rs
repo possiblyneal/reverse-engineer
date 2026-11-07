@@ -6,16 +6,19 @@
 //! parameters come from the design (`BT-SMART-2-v5.1.2`), passed in as
 //! [`Smart2Design`], not from per-band constants.
 //!
-//! The Evaluator (`coherenceChecker`) is not implemented; its control code is an
-//! input of each block.
+//! The Evaluator ([`Evaluator`]) turns the Aggregators' averages into the control code. A
+//! block runs under the Evaluator's code ([`Smart2Graph::process_evaluated_block`]) or,
+//! for a parity test, under a logged one ([`Smart2Graph::process_filtered_block`]).
 
 use std::fmt;
 
 use super::band_pass::{BandPass, BandPassDesign};
+use super::evaluator::{balances, BALANCES};
 use super::peak_frequency::{Peak, PeakDesign, PeakFrequency};
 use super::source::SourceDesign;
 use super::{
-    BandAmplitudes, BlockClock, NoteSelection, PeakFrequencies, Smoother, TriggerPath, RATE_HZ,
+    BandAmplitudes, BlockClock, Evaluator, Mode, NoteSelection, PeakFrequencies, Smoother,
+    TriggerPath, RATE_HZ,
 };
 
 /// Channels the graph carries (the B-2's four, in resolved order).
@@ -88,27 +91,36 @@ pub struct BlockDecision {
     pub note: i32,
     /// The note the sound element reads when the counter fired in this block.
     pub note_at_trigger: Option<i32>,
+    /// The Evaluator code the block ran under.
+    pub control: u32,
+    /// The Balance values after the block's last sample (`evaluator::BALANCES` series:
+    /// Ch1/Ch2 Band 10, Ch1/Ch2 Band 80, Ch3/Ch4 Band 10, Ch3/Ch4 Band 80).
+    pub balances: [f32; BALANCES],
 }
 
 pub struct Smart2Graph {
+    mode: Mode,
     design: Smart2Design,
     bands: Vec<BandPass>,
     aggregators: Vec<Smoother>,
     peaks: Vec<PeakFrequency>,
     trigger: TriggerPath,
     notes: NoteSelection,
+    evaluator: Evaluator,
 }
 
 impl Smart2Graph {
     /// `timer_start_ms` is the counter timer's reading at construction (see
-    /// [`TriggerPath::smart2`]).
+    /// [`TriggerPath::smart2`]). `mode` is the one explicit choice between the original's
+    /// behaviour and the fixed one ([`Mode`]); in [`Mode::Fixed`] every band-pass takes
+    /// the scalar-head sum order.
     ///
     /// # Errors
     /// Fails if a band-pass or PeakFrequency names a channel outside 1..4, or the
     /// design lacks a PeakFrequency for a channel or the Band 10/80 elements
     /// `ExprTriggerAll` reads, its sample rate is not the 500 Hz the trigger and
     /// note windows are sized for, or its Aggregator `averageEpoch` is zero.
-    pub fn new(design: Smart2Design, timer_start_ms: i64) -> Result<Self, DesignError> {
+    pub fn new(design: Smart2Design, timer_start_ms: i64, mode: Mode) -> Result<Self, DesignError> {
         let err = |msg: String| Err(DesignError(msg));
         if design.rate_hz != RATE_HZ {
             return err(format!(
@@ -141,10 +153,15 @@ impl Smart2Graph {
         let rate = design.rate_hz;
         let window = rate * design.aggregator_epoch_s;
         Ok(Self {
+            mode,
             bands: design
                 .band_passes
                 .iter()
-                .map(|b| BandPass::new(&b.design, rate, BLOCK_LEN))
+                .map(|b| {
+                    let mut band = BandPass::new(&b.design, rate, BLOCK_LEN);
+                    band.set_scalar_head(mode == Mode::Fixed);
+                    band
+                })
                 .collect(),
             aggregators: design
                 .band_passes
@@ -156,8 +173,9 @@ impl Smart2Graph {
                 .iter()
                 .map(|p| PeakFrequency::new(&p.design, rate))
                 .collect(),
-            trigger: TriggerPath::smart2(timer_start_ms),
+            trigger: TriggerPath::smart2(timer_start_ms, mode),
             notes: NoteSelection::smart2(),
+            evaluator: Evaluator::default(),
             design,
         })
     }
@@ -165,12 +183,17 @@ impl Smart2Graph {
     /// Which band-pass output blocks start on the IPP kernel's scalar head (see
     /// [`BandPass::set_scalar_head`]), in the design's `band_passes` order, from the
     /// next block on. The app's choice follows the output buffer's heap address, so a
-    /// replay has to supply it; the default is all `false`.
+    /// replay has to supply it; the default is all `false`. [`Mode::Fixed`] ignores the
+    /// call: its order is the fixed all-scalar-head policy (`audio-feedback.md`, "Live
+    /// sum order").
     ///
     /// # Panics
     /// Panics if `heads` is not one flag per band-pass.
     pub fn set_scalar_heads(&mut self, heads: &[bool]) {
         assert_eq!(heads.len(), self.bands.len(), "one flag per band-pass");
+        if self.mode == Mode::Fixed {
+            return;
+        }
         for (band, &head) in self.bands.iter_mut().zip(heads) {
             band.set_scalar_head(head);
         }
@@ -203,41 +226,71 @@ impl Smart2Graph {
     }
 
     /// One block of samples in volts that have already left the Source filters
-    /// (see [`Self::push_filtered`]), under the Evaluator code `control`, read at
-    /// `clock`. Within a block the trigger path runs before the note path.
+    /// (see [`Self::push_filtered`]), under the logged Evaluator code `control`, read at
+    /// `clock`. Within a block the trigger path runs before the note path. The
+    /// Evaluator still runs, so the block's Balance values are reported.
     pub fn process_filtered_block(
         &mut self,
         clock: impl Into<BlockClock>,
         control: u32,
         block: &[[f64; CHANNELS]],
     ) -> BlockDecision {
-        let samples = block.iter().map(|&s| self.push_filtered(s)).collect();
-        self.decide(clock.into(), control, samples)
+        let samples: Vec<SampleOutput> = block.iter().map(|&s| self.push_filtered(s)).collect();
+        let balances = self.evaluate(&samples);
+        self.decide(clock.into(), control, balances, samples)
+    }
+
+    /// Like [`Self::process_filtered_block`], under the code the Evaluator decides from
+    /// the block's samples: a code decided at the end of an epoch applies to the block that
+    /// completes it.
+    pub fn process_evaluated_block(
+        &mut self,
+        clock: impl Into<BlockClock>,
+        block: &[[f64; CHANNELS]],
+    ) -> BlockDecision {
+        let samples: Vec<SampleOutput> = block.iter().map(|&s| self.push_filtered(s)).collect();
+        let balances = self.evaluate(&samples);
+        let control = self.evaluator.code();
+        self.decide(clock.into(), control, balances, samples)
+    }
+
+    /// The Evaluator code now in effect.
+    #[must_use]
+    pub fn control(&self) -> u32 {
+        self.evaluator.code()
+    }
+
+    fn evaluate(&mut self, samples: &[SampleOutput]) -> [f32; BALANCES] {
+        let last = samples.last().expect("a block holds samples");
+        let latest = balances(self.amplitudes(&last.aggregates));
+        self.evaluator.end_block(samples.len(), latest);
+        latest
+    }
+
+    /// Bands A..H out of per-band values in the design's `band_passes` order.
+    fn amplitudes(&self, values: &[f32]) -> BandAmplitudes {
+        let at = |channel, label| values[band_index(&self.design, channel, label).unwrap()];
+        BandAmplitudes {
+            a: at(0, BAND_LOW),
+            b: at(1, BAND_LOW),
+            c: at(0, BAND_HIGH),
+            d: at(1, BAND_HIGH),
+            e: at(2, BAND_LOW),
+            f: at(3, BAND_LOW),
+            g: at(2, BAND_HIGH),
+            h: at(3, BAND_HIGH),
+        }
     }
 
     fn decide(
         &mut self,
         clock: BlockClock,
         control: u32,
+        balances: [f32; BALANCES],
         samples: Vec<SampleOutput>,
     ) -> BlockDecision {
-        let amplitudes: Vec<BandAmplitudes> = samples
-            .iter()
-            .map(|s| {
-                let at =
-                    |channel, label| s.bands[band_index(&self.design, channel, label).unwrap()];
-                BandAmplitudes {
-                    a: at(0, BAND_LOW),
-                    b: at(1, BAND_LOW),
-                    c: at(0, BAND_HIGH),
-                    d: at(1, BAND_HIGH),
-                    e: at(2, BAND_LOW),
-                    f: at(3, BAND_LOW),
-                    g: at(2, BAND_HIGH),
-                    h: at(3, BAND_HIGH),
-                }
-            })
-            .collect();
+        let amplitudes: Vec<BandAmplitudes> =
+            samples.iter().map(|s| self.amplitudes(&s.bands)).collect();
         let out = self.trigger.process_amplitudes(clock, control, &amplitudes);
         let note_at_trigger = out.trigger.then(|| self.notes.latest());
         let peaks: Vec<PeakFrequencies> = samples
@@ -251,6 +304,8 @@ impl Smart2Graph {
             trigger: out.trigger,
             note,
             note_at_trigger,
+            control,
+            balances,
         }
     }
 }

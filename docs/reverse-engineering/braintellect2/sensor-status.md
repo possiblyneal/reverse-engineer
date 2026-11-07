@@ -159,11 +159,40 @@ it at `0x444a8a`.
 - `Engine::State` values `3` and `4` are read as paused/stopped and running from their
   callers. The enum names were not recovered.
 
+## Observed: band objects and floors (static, `0x560f40`, `0x562400`, `0x568db5`)
+
+- Each channel has five band levels, `20 * log10(bin)` of the spectrum bin nearest the frequency (a bin of exactly 0.0 keeps the previous level): 50 Hz and 60 Hz (mains), and 12, 40 and 70 Hz.
+- The line-noise level `m` is the mains level. The pair test compares the vector [70, 40, 12] Hz of each channel with its partner (order does not affect the count).
+- Head2D `+0x94` is `max(mean 50 Hz level, mean 60 Hz level)` over the channels (`0x562400`); the dispatcher compares it with the ground item's thresholds.
+- `deviceMinFloor` and `deviceOffHeadFloor` are stored at Head2D `+0x44` / `+0x48` (moderate confidence) and logged. They are read only at `0x569e61`, on the path for a data source other than "Line noise" (red when a level is below `+0x48`). They are unused for BT-LOD "Line noise".
+- The clone feeds this through `SensorMonitor` (`src/sensor.rs`): 512-sample blocks per channel, Bartlett-windowed FFT, these five levels, then the evaluator. The scale and bin rule are in the next section.
+
+## Observed: levels against the original (2026-11-07 sensors-off replay)
+
+Run 8's no-wearer stream was replayed into `braintellect.exe` under `frida-inject`
+(`replay-rig.md`), with hooks on the FFT (`DSPFFT::process`), the Head2D update, the
+evaluator exit and the pair test, over the first 78 blocks per channel. The clone reproduces every
+level in the 11 committed blocks (blocks 0 to 3, 15 to 17, 20, 31, 58 and 77) within 1e-3 dB and the evaluator's fault flag in each
+(`tests/parity_sensor_status.rs`, fixtures `sensor_inputs.tsv` / `sensor_levels.tsv`):
+
+- FFT: Bartlett window (order 9), 512-sample blocks, output scale `8/511` of the mean-
+  normalized magnitude (the clone's `1/128 / mean(window)`); level = `20 log10(bin / 0.04)`,
+  that is the bin plus 27.9588 dB.
+- A band reads the bin `trunc(freq / 0.9766)`: 51 (50 Hz), 61 (60 Hz), 12 (12 Hz), 40
+  (40 Hz), 71 (70 Hz).
+- The line-noise level is the -120 dB floor for the first two blocks (8 channel updates),
+  then the 60 Hz level. Head2D picks 60 Hz when the channel-mean 60 Hz level exceeds the
+  70 Hz level.
+- The pair test faulted T3/T4 on blocks 16, 20 and 31 and FP1/FP2 on blocks 58 and 77;
+  the outlier and ceiling tests never fired.
+
+Not observed: the overlay state itself (the `setVisible` hook did not fire), so the
+`stateChangeDelay` timing is checked on synthetic levels only; the 50 Hz branch of the
+line rule and its operand order (decompile only; the captured stream picks 60 Hz).
+
 ## Unresolved
 
-- Which of the five band objects (`+0x84`, `+0xe4`, `+0x144`, `+0x1a4`, `+0x204`) are the
-  three levels the pair test compares, and their frequencies.
-- Where `deviceMinFloor` and `deviceOffHeadFloor` are consumed. They do not enter the
-  "Image overlay" evaluator. One floor reaches Head2D `+0x94`, which is compared with
-  the ground item's thresholds at `0x569d62`.
+- The overlay state and its debounce timing on a captured stream, and whether a ground
+  item sets an `errorThreshold`.
+- The 50 Hz branch and the operand order of the 50/60 Hz rule (`0x565300`).
 - The source string compared with `"placebo"` in `launchExercise` (`0x4e4410`).

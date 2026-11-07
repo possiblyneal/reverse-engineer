@@ -9,8 +9,9 @@
 //! clock and the stop flag.
 //!
 //! Inputs the clone does not derive, and what a live run uses for each:
-//! - The Evaluator is not implemented; every block runs under its documented
-//!   `defaultControlValue`, [`DEFAULT_CONTROL`].
+//! - The Evaluator's Coherence path is not implemented. The control code comes from its
+//!   Balance path, which starts at the documented `defaultControlValue` (111) and is
+//!   decided at each 60 s epoch end; the [`Snapshot`] reports the current code.
 //! - The IPP scalar-head flags are all `true`: the original's order follows heap alignment
 //!   per process, and all-scalar-head departs less from its logged order than all-SIMD
 //!   (`audio-feedback.md`, "Live sum order").
@@ -32,15 +33,12 @@ use crate::audio::bank::Bank;
 use crate::audio::player::Player;
 use crate::audio::sink::{AlsaSink, SinkError};
 use crate::feedback::{
-    Interference1, Interference2, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
-    BLOCK_LEN, CHANNELS, RATE_HZ, TRIGGER_EPOCH_MS,
+    Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign, SourceFilters,
+    BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
 };
+use crate::sensor::{SensorDesign, SensorMonitor, SensorStatus, BLOCK_SAMPLES};
 use crate::storage::{Channel, Header, Point, Series, SessionRecord, Store};
 
-/// The Evaluator's `defaultControlValue` (`audio-feedback.md`, "SMART-2
-/// Evaluator"): the code it holds until a balance or coherence test passes. The
-/// Evaluator is unimplemented, so a live run feeds it to every block.
-pub const DEFAULT_CONTROL: u32 = 111;
 /// Output rate of the sink: the sample rate of instrument bank 1002
 /// (`audio-feedback.md`, "Wave device and instrument 1002").
 pub const OUTPUT_RATE_HZ: u32 = 96_000;
@@ -159,6 +157,8 @@ pub struct Snapshot {
     /// Notes triggered so far.
     pub triggers: u32,
     pub last_note: Option<i32>,
+    /// The Evaluator's current control code.
+    pub control: u32,
     /// Seconds on the clock since the session started.
     pub elapsed_s: u32,
 }
@@ -194,6 +194,7 @@ pub fn run<T: Read + Write>(
         rms_uv: [0.0; STREAM_CHANNELS],
         triggers: 0,
         last_note: None,
+        control: DEFAULT_CODE,
         elapsed_s: 0,
     };
     let (family, model) = (session.family(), session.info().system1.model);
@@ -255,6 +256,61 @@ pub fn run<T: Read + Write>(
     finish(&mut env, snapshot, phase)
 }
 
+/// The sensor status before a session (`sensor-status.md`): the Source output of an
+/// opened B-2 runs through the BT-LOD design beside no SMART-2 graph, and `report`
+/// gets the overlay state after each 512-sample block. Ends when `stop` is raised,
+/// the link closes or errors; the stream is stopped on the way out. `clock` is read
+/// once per block, for the `stateChangeDelay` debounce.
+pub fn monitor<T: Read + Write>(
+    mut session: Session<T>,
+    properties: &SessionProperties,
+    stop: &AtomicBool,
+    clock: &mut dyn FnMut() -> i64,
+    report: &mut dyn FnMut(SensorStatus),
+) {
+    let Ok(mut source) = (0..CHANNELS)
+        .map(|_| SourceFilters::new(&properties.source(), RATE_HZ))
+        .collect::<Result<Vec<_>, _>>()
+    else {
+        return;
+    };
+    if session.start(STREAM_CHANNELS as u8).is_err() {
+        return;
+    }
+    let mut sensors = SensorMonitor::new(SensorDesign::bt_lod());
+    sensors.set_engine_running(true);
+    let mut samples = 0usize;
+    while !stop.load(Ordering::Relaxed) {
+        match session.next_frame() {
+            Ok(Some(frame)) => {
+                for n in 0..frame.channels[0].len() {
+                    let volts: [f64; CHANNELS] =
+                        std::array::from_fn(|c| source[c].push(frame.channels[c][n] * 1e-6));
+                    samples += 1;
+                    // The clock is read only for the sample that completes a block.
+                    let now_ms = if samples.is_multiple_of(BLOCK_SAMPLES) {
+                        clock()
+                    } else {
+                        0
+                    };
+                    if let Some(status) = sensors.push(now_ms, &volts) {
+                        report(status);
+                        if stop.load(Ordering::Relaxed) {
+                            break;
+                        }
+                    }
+                }
+            }
+            Ok(None) => break,
+            Err(SessionError::Io(e))
+                if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
+            Err(_) => break,
+        }
+    }
+    // A link too broken to take Stop has nothing more to lose.
+    let _ = session.disconnect();
+}
+
 fn finish(env: &mut Environment<'_>, mut snapshot: Snapshot, phase: Phase) -> Snapshot {
     snapshot.phase = phase;
     (env.report)(&snapshot);
@@ -288,10 +344,9 @@ impl<'a> Engine<'a> {
             .map(|_| SourceFilters::new(&design.source, RATE_HZ))
             .collect::<Result<Vec<_>, _>>()
             .map_err(|e| e.to_string())?;
-        let mut graph = Smart2Graph::new(design.clone(), start_ms - TRIGGER_EPOCH_MS)
+        let graph = Smart2Graph::new(design.clone(), start_ms - TRIGGER_EPOCH_MS, Mode::Fixed)
             .map_err(|e| e.to_string())?;
         let bands = design.band_passes.len();
-        graph.set_scalar_heads(&vec![true; bands]);
         Ok(Self {
             design,
             source,
@@ -366,9 +421,8 @@ impl<'a> Engine<'a> {
     ) -> Result<(), String> {
         self.now_ms = (env.clock)();
         self.last_frame_ms = self.now_ms;
-        let decision = self
-            .graph
-            .process_filtered_block(self.now_ms, DEFAULT_CONTROL, &self.block);
+        let decision = self.graph.process_evaluated_block(self.now_ms, &self.block);
+        snapshot.control = decision.control;
         self.block.clear();
         let stream_ms = self.blocks * BLOCK_MS;
         let block = usize::try_from(self.blocks).map_err(|e| e.to_string())?;

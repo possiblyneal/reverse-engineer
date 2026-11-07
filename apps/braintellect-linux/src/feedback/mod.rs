@@ -7,14 +7,16 @@
 //! decoded EEG; [`Smart2Graph`] runs the rest from its output: band-pass
 //! `OutAmplitude`, Aggregator and `PeakFrequency`, then the two paths, which also
 //! take those stages' logged values directly.
-//! Not implemented: the Evaluator (its control code is an input), `OutAmplitude`
+//! Not implemented: the Evaluator's Coherence path (only Balance is), `OutAmplitude`
 //! of the sound element and the `SoundElement` note playback.
 
 mod band_pass;
 mod counter;
+mod evaluator;
 mod fir;
 mod graph;
 mod iir;
+mod mode;
 mod note;
 mod peak_frequency;
 mod smoother;
@@ -24,10 +26,12 @@ mod trigger_all;
 
 pub use band_pass::{BandPass, BandPassDesign};
 pub use counter::{BlockClock, Counter, TRIGGER_EPOCH_MS};
+pub use evaluator::{balances, Evaluator, BALANCES, DEFAULT_CODE};
 pub use graph::{
     BandPassSpec, BlockDecision, DesignError, PeakSpec, SampleOutput, Smart2Design, Smart2Graph,
     BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,
 };
+pub use mode::Mode;
 pub use note::{NoteSelection, PeakFrequencies};
 pub use peak_frequency::{Peak, PeakDesign, PeakFrequency};
 pub use source::{Interference1, Interference2, SourceDesign, SourceFilters};
@@ -63,11 +67,12 @@ pub struct TriggerPath {
 impl TriggerPath {
     /// The SMART-2 configuration at the 500 Hz sample rate. `timer_start_ms` is
     /// the counter timer's reading at construction, on the same clock as the
-    /// clock passed to [`TriggerPath::process_block`].
-    pub fn smart2(timer_start_ms: i64) -> Self {
+    /// clock passed to [`TriggerPath::process_block`]. `mode` selects the threshold
+    /// window's erase rule.
+    pub fn smart2(timer_start_ms: i64, mode: Mode) -> Self {
         Self {
             smoother: Smoother::new(RATE_HZ * AVERAGE_EPOCH_MS / 1000),
-            threshold: Threshold::smart2(RATE_HZ),
+            threshold: Threshold::smart2(RATE_HZ, mode),
             counter: Counter::smart2(timer_start_ms),
         }
     }

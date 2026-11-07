@@ -119,6 +119,25 @@ pub fn notes(expected: &[i32], actual: &[i32]) -> Parity {
     }
 }
 
+/// The control code the Evaluator decides for each block matches the baseline's, block for
+/// block (integers: no tolerance applies).
+pub fn control_codes(expected: &[u32], actual: &[u32]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "control code count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected.iter().zip(actual).position(|(e, a)| e != a) {
+        Some(i) => mismatch(format!(
+            "block {i} control code: expected {}, got {}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
 /// Threshold pass flags match sample for sample (boolean: no tolerance applies).
 pub fn pass_flags(expected: &[bool], actual: &[bool]) -> Parity {
     if expected.len() != actual.len() {
