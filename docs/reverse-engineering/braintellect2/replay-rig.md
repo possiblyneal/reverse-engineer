@@ -22,22 +22,20 @@ the rig, the run steps and the result of replaying run 8.
 ## VM wiring (before and after)
 
 Changed only in the host quadlet `~/.config/containers/systemd/braintellect-offline.container`
-(on `neal@10.10.10.10`). Backup before editing: `braintellect-offline.container.bak-20261106`;
-the rig version is kept as `braintellect-offline.container.rig-s48`. The restored file is the
-live quadlet; the running container still has the rig arguments until its next restart.
+(on `neal@10.10.10.10`); the rig version is kept beside it as
+`braintellect-offline.container.rig-s48`. Neither passes the Bluetooth adapter through: the
+server's BlueZ is its only owner (`device-connection.md`, #38). Both publish noVNC on 8017
+(8007 is bound by another service). The rig differs from the live quadlet only in:
 
 ```
--PublishPort=127.0.0.1:8007:8006          (8007 was bound by another service)
-+PublishPort=127.0.0.1:8017:8006
--AddDevice=/dev/bus/usb                   (no adapter passthrough while the rig runs)
--Environment="ARGUMENTS=-device usb-host,vendorid=0x0a5c,productid=0x21e8 -audiodev alsa,id=snd0,out.dev=bstout,out.frequency=44100 -device ich9-intel-hda -device hda-output,audiodev=snd0"
+-Environment="ARGUMENTS=-audiodev alsa,id=snd0,out.dev=bstout,out.frequency=44100 -device ich9-intel-hda -device hda-output,audiodev=snd0"
 +Environment="ARGUMENTS=-audiodev none,id=snd0 -device ich9-intel-hda -device hda-output,audiodev=snd0 -chardev socket,id=b2,path=/b2/b2.sock,server=on,wait=off -device isa-serial,chardev=b2,iobase=0x2f8,irq=3"
 +Volume=/srv/local/windows/braintellect-offline/b2:/b2
 ```
 
-The rig run has no `usb-host` device and no `AddDevice`, so the physical adapter and the B-2
-bond (`device-connection.md`) are never touched. Restoring the original adds the adapter back;
-do that only when the VM is free to own it. The serial port is guest COM2 (16550 at 0x2f8).
+To run the rig, copy the live file to `braintellect-offline.container.pre-rig`, copy `rig-s48`
+over the live file, `systemctl --user daemon-reload` and restart the VM; afterwards move
+`pre-rig` back. The serial port is guest COM2 (16550 at 0x2f8).
 Guest side: `C:\ProgramData\BST\BRAINtellect2\preferences\braintellect.ini` has
 `B-2-BTCOMPort=COM2`; the prior file is `braintellect.ini.bak-s48` beside it
 (`scripts/s48-prep.cmd`). The original is not patched beyond the existing host-registration
