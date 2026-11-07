@@ -126,6 +126,9 @@ those findings, it cites them.
   ADR 0004 import when `load_instrument` reports `Missing`. Entry point:
   `scripts/run braintellect-linux -- ui --mac <MAC>`; the window needs a display and loads
   X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages).
+  On Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`;
+  the B-2 must be paired, bonded and trusted in BlueZ first (`btmgmt bondable on` before pairing,
+  or the bond is not kept).
   `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG framed by
   `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank.
 - **B-2 emulator and capture** (`src/emulate.rs`, `src/capture.rs`). The live session tees its raw
