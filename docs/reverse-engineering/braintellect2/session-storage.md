@@ -217,10 +217,21 @@ from every sample's magnitude).
   8 switched at the graph start + 1). A live clone run switches at the graph start
   (`Mode::Fixed`), and its stored series start at the graph's first sample, after the Source warm-up (#66).
 
+## Stored FFT (#59)
+
+Each channel's `FFT` data type holds one `FFT-Normal-Order` series: a single `fftDataList`
+(`xValue` the stop in ms, 240040 for exercise 147) of 256 `yValue`s in microvolts. It is the mean
+of the discrete `DSPFFT` outputs over 500-sample blocks of the stored Source output, the final
+partial block zero padded and included (`bagsd-design.md`). The clone stores it as the third
+series of each channel in `StoredSeries::series()`: `FFT-Normal-Order`, 256 points, `x` the bin
+index (the original keeps no per-bin x; bin `k` is `k * 500 / 512` Hz) and `y` microvolts. A live
+clone session stores it with the bands; `tests/replay_s59.rs` holds the whole report (bands and
+spectrum, four channels) to exercise 147's record within `RECORD_EPSILON`.
+
 Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the
-`LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, the 256-point `FFT-Normal-Order`
-series, and the `flowDesign` (type 1) and `flowControlMessage` (type 5) blobs. Follow-up: the
-other bands use the same element types, so their design edges are the only new input.
+`LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, and the `flowDesign` (type 1) and
+`flowControlMessage` (type 5) blobs. Follow-up: the other bands use the same element types, so
+their design edges are the only new input.
 
 Code located: BAGSD run 0x44b700; GeneralDataCollector 0x5c1300, 0x5c1c80, 0x5c2070; IIR design
 0x66dc00, 0x6536a0, 0x653220, 0x652e90, 0x652ac0, 0x652020, 0x650a20; BandPassFilter process

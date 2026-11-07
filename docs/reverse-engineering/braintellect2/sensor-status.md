@@ -172,10 +172,12 @@ it at `0x444a8a`.
 Run 8's no-wearer stream was replayed into `braintellect.exe` under `frida-inject`
 (`replay-rig.md`), with hooks on the FFT (`DSPFFT::process`), the Head2D update, the
 evaluator exit and the pair test, over the first 78 blocks per channel. The clone reproduces the
-evaluator's fault flag exactly in each of the 11 committed blocks (blocks 0 to 3, 15 to 17, 20, 31,
-58 and 77), which is asserted. Its levels are not bit exact (largest deviation 9.2e-5 dB), so
-`tests/parity_sensor_status.rs` prints their largest deviation and does not assert them
-(fixtures `sensor_inputs.tsv` / `sensor_levels.tsv`; see "Level bit exactness" below):
+evaluator's fault flag, its Head2D levels and the 256-bin spectrum of every channel exactly,
+to the bit, in each of the 11 committed blocks (blocks 0 to 3, 15 to 17, 20, 31, 58 and 77),
+all asserted by `tests/parity_sensor_status.rs` (fixtures `sensor_inputs.tsv`,
+`sensor_spectra.tsv` and `sensor_levels.tsv`; see "Level bit exactness" below). The
+"state sequence" held is the evaluator's per-block fault flag; the overlay state itself was
+not observed:
 
 - FFT: Bartlett window (order 9), 512-sample blocks, output scale `8/511` of the mean-
   normalized magnitude (the clone's `1/128 / mean(window)`); level = `20 log10(bin / 0.04)`,
@@ -205,21 +207,32 @@ spectrum and levels):
   instead.
 - Window: IPP Bartlett (`0x66fea0`, variant-1 kernel `0x6b53f0`) accumulates four SSE lanes:
   `s = f32(2/(n-1))`, lane j starts at `f32(j*s)` and adds `f32(4*s)` per step, front half
-  mirrored. This reproduces the captured window bit exact; the clone's f64
-  `1 - |2i/(n-1) - 1|` does not. Its mean (`+0x50`) is the sequential f32 sum / 512,
+  mirrored. This reproduces the captured window bit exact (the clone's `DspFft` builds it so;
+  an f64 `1 - |2i/(n-1) - 1|` rounded to f32 differs in 96 entries). Its mean (`+0x50`) is the sequential f32 sum / 512,
   0.499022156, which the clone matches.
 - `DSPFFT::process` (`0x637940`): window multiply (`0x66ff30`), IPP order-9 real FFT
   (`0x66ff20`, the Coherence spec), `0x66ff10`, magnitude (`0x66ff00`), then x87
   `f32((mag * f32(+0x54 * scale)) / +0x50)` with `+0x54 * scale` = 1/128.
-- The FFT output is not reproducible from the capture: the app's own IPP kernels run under
-  Unicorn (variants 1 to 5) on the captured input differ from the captured output in about
-  40% of bins by 1 to 3 f32 ulp, and even the DC bin (a plain sum) matches under no
-  summation order tried. No buffer offset or MXCSR mode closes it. The cause (the captured
-  input against what the FFT read, or a kernel path Unicorn does not take) needs a VM capture.
+- The earlier mismatch (about 40% of bins off by 1 to 3 f32 ulp) had two causes, found by
+  a stage capture on the rig (2026-11-07, hooks on `0x66ff20`, `0x66ff10` and `0x66ff00`
+  inside `DSPFFT::process`, 388 calls):
+  - The captured "input" (tag 30) is the raw block, not what the FFT reads: the app windows
+    a copy, and `f32(raw * window)` equals the FFT's input in all 388 calls. Fed that, the
+    clone's `RealFft512` reproduces the FFT output bit exact (41,120 of 41,120 words over 80
+    calls); `0x66ff10` leaves it unchanged.
+  - The magnitude (`0x66ff00`, kernel `0x6b8650`) is not a square root. It forms
+    `s = re^2 + im^2` in f32, takes the hardware `rsqrtps` estimate `r`, and refines it once:
+    `q = s * r`, `mag = ((3 - r * q) * 0.5) * q`. The estimate is only 12 bits, so values sit
+    1 to 3 ulp from the correctly rounded root (8,090 of 20,560 differ from `sqrt`). Intel's
+    `rsqrtps` depends only on the exponent's parity and the top 11 mantissa bits; the clone
+    carries that 4096-entry table (`src/feedback/rsqrt_table.txt`, read from an Intel Core
+    i3-10100T, the rig host) and reproduces all 20,560 captured magnitudes. Unicorn's `rsqrtps`
+    is exact, which is why its emulation disagreed. AMD's `rsqrtps` differs; not checked.
+  - The final scale from the captured magnitude reproduces all 20,480 final bins.
+  The clone's `DspFft` (`src/feedback/dsp_fft.rs`) is this chain, and its window is the IPP
+  recipe above; `FftSpectrum` uses it too.
 
 ## Unresolved
-
-- Bit-exact sensor levels: the FFT residual above.
 
 - The overlay state and its debounce timing on a captured stream, and whether a ground
   item sets an `errorThreshold`.

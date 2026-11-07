@@ -36,24 +36,38 @@ clone has no selector for it and none is invented. Its outputs are the stored se
   appends, or slides the buffer if it would overflow. Discrete (`+0x74` nonzero) transforms
   only once the count reaches `+0x73`, then zeroes the buffer. A start or stop message (type 2
   or 0xc) transforms a partial buffer, zero padded, when its count is neither 0 nor `+0x73`.
-- `DSPFFT::process` `0x637940`: `float32` Bartlett window, the IPP order-9 real FFT
-  (`ipp_fft.rs`), magnitude of bins 0..255, scaled by `1/128` over the window mean
-  (0.499022156).
-- Stored output: one 256-value vector per channel at x = 240016 ms (the stop), consistent with
-  the absolute `VectorAggregator` emitting the mean of the block spectra once, at the stop. The
-  input is the Source output as stored (`f32(trunc(x*d)/d)`): 120008 samples from the graph
-  start, 234 whole blocks plus a 200-sample partial.
+- `DSPFFT::process` `0x637940`: `float32` Bartlett window (`sensor-status.md`, "Window": four SSE
+  lanes, mean 0.499022156 as the sequential `float32` sum / 512), the IPP order-9 real FFT
+  (`ipp_fft.rs`), the IPP magnitude (`rsqrtps` plus one Newton step, `ipp_magnitude.rs`) of bins
+  0..255, then x87 `f32(mag * (1/128) / mean)`. `feedback::DspFft` is this chain, bit exact per
+  block against the sensors-off capture (`sensor-status.md`, "Level bit exactness").
+- **Trigger count 500 (observed, #59 tag 30).** The element gathers 500 samples (`+0x73`), not
+  512: every logged call has input samples 0..499 and zeros from 500 on. Exercise 147's 120020
+  samples are 240 whole blocks plus a 20-sample partial, 241 calls per channel, the last one at
+  the stop.
+- Stored output: one 256-value vector per channel at x = the stop (240040 ms for exercise 147),
+  the absolute `VectorAggregator` emitting once, at the stop. It is the mean of all 241 logged
+  outputs (relative error about 2e-8, the outputs being `float32`), partial block included. The
+  input is the Source output as stored (`f32(trunc(x*d)/d)`).
 
 ## Clone and parity
 
-`feedback::FftSpectrum` implements the above over the stored Source output.
-`tests/replay_s59.rs` (ignored; `S59_REPLAY_DIR`, default `tmp/s56`) runs exercise 146's
-consumed volts through it and reports the deviation from the stored vectors. The capture is
-#56's stored type-9 record; no run of this ticket logged `DSPFFT` inputs and outputs.
+`feedback::FftSpectrum` implements the above over the stored Source output, through `DspFft`, and
+`StoredSeries` (`assess.rs`) stores its mean as each channel's `FFT-Normal-Order` series (`x` the
+bin index, `y` microvolts) next to the Band 10 and Band 80 series: the clone's BAGSD report.
 
-Reported figure, not parity: mean relative deviation over bins 0..48 is 2 to 3 percent, and the
-high-bin floor is a third of the original's (bin 200: 0.00016 against 0.0005 uV on channel 1).
-Ruled out offline: window shape, with and without the partial block, contiguous block subsets
-or the last 1 and 3 blocks, input quantization, and the 45 Hz low-pass switch (without it the
-spectrum is far off). `assertions::fft_spectra` holds the stage to `RECORD_EPSILON` once an
-input/output log of `DSPFFT::process` (rig hook tag 30 of `s57/hook13.js`) explains the floor.
+`tests/replay_s59.rs` (ignored; `S59_REPLAY_DIR`, default `tmp/s59/replay`) runs the #59 capture
+(exercise 147, `replay-rig.md`) through the Source chain and `StoredSeries` and holds every
+channel's Band 10, Band 80 and `FFT-Normal-Order` to the stored record with
+`assertions::stored_series`. Observed: green, largest |dy| 3.8e-7 uV against `RECORD_EPSILON`
+1e-6. The graph start (consumed sample 107196) and the 45 Hz low-pass switch (the same sample, on
+every channel) are the logged inputs the clone does not derive; both were located by matching
+the first logged `DSPFFT` input block against the clone's Source output, which it equals for all
+500 samples on every channel.
+
+What closed the earlier 2 to 3 percent gap (#59's first pass on exercise 146): the 500-sample
+trigger (the old 512 block put the zero padding in the wrong place), the original's window and
+mean (the f64 ramp is 1 to 3 ulp off), and the x87 scale. The last 1 to 3 `float32` ulp per
+block was the magnitude: with #57's IPP `rsqrtps` magnitude, `DspFft` equals all 964 logged
+`DSPFFT` outputs of exercise 147 (241 calls on each of 4 channels) bit for bit, asserted by
+`tests/replay_s59.rs` (`fft_in_<c>.txt` / `fft_out_<c>.txt` from `scripts/fft-extract.py`).

@@ -221,6 +221,50 @@ clicker and a 310 s wait so the exercise stored (exercise 146). The clicker wait
   `mysql:5.7` container read it. The log (`s56.bin`, 350 MB) stays in the main checkout's
   `tmp/s56/`.
 
+## Result: the Circle-Balance report's chart inputs (#62, 2026-11-07)
+
+The original's report over the stored no-wearer exercise 146, hooked at `0x5c4550`
+(`CircleGraphChart` input add: `this`, `float* values`, `count`).
+
+- Trigger: Report tab, double-click the session row. RFB and HMP input do not reach the guest, so
+  an in-guest PowerShell clicker (`SetCursorPos` + `mouse_event`) drives it. The host sends the
+  guest commands by hot-adding a small FAT usb-storage image (HMP `drive_add`, `device_add
+  usb-storage`, label `CMD`) that a guest loop polls. Frida injects with `frida-inject -f`.
+- Logged: 8 calls, each one value at scale 1. The bits are in
+  `apps/braintellect-linux/tests/fixtures/circle_balance_chart.tsv`; the raw log (`s62-report.bin`)
+  stays in the main checkout's `tmp/s62/`.
+- The exercise's files were placed on the guest NTFS disk with `ntfs-3g` (loop mount at the
+  partition offset, `ntfsfix -d` after a forced stop). The rig was restored to its `.pre-rig`
+  state and the lock released.
+
+## Result: the BAGSD discrete FFT against the consumed volts (#59, 2026-11-07)
+
+The #56 run with a `DSPFFT::process` hook added (rig tags 30 and 31: the object, the input at
+entry and return, the output, and each new window buffer; `scripts/fft-extract.py` reduces the
+log). Exercise 147: 262,116 consumed samples per channel, stop 240040 ms, 120,020 graph samples.
+
+- Logged: 214 `DSPFFT` calls per channel during the exercise (the live display, not stored) and
+  241 per channel in the BAGSD run (240 blocks of 500 samples and the 20-sample partial at the
+  stop). The stored `FFT-Normal-Order` is the mean of those 241 outputs.
+- This guest's graph start and 45 Hz switch were both consumed sample 107196 on every channel.
+  They are found by matching the first logged FFT input block to the clone's Source output.
+- The log (`s59.bin`, 385 MB) and the extracted inputs stay in the main checkout's `tmp/s59/`
+  (`run2/`, `replay/`). See `bagsd-design.md`, "Clone and parity".
+
+## Result: the DSPFFT stages captured (#57, 2026-11-07)
+
+Run 8's rx stream replayed (`hook14.js` over `hook13.js`) with hooks on the three IPP calls
+inside `DSPFFT::process` (`0x66ff20` forward FFT: windowed input and output; `0x66ff10`: the
+packed output; `0x66ff00`: the magnitudes), each record tagged with the call's sequence number
+next to the existing tag 30 (raw block and final spectrum): 388 calls over 97 blocks per channel.
+
+- The windowed input is `f32(raw * window)` in all calls; the FFT output matches the clone's
+  `RealFft512`; the magnitude is the `rsqrtps` plus Newton kernel (`sensor-status.md`, "Level
+  bit exactness"). The raw log (19 MB) stays in the main checkout's `tmp/s57c/`.
+- The app was started by a Startup-folder launch file in the guest with the log on the guest's
+  NTFS disk (`C:\cap`), staged and read back with `ntfs-3g` after `ntfsfix -d` while the VM was
+  off.
+
 ## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
 
 The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00

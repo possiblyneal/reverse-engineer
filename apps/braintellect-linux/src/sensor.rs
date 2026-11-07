@@ -5,11 +5,11 @@
 //! The caller supplies each channel's levels ([`ChannelLevels`], from [`level_db`] on
 //! the channel's FFT spectrum); [`SensorStatusEngine`] applies the three fault tests
 //! with the `stateChangeDelay` debounce and the engine lifecycle (off while a session
-//! plays). [`SensorMonitor`] adds the FFT stage and level computation in front of it;
-//! the FFT scale, level offset, bin choice and the line-noise start-up were checked
-//! against a capture of the original; the choice of 50 Hz over 60 Hz was not.
+//! plays). [`SensorMonitor`] adds the FFT stage ([`DspFft`]) and level computation in
+//! front of it; the spectra, levels, bin choice and the line-noise start-up are held bit
+//! exact to a capture of the original; the choice of 50 Hz over 60 Hz was not captured.
 
-use crate::feedback::fft::{bartlett, radix2, spectrum_scale};
+use crate::feedback::DspFft;
 
 /// `lineNoiseDifference` of the BT-LOD `Sensors` element, in dB.
 pub const LINE_NOISE_DIFFERENCE: f32 = 15.5;
@@ -87,19 +87,21 @@ pub fn bin_index(freq_hz: f32, rate_hz: f32, bins: usize) -> usize {
 /// 27.9588 dB, which is `20 * log10(1 / 0.04)`.
 const LEVEL_REFERENCE: f32 = 0.04;
 
-/// `20 * log10(bin / 0.04)`; a bin of exactly 0.0 skips the log and keeps `previous`
-/// (`0x560f40`).
+/// `20 * log10(bin / 0.04)`, each step rounded to `float32` as the original's x87 code
+/// does (`0x560f40`; the CRT `log10` is taken in double precision); a bin of exactly 0.0
+/// skips the log and keeps `previous`.
 #[must_use]
 pub fn level_db(bin: f32, previous: f32) -> f32 {
     if bin == 0.0 {
         previous
     } else {
-        20.0 * (bin / LEVEL_REFERENCE).log10()
+        let ratio = bin / LEVEL_REFERENCE;
+        20.0 * (f64::from(ratio).log10() as f32)
     }
 }
 
 /// Samples per FFT block: `fftOrder` 9, discrete (non-overlapping) blocks.
-pub const BLOCK_SAMPLES: usize = 512;
+pub const BLOCK_SAMPLES: usize = crate::feedback::FFT_BLOCK;
 /// The Source rate the design runs at.
 const RATE_HZ: f32 = 500.0;
 /// Spectrum values per block.
@@ -112,21 +114,6 @@ const MAINS_HZ: [f32; 2] = [50.0, 60.0];
 const PAIR_BAND_HZ: [f32; 3] = [12.0, 40.0, 70.0];
 /// Channels of the design.
 const CHANNELS: usize = 4;
-
-/// The spectrum of one channel's block, as the FFT element emits it: Bartlett
-/// window, real FFT, magnitude of bins 0..N/2, scaled over the window's mean
-/// (`DSPFFT::process`, `0x637940`).
-fn spectrum(block: &[f64]) -> Vec<f32> {
-    let n = block.len();
-    let window = bartlett(n);
-    let scale = spectrum_scale(&window);
-    let mut re: Vec<f64> = block.iter().zip(&window).map(|(x, w)| x * w).collect();
-    let mut im = vec![0.0; n];
-    radix2(&mut re, &mut im);
-    (0..n / 2)
-        .map(|k| (re[k].hypot(im[k]) * scale) as f32)
-        .collect()
-}
 
 /// One channel's Head2D level state: the last level of each of the 50, 60, 12,
 /// 40 and 70 Hz bins, kept when a bin reads exactly 0.0.
@@ -165,7 +152,8 @@ impl BandLevels {
 #[derive(Debug, Clone)]
 pub struct SensorMonitor {
     engine: SensorStatusEngine,
-    block: [Vec<f64>; CHANNELS],
+    fft: DspFft,
+    block: [Vec<f32>; CHANNELS],
     levels: [BandLevels; CHANNELS],
     updates: usize,
     line: Option<usize>,
@@ -182,6 +170,7 @@ impl SensorMonitor {
     pub fn new(design: SensorDesign) -> Self {
         Self {
             engine: SensorStatusEngine::new(design),
+            fft: DspFft::new(),
             block: std::array::from_fn(|_| Vec::with_capacity(BLOCK_SAMPLES)),
             levels: std::array::from_fn(|_| BandLevels::default()),
             updates: 0,
@@ -225,17 +214,18 @@ impl SensorMonitor {
         self.engine.set_engine_running(running);
     }
 
-    /// One Source sample per channel, read at `now_ms`. After the 512th sample of
-    /// a block the display updates and the status is returned.
+    /// One Source sample per channel (stored as `float32`), read at `now_ms`. After the
+    /// 512th sample of a block the display updates and the status is returned.
     pub fn push(&mut self, now_ms: i64, volts: &[f64; CHANNELS]) -> Option<SensorStatus> {
         for (block, &v) in self.block.iter_mut().zip(volts) {
-            block.push(v);
+            block.push(v as f32);
         }
         if self.block[0].len() < BLOCK_SAMPLES {
             return None;
         }
         for (block, levels) in self.block.iter_mut().zip(&mut self.levels) {
-            levels.update(&spectrum(block));
+            let block_samples = block.as_slice().try_into().expect("a full block");
+            levels.update(&self.fft.process(block_samples));
             block.clear();
         }
         self.current = std::array::from_fn(|c| ChannelLevels {

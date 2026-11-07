@@ -43,10 +43,11 @@ first connection after the B-2 was switched on, `hs_B.txt` a reconnect), laid ou
 `wire.txt` with the commands the clone writes (stop, a query pass, mode, injection, a second
 query pass) and the 101 serial scrubbed.
 
-The sensor-status fixtures (`sensor_inputs.tsv`, `sensor_levels.tsv`) come from the 2026-11-07
+The sensor-status fixtures (`sensor_inputs.tsv`, `sensor_levels.tsv`, `sensor_spectra.tsv`) come from the 2026-11-07
 hook13 capture `tmp/s57/s57.bin` (`--src57`, never committed; run 8's no-wearer stream replayed into
 the original on the Optimize tab): for a few of the 105 blocks, each channel's 512 float32 FFT
-input, and the levels and fault flag the original's Head2D and evaluator produced from it.
+input, the 256-bin spectrum `DSPFFT::process` produced from it, and the levels and fault flag the
+original's Head2D and evaluator produced from that.
 
 The all-channel acquisition fixtures (`consumed_stream.txt`, `consumed_volts.tsv`) come from the
 ticket-55 replay log `tmp/s55/s55.bin` (`--src55`, never committed; `hook13.js` output of the
@@ -57,7 +58,13 @@ consumed, and its logged volts for channels 0 to 3 of each consumed sample as fl
 `B-2-Circle-Balance-fromBAGSD-v5.1.1` design XML (`--src64`, `tmp/s64/design171.xml`, never
 committed): one row per chart input, traced back to its LMH band, time window and channels.
 
-Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src57 FILE] [--src58 DIR] [--src55 FILE] [--src64 FILE] [--baseline DIR] [--out DIR]
+`circle_balance_lmh.tsv` and `circle_balance_chart.tsv` are the Balance Meter's input and output
+for the no-wearer exercise 146 (240 s): the stored `High`/`Low` LMH series (`--lmh62`, the
+`lmh-extract.py` output of its type-9 XML, never committed) and the eight values the original's
+`CircleGraphChart` inputs received when its report ran over that exercise (`--src62`, the
+`tmp/s62/s62-report.bin` hook log of `0x5c4550`, never committed), as float32 bit patterns.
+
+Usage: python3 -I make-fixtures.py [--src DIR] [--src3 DIR] [--src4 DIR] [--src5 DIR] [--src8 FILE] [--src57 FILE] [--src58 DIR] [--src55 FILE] [--src64 FILE] [--src62 FILE] [--lmh62 FILE] [--baseline DIR] [--out DIR]
 """
 import argparse
 import collections
@@ -451,6 +458,34 @@ def circle_balance_rows(path):
         rows.append((chart, props[chart][f"graphTitle.{pipe}"], axis, band, *window, a, b,
                      props[expression]["expression"]))
     return rows
+
+
+def circle_balance_chart(path):
+    """The float32 bit patterns of the eight chart-input values of the `0x5c4550` hook log.
+
+    Tag 31 is one call (`ts, this, count, scale, values`), tag 32 the input's running sum and
+    count after it (`ts, this, sum, count`). Refuses any call that is not one value at scale 1
+    whose sum is that value.
+    """
+    data = path.read_bytes()
+    words = struct.unpack(f"<{len(data) // 8}d", data)
+    out, pending, i = [], None, 0
+    while i < len(words):
+        tag, length = int(words[i]), int(words[i + 1])
+        if length < 2 or i + length > len(words):
+            raise SystemExit(f"{path}: record at word {i} has length {length}: a truncated or corrupt log")
+        rec = words[i + 2:i + length]
+        i += length
+        if tag == 31:
+            if (rec[2], rec[3]) != (1.0, 1.0):
+                raise SystemExit(f"chart input call with count {rec[2]}, scale {rec[3]}")
+            pending = (rec[1], rec[4])
+        elif tag == 32:
+            if pending is None or (rec[1], rec[2], rec[3]) != (pending[0], pending[1], 1):
+                raise SystemExit("chart input sum is not its one value")
+            out.append(struct.unpack("<I", struct.pack("<f", pending[1]))[0])
+            pending = None
+    return "".join(f"{bits:08x}\n" for bits in out)
 
 
 def parse_bpf(hook_text):
@@ -967,15 +1002,20 @@ def sensor_blocks(path):
         i += size
     blocks = len(heads) // 4
     assert blocks == len(ffts) // 4 and None not in flags, "capture is not whole blocks"
-    inputs, levels = [], []
+    inputs, levels, spectra = [], [], []
     for b in SENSOR_BLOCKS:
         for c in range(4):
             samples, spectrum = ffts[4 * b + c]
             head = heads[4 * b + c]
             assert head[0] == spectrum, "Head2D spectrum is the FFT output"
             inputs.append(f"{b}\t{c}\t" + " ".join(f"{x:.9g}" for x in samples) + "\n")
+            spectra.append(f"{b}\t{c}\t" + " ".join(f"{x:.9g}" for x in spectrum) + "\n")
             levels.append(f"{b}\t{c}\t" + "\t".join(f"{x:.9g}" for x in head[1:]) + f"\t{flags[b]}\n")
-    return {"sensor_inputs.tsv": "".join(inputs), "sensor_levels.tsv": "".join(levels)}
+    return {
+        "sensor_inputs.tsv": "".join(inputs),
+        "sensor_levels.tsv": "".join(levels),
+        "sensor_spectra.tsv": "".join(spectra),
+    }
 
 
 def main():
@@ -990,6 +1030,8 @@ def main():
     ap.add_argument("--src58", type=pathlib.Path, default=root / "tmp/s58")
     ap.add_argument("--src55", type=pathlib.Path, default=root / "tmp/s55/s55.bin")
     ap.add_argument("--src64", type=pathlib.Path, default=root / "tmp/s64/design171.xml")
+    ap.add_argument("--src62", type=pathlib.Path, default=root / "tmp/s62/s62-report.bin")
+    ap.add_argument("--lmh62", type=pathlib.Path, default=root / "tmp/s62/lmh146.tsv")
     ap.add_argument("--baseline", type=pathlib.Path, default=root / "tmp/s43/baseline")
     ap.add_argument(
         "--out", type=pathlib.Path,
@@ -1053,6 +1095,9 @@ def main():
         "\t".join(r) + "\n" for r in design_rows(args.src4, header4)))
     (args.out / "circle_balance_design.tsv").write_text("".join(
         "\t".join(r) + "\n" for r in circle_balance_rows(args.src64)))
+
+    (args.out / "circle_balance_lmh.tsv").write_text(args.lmh62.read_text())
+    (args.out / "circle_balance_chart.tsv").write_text(circle_balance_chart(args.src62))
 
     for name, text in run8(args.src8).items():
         (args.out / name).write_text(text)

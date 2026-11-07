@@ -105,11 +105,15 @@ those findings, it cites them.
   is a post-session report (`BAGSD.report`) over a stored exercise's `High`/`Low` LMH series, not a
   live design, so it is not in the session window. `CircleBalanceDesign::circle_balance` is its
   wiring, asserted against `tests/fixtures/circle_balance_design.tsv` (`make-fixtures.py --src64`,
-  `tests/parity_circle_balance.rs`); `report` runs the `TimeFilter` window, the `absolute` mean
-  and the Balance Meter expression. Its values are reported only: no capture of the original's
-  chart inputs exists, and the clone stores no LMH series. The ignored `tests/replay_s62.rs`
-  prints them over `S62_LMH` (`scripts/lmh-extract.py` output from a decoded type-9 XML, under
-  `tmp/`). Evidence and the capture needed: `audio-feedback.md`, "Circle-Balance design".
+  `tests/parity_circle_balance.rs`); `report` runs the `TimeFilter` window, the `absolute` mean (double sum, `float32` result) and the
+  Balance Meter expression. Its eight values equal the original's chart inputs bit for bit over
+  exercise 146 (`circle_balance_lmh.tsv` and `circle_balance_chart.tsv`, `make-fixtures.py
+  --src62/--lmh62`, the asserting test in `tests/parity_circle_balance.rs`; the chart fixture is in
+  the original's call order, see `fixtures::circle_balance_report_in_call_order`). The ignored
+  `tests/replay_s62.rs` holds it to the raw hook log under `tmp/s62/` (`S62_CAPTURE`, and `S62_LMH`, the
+  `scripts/lmh-extract.py` output of the exercise's type-9 XML).
+  The clone stores no LMH series of its own and the live B-2 selection is not exercised.
+  Evidence: `audio-feedback.md`, "Circle-Balance design".
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
   database (`rusqlite`, bundled SQLite), at `$XDG_DATA_HOME/braintellect-linux/sessions.db`,
   else `~/.local/share/braintellect-linux/sessions.db` (a relative
@@ -179,19 +183,27 @@ those findings, it cites them.
   the stop (`session-storage.md`, "Stored series (#56)"). The ignored `tests/replay_s56.rs`
   holds them to the original's exercise 146 record within `RECORD_EPSILON`
   (`assertions::stored_series`; inputs `vol146.txt` and `b146/series.tsv` in `tmp/s56`,
-  `S56_REPLAY_DIR`). The design's discrete FFT is `feedback::FftSpectrum`; the ignored
-  `tests/replay_s59.rs` only reports its deviation from the stored `FFT-Normal-Order` vectors
-  (`bagsd-design.md`, "Clone and parity"). BAGSD is a post-session design, so the session
-  window does not offer it.
+  `S56_REPLAY_DIR`). The design's discrete FFT is `feedback::FftSpectrum` (500-sample blocks,
+  the partial block at the stop included); `StoredSeries` stores its mean as each channel's
+  third series, `FFT-Normal-Order` (256 points, `x` the bin index, microvolts;
+  `session-storage.md`, "Stored FFT (#59)"). The ignored `tests/replay_s59.rs` holds the whole
+  report (bands and spectrum) to exercise 147's record within `RECORD_EPSILON` (inputs
+  `volts.tsv` from `scripts/fft-extract.py` and `ed_9.xml` in `tmp/s59/replay`,
+  `S59_REPLAY_DIR`; `bagsd-design.md`, "Clone and parity") and every logged `DSPFFT` block bit
+  for bit (`fft_in_<c>.txt`, `fft_out_<c>.txt`); the FFT stage is `feedback::DspFft`, shared
+  with sensor status. BAGSD is a post-session
+  design, so the session window does not offer it.
 - **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
   `stateChangeDelay` debounce and the engine lifecycle, off while a session connects or runs
   (`ui::state::Event::Sensor` carries it). `sensor::SensorMonitor` is the pre-session feed
   (512-sample FFT blocks per channel, five band levels, then the evaluator). `live::monitor`
   runs it on an opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check
   sensors" button, `Command::CheckSensors`), needs no tone, and returns why it could not run or
-  broke off, which ends the check with that reason in the notice. Its levels are
-  replay-reported against the original, not asserted, and the evaluator fault flag is
-  replay-asserted exactly (`sensor-status.md`). Tests: `tests/parity_sensor_status.rs`
+  broke off, which ends the check with that reason in the notice. The FFT stage is
+  `feedback::DspFft` (`DSPFFT::process`: f32 Bartlett, `RealFft512`, the `rsqrtps` magnitude of
+  `ipp_magnitude.rs`, the x87 scale); the spectra, levels and evaluator fault flag are all
+  replay-asserted bit exact against the original's sensors-off capture (`sensor-status.md`).
+  The `rsqrtps` table is Intel's. Tests: `tests/parity_sensor_status.rs`
   (synthetic fault tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`),
   `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the
   in-memory stream).

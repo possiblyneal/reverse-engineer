@@ -1,28 +1,22 @@
 //! The `FFT` element in `discrete` style feeding an absolute `VectorAggregator`
 //! (receive `0x6382d0`, `DSPFFT::process` `0x637940`; `bagsd-design.md`, "Discrete FFT"): the
-//! Source output as stored, gathered in 512-sample blocks, each under a `float32` Bartlett
-//! window, the IPP order-9 real FFT, bins `0..256` as magnitudes scaled by `1/128` over the
-//! window's mean. A stop inside a block transforms the zero-padded partial one too. The
-//! aggregator's single stored vector is the mean of the block spectra.
-//!
-//! Reported, not yet exact: against exercise 146's stored `FFT-Normal-Order` the model
-//! agrees at low bins to a few percent and its high-bin floor is a third of the original's.
+//! Source output as stored, gathered until the element's trigger count of 500 samples, zero
+//! padded to the 512-point transform, then [`DspFft`]: the `float32` Bartlett window, the IPP
+//! order-9 real FFT, the IPP magnitude and the `1/128` over the window's mean. A stop inside a
+//! block transforms the zero-padded partial one too. The aggregator's single stored vector is
+//! the mean of the block spectra.
 
 use super::assess::stored_volts;
-use super::fft::{bartlett, spectrum_scale};
-use super::ipp_fft::RealFft512;
+use super::dsp_fft::{DspFft, BINS, BLOCK};
 
-const BLOCK: usize = 512;
-const BINS: usize = BLOCK / 2;
+/// Samples gathered per transform (the `FFT` element's trigger count); the rest is zero.
+const TRIGGER: usize = 500;
 /// Volts to microvolts, the stored vector's unit.
 const MICROVOLTS: f64 = 1e6;
 
 /// One channel's block-mean spectrum.
 pub struct FftSpectrum {
-    fft: RealFft512,
-    window: [f32; BLOCK],
-    /// The `DSPFFT` scale over the `float32` window's mean, applied to each magnitude.
-    scale: f64,
+    fft: DspFft,
     counts_per_volt: f64,
     block: Vec<f32>,
     sum: [f64; BINS],
@@ -31,14 +25,10 @@ pub struct FftSpectrum {
 
 impl FftSpectrum {
     pub fn new(counts_per_volt: f64) -> Self {
-        let bartlett = bartlett(BLOCK);
-        let window: [f32; BLOCK] = std::array::from_fn(|i| bartlett[i] as f32);
         Self {
-            fft: RealFft512::new(),
-            scale: spectrum_scale(&window.map(f64::from)),
-            window,
+            fft: DspFft::new(),
             counts_per_volt,
-            block: Vec::with_capacity(BLOCK),
+            block: Vec::with_capacity(TRIGGER),
             sum: [0.0; BINS],
             blocks: 0,
         }
@@ -48,36 +38,35 @@ impl FftSpectrum {
     pub fn push(&mut self, volts: f64) {
         self.block
             .push(stored_volts(volts, self.counts_per_volt) as f32);
-        if self.block.len() == BLOCK {
-            self.transform();
+        if self.block.len() == TRIGGER {
+            add_block(&self.fft, &mut self.sum, &self.block);
+            self.blocks += 1;
+            self.block.clear();
         }
     }
 
-    /// The mean spectrum in microvolts at the stop, the partial block included; all
-    /// zeros when no sample arrived.
-    pub fn finish(mut self) -> Vec<f64> {
+    /// The mean spectrum in microvolts so far, a partial block included as a stop would
+    /// transform it; all zeros when no sample arrived.
+    pub fn spectrum(&self) -> Vec<f64> {
+        let mut sum = self.sum;
+        let mut blocks = self.blocks;
         if !self.block.is_empty() {
-            self.transform();
+            add_block(&self.fft, &mut sum, &self.block);
+            blocks += 1;
         }
-        if self.blocks == 0 {
+        if blocks == 0 {
             return vec![0.0; BINS];
         }
-        self.sum
-            .iter()
-            .map(|s| s / self.blocks as f64 * MICROVOLTS)
-            .collect()
+        sum.iter().map(|s| s / blocks as f64 * MICROVOLTS).collect()
     }
+}
 
-    fn transform(&mut self) {
-        let mut x = [0.0f32; BLOCK];
-        for ((x, &s), &w) in x.iter_mut().zip(&self.block).zip(&self.window) {
-            *x = s * w;
-        }
-        for (sum, (re, im)) in self.sum.iter_mut().zip(self.fft.forward(&x)) {
-            *sum += f64::from(re.hypot(im)) * self.scale;
-        }
-        self.block.clear();
-        self.blocks += 1;
+/// Adds one block's `DSPFFT` output, the block zero padded to `BLOCK`, to `sum`.
+fn add_block(fft: &DspFft, sum: &mut [f64; BINS], block: &[f32]) {
+    let mut x = [0.0f32; BLOCK];
+    x[..block.len()].copy_from_slice(block);
+    for (sum, bin) in sum.iter_mut().zip(fft.process(&x)) {
+        *sum += f64::from(bin);
     }
 }
 
@@ -88,25 +77,37 @@ mod tests {
     const COUNTS_PER_VOLT: f64 = 1e9;
 
     #[test]
-    fn a_constant_input_is_four_times_its_level_in_bin_zero_only() {
+    fn a_constant_input_is_about_four_times_its_level_in_bin_zero_only() {
         let mut fft = FftSpectrum::new(COUNTS_PER_VOLT);
-        (0..BLOCK).for_each(|_| fft.push(1e-5));
-        let spectrum = fft.finish();
+        (0..TRIGGER).for_each(|_| fft.push(1e-5));
+        let spectrum = fft.spectrum();
         assert_eq!(spectrum.len(), BINS);
-        assert!((spectrum[0] - 40.0).abs() < 1e-3, "{}", spectrum[0]);
+        assert!((spectrum[0] - 40.0).abs() < 0.1, "{}", spectrum[0]);
         assert!(spectrum[64..].iter().all(|&v| v < 0.1));
     }
 
     #[test]
     fn a_stop_before_any_sample_is_a_zero_spectrum() {
-        assert_eq!(FftSpectrum::new(COUNTS_PER_VOLT).finish(), vec![0.0; BINS]);
+        assert_eq!(
+            FftSpectrum::new(COUNTS_PER_VOLT).spectrum(),
+            vec![0.0; BINS]
+        );
     }
 
     #[test]
     fn a_stop_inside_a_block_adds_the_zero_padded_partial_block() {
         let mut fft = FftSpectrum::new(COUNTS_PER_VOLT);
-        (0..BLOCK + BLOCK / 2).for_each(|_| fft.push(1e-5));
-        let mean = fft.finish()[0];
+        (0..TRIGGER + TRIGGER / 2).for_each(|_| fft.push(1e-5));
+        let mean = fft.spectrum()[0];
         assert!(mean < 40.0 && mean > 20.0, "{mean}");
+    }
+
+    #[test]
+    fn a_block_closes_after_500_samples_not_512() {
+        let mut one = FftSpectrum::new(COUNTS_PER_VOLT);
+        (0..TRIGGER).for_each(|_| one.push(1e-5));
+        let mut two = FftSpectrum::new(COUNTS_PER_VOLT);
+        (0..2 * TRIGGER).for_each(|_| two.push(1e-5));
+        assert_eq!(one.spectrum(), two.spectrum());
     }
 }

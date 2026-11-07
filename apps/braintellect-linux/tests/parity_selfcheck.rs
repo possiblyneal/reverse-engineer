@@ -311,6 +311,27 @@ fn circle_balance_design_green_on_baseline_red_on_wrong() {
 }
 
 #[test]
+fn circle_balance_chart_values_green_on_baseline_red_on_wrong() {
+    let baseline = fixtures::circle_balance_chart();
+    assert_eq!(baseline.len(), 8, "eight chart inputs");
+    let same: Vec<Option<f32>> = baseline.iter().copied().map(Some).collect();
+    assertions::chart_values(&baseline, &same).expect("baseline vs itself");
+
+    let mut ulp = same.clone();
+    ulp[3] = Some(f32::from_bits(baseline[3].to_bits() + 1));
+    let err = assertions::chart_values(&baseline, &ulp).expect_err("one ulp is red");
+    assert!(err.0.contains("chart input 3"), "{}", err.0);
+
+    let mut empty = same.clone();
+    empty[5] = None;
+    assert!(assertions::chart_values(&baseline, &empty).is_err());
+
+    let mut short = same;
+    short.pop();
+    assert!(assertions::chart_values(&baseline, &short).is_err());
+}
+
+#[test]
 fn smart2_fixtures_are_well_formed() {
     let triggers = fixtures::smart2_trigger_blocks();
     let notes = fixtures::smart2_note_blocks();
@@ -369,6 +390,42 @@ fn sensor_replay_red_on_a_wrong_fault() {
     wrong_fault[5].1 = !wrong_fault[5].1;
     assert!(sensor::expect_faults(&wrong_fault, &blocks).is_err());
     assert!(sensor::expect_faults(&actual[1..], &blocks).is_err());
+}
+
+#[test]
+fn sensor_levels_red_on_one_ulp_or_a_missing_block() {
+    use harness::{fixtures, sensor};
+
+    let blocks = fixtures::sensor_blocks();
+    let actual = sensor::replay_blocks(&blocks);
+    sensor::expect_levels(&actual, &blocks).expect("the clone against the original");
+
+    let mut off_by_one_ulp = actual.clone();
+    let level = &mut off_by_one_ulp[5].0[2].bands[1];
+    *level = f32::from_bits(level.to_bits() + 1);
+    assert!(sensor::expect_levels(&off_by_one_ulp, &blocks).is_err());
+    let mut line_noise = actual.clone();
+    line_noise[9].0[0].line_noise += 0.5;
+    assert!(sensor::expect_levels(&line_noise, &blocks).is_err());
+    assert!(sensor::expect_levels(&actual[1..], &blocks).is_err());
+}
+
+#[test]
+fn sensor_spectra_red_on_one_ulp_or_a_wrong_length() {
+    use harness::{fixtures, sensor};
+
+    let blocks = fixtures::sensor_blocks();
+    let actual = sensor::replay_spectra(&blocks);
+    sensor::expect_spectra(&actual, &blocks).expect("the clone against the original");
+
+    let mut off_by_one_ulp = actual.clone();
+    let bin = &mut off_by_one_ulp[3][1][200];
+    *bin = f32::from_bits(bin.to_bits() + 1);
+    assert!(sensor::expect_spectra(&off_by_one_ulp, &blocks).is_err());
+    let mut short = actual.clone();
+    short[0][0].pop();
+    assert!(sensor::expect_spectra(&short, &blocks).is_err());
+    assert!(sensor::expect_spectra(&actual[1..], &blocks).is_err());
 }
 
 #[test]
