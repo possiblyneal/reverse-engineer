@@ -665,7 +665,7 @@ RUN8_FILE_LIMIT = 9000  # EEG frames or block rows per file; keeps every file un
 RUN8_BAND_RANKS = (14, 3, 2, 8, 9, 16, 12, 0)
 
 
-RUN8_TAGS = frozenset((1, 2, 3, 4, 5, 7, 11, 12))  # serial RX, block, clocks, graph calls, note, amplitudes, volts
+RUN8_TAGS = frozenset((1, 2, 3, 4, 5, 7, 11, 12, 20, 21))  # serial RX, block, clocks, graph calls, note, amplitudes, volts, Evaluator series input and key
 
 
 def run8_records(path):
@@ -738,7 +738,7 @@ def run8_blocks(records):
     4-sample band-pass calls (tag 5), the Evaluator code from the last tag-11
     record, the clock from the tag-3 timer read and the lap read from tag 4.
     """
-    blocks, cur = [], {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None}
+    blocks, cur = [], {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None, "amps_ad": None}
     for tag, v in records:
         if tag == 5 and int(v[6]) == 4:
             cur["calls"][int(v[3])] = int(v[5]) % 16 == 8
@@ -757,10 +757,31 @@ def run8_blocks(records):
             cur["code"] = int(recs[-1][0])
             if len(recs) == 9 and cur["amps"] is None:
                 cur["amps"] = [x for r in recs[4:8] for x in r]
+                cur["amps_ad"] = [x for r in recs[0:4] for x in r]
         elif tag == 2:
             blocks.append(cur)
-            cur = {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None}
+            cur = {"calls": {}, "lap": None, "clock": None, "code": None, "note": None, "amps": None, "amps_ad": None}
     return blocks
+
+
+def run8_evaluator_series(records):
+    """The Evaluator's series inputs by name, as `{name: {block: latest float32 value}}`.
+
+    Tag 21 names each series object (`Bal1n2B10`, `Coh3n4B80`, ...); tag 20 is one
+    `setInput` per block (4 samples), the series' latest value after it. The block is the
+    count before the call over 4.
+    """
+    names, out = {}, {}
+    for tag, v in records:  # the key dump may follow the series' first input
+        if tag == 21:
+            key = bytes(int(x) for x in v[39:87]).split(b"\0")[0].decode("latin-1")
+            kind = "Bal" if key.startswith("lance:") else "Coh"
+            channels, band = key.split(":")[-2:]
+            names[int(v[3])] = f"{kind}{channels.replace('Channels ', '')}{band.replace('Band ', 'B')}"
+    for tag, v in records:
+        if tag == 20:
+            out.setdefault(names[int(v[3])], {})[int(v[4]) // 4] = v[6]
+    return out
 
 
 def run8(path):

@@ -21,6 +21,7 @@ fn snapshot(phase: Phase, health: Health) -> Snapshot {
         rms_uv: [1.5, 2.5, 3.5, 4.5],
         triggers: 7,
         last_note: Some(52),
+        control: 111,
         elapsed_s: 42,
     }
 }

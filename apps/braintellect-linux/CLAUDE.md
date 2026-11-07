@@ -71,9 +71,11 @@ those findings, it cites them.
   no Stop.
 - **Feedback graph** (`src/feedback/`). The caller runs `SourceFilters` (`source.rs`),
   built from `Smart2Design::source`; `Smart2Graph` (`graph.rs`) runs from the Source
-  output (`process_filtered_block`): `BandPass`, `PeakFrequency`, the `continuous`
-  Aggregator, `ExprTriggerAll` (`trigger_all`), the Threshold/Counter `TriggerPath`
-  and `NoteSelection`. `Smart2Design` is filled from `smart2_design.tsv`;
+  output (`process_evaluated_block`, or `process_filtered_block` with a logged code):
+  `BandPass`, `PeakFrequency`, the `continuous` Aggregator, the `Evaluator`
+  (`evaluator.rs`: the four Balance series from the band averages, the decision at each
+  60 s epoch end, default 111; Coherence is not implemented), `ExprTriggerAll`
+  (`trigger_all`), the Threshold/Counter `TriggerPath` and `NoteSelection`. `Smart2Design` is filled from `smart2_design.tsv`;
   `Smart2Graph::new` refuses a rate other than `RATE_HZ` (500) or an aggregator epoch
   of 0. The run-6 and run-8 replays feed the IPP 16-tap sum-order flags
   (`set_scalar_head(s)`) and the counter clock (`BlockClock`) as inputs, never read
@@ -86,8 +88,9 @@ those findings, it cites them.
   `SourceFilters::new` refuses it at another rate; its run-8
   amplitudes are asserted bit for bit over blocks 0 to 6599. The ignored
   `end_to_end_note_decisions_match_the_baseline` (`tests/parity_smart2_stages.rs`)
-  fails because run 6 did not log the counter lap read. Still unimplemented: the
-  Evaluator (its code is a per-block input).
+  fails because run 6 did not log the counter lap read. The Evaluator's Coherence path is
+  unimplemented (`audio-feedback.md`, "Replay capture of the Evaluator inputs"); parity
+  tests pick the logged or the evaluated code with `harness::run8::Codes`.
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
   database (`rusqlite`, bundled SQLite), at `$XDG_DATA_HOME/braintellect-linux/sessions.db`,
   else `~/.local/share/braintellect-linux/sessions.db` (a relative
@@ -124,8 +127,8 @@ those findings, it cites them.
   runs off the UI thread and reports a `Snapshot` (phase, link health, frames, `StreamStats`,
   per-channel RMS microvolts over the last second, triggers) through `Environment::report`;
   the transport, sink, clock and stop flag are all injected. Live inputs the clone does not
-  derive: every block runs under the Evaluator's `defaultControlValue`
-  (`live::DEFAULT_CONTROL`, 111; the Evaluator is unimplemented). The IPP scalar-head
+  derive: the control code comes from the Evaluator (111 until its first
+  full epoch pair; `Snapshot.control` reports it). The IPP scalar-head
   flags are all `true` (`Mode::Fixed`): the original's sum order follows heap alignment per process and
   cannot be derived, so a live run fixes the order that departs less from run 8's logged
   one. Measured on run 8 and its replay, all-scalar-head differs from the logged order in
@@ -169,10 +172,11 @@ those findings, it cites them.
   `Read + Write` with `tests/harness/peer.rs` (`tests/emulator.rs`); the VM rig and the run-8
   replay result are in `docs/reverse-engineering/braintellect2/replay-rig.md`.
   `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
-  `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/`, and the ignored
+  `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/` (or the #53 log `tmp/s53/replay/`, `S48_REPLAY_DIR`), and the ignored
   `tests/replay_s48.rs` diffs the clone's decisions on that stream against the original's
-  (via `harness::run8::replay_from`) and asserts the logged E..H amplitudes bit for bit; it locates
-  the unlogged graph start, 45 Hz low-pass switch sample and E..H band to band-pass object ranks
+  (via `harness::run8::replay_from`) and asserts the logged A..H amplitudes, every logged Balance value and the per-block
+  Evaluator codes (outside epochs the logged Coherence series decide) exactly; it locates
+  the unlogged graph start, 45 Hz low-pass switch sample and A..H band to band-pass object ranks
   from those amplitudes (`audio-feedback.md`, "Replay start-up"; the extract keeps all 18 objects'
   flags and the complete logged block prefix, up to 30001); inputs are vendor-derived and stay
   outside Git.

@@ -6,8 +6,9 @@
 //! filter off, and the 45 Hz low-pass is switched in cold at the graph's second
 //! sample, which reproduces the app's logged Source output bit for bit.
 //!
-//! Inputs the clone does not derive are the logged ones: the Evaluator code, the
-//! counter timer's clock reads and the 16-tap-mean sum order of each band-pass call.
+//! Inputs the clone does not derive are the logged ones: the counter timer's clock reads and
+//! the 16-tap-mean sum order of each band-pass call. The Evaluator code is the logged one
+//! ([`Codes::Logged`]) or the clone's own ([`Codes::Evaluated`]).
 
 use std::sync::OnceLock;
 
@@ -26,6 +27,15 @@ const PREROLL: usize = 4000;
 /// logged read.
 const TIMER_BEFORE_FIRST_BLOCK_MS: i64 = 500;
 
+/// Where a replay takes the Evaluator code of each block from.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Codes {
+    /// The code the original logged for the block (`Run8Block::control`).
+    Logged,
+    /// The clone's Evaluator, from the band averages it computes.
+    Evaluated,
+}
+
 pub struct Replay {
     pub blocks: Vec<Run8Block>,
     pub decisions: Vec<braintellect_linux::feedback::BlockDecision>,
@@ -36,6 +46,23 @@ pub struct Replay {
 pub fn replay() -> &'static Replay {
     static RUN: OnceLock<Replay> = OnceLock::new();
     RUN.get_or_init(build)
+}
+
+/// The original-mode replay under the clone's own Evaluator codes, run once and shared by
+/// the tests.
+pub fn replay_evaluated() -> &'static Replay {
+    static RUN: OnceLock<Replay> = OnceLock::new();
+    RUN.get_or_init(|| {
+        replay_from(
+            &fixtures::run8_eeg(),
+            GRAPH_START - PREROLL,
+            GRAPH_START,
+            GRAPH_START + 1,
+            fixtures::run8_blocks(),
+            Mode::Original,
+            Codes::Evaluated,
+        )
+    })
 }
 
 /// The fixed-mode replay (see [`replay_in`]), run once and shared by the tests.
@@ -101,6 +128,7 @@ pub fn replay_with_flags(scalar_head: bool) -> Replay {
         GRAPH_START + 1,
         blocks,
         Mode::Original,
+        Codes::Logged,
     )
 }
 
@@ -114,6 +142,7 @@ pub fn replay_in(mode: Mode) -> Replay {
         GRAPH_START + 1,
         fixtures::run8_blocks(),
         mode,
+        Codes::Logged,
     )
 }
 
@@ -135,6 +164,7 @@ pub fn replay_switching_at(offset: usize, scalar_head: bool) -> Replay {
         GRAPH_START + offset,
         blocks,
         Mode::Original,
+        Codes::Logged,
     )
 }
 
@@ -145,7 +175,8 @@ fn build() -> Replay {
 /// The replay of an exercise whose consumed EEG starts at consumed sample `first`, before
 /// `graph_start`, under the app's logged per-block inputs. The 45 Hz low-pass is
 /// switched in at consumed sample `interference_switch` in [`Mode::Original`] (the app's
-/// thread-timed sample, an input) and at `graph_start` in [`Mode::Fixed`].
+/// thread-timed sample, an input) and at `graph_start` in [`Mode::Fixed`]. `codes` picks
+/// the Evaluator code of each block.
 pub fn replay_from(
     eeg: &[[i32; 8]],
     first: usize,
@@ -153,6 +184,7 @@ pub fn replay_from(
     interference_switch: usize,
     blocks: Vec<Run8Block>,
     mode: Mode,
+    codes: Codes,
 ) -> Replay {
     let mut design = fixtures::smart2_design();
     design.source.interference1 = Interference1::LowPass45;
@@ -218,7 +250,10 @@ pub fn replay_from(
                 read_ms: block.read_ms,
                 lap_ms: block.lap_ms.unwrap_or(block.read_ms),
             };
-            graph.process_filtered_block(clock, block.control, &samples)
+            match codes {
+                Codes::Logged => graph.process_filtered_block(clock, block.control, &samples),
+                Codes::Evaluated => graph.process_evaluated_block(clock, &samples),
+            }
         })
         .collect();
     Replay {
