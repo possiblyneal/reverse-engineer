@@ -1,14 +1,14 @@
 //! The egui window. It draws [`UiModel`], turns widget input into model calls and
-//! [`Command`]s, and carries out the import and the instrument check by calling
-//! `import::import_banks` and `audio::load_instrument` (tested in their own modules).
+//! [`Command`]s, and carries out the import and the tone check by calling
+//! `import::import_banks` and `Tone::availability` (tested in their own modules).
 
 use std::path::PathBuf;
 
 use eframe::egui;
 
-use crate::audio::{self, import};
+use crate::audio::import;
+use crate::audio::tone::{Availability, TONES};
 use crate::feedback::{Interference1, Interference2};
-use crate::live::INSTRUMENT_ID;
 use crate::storage;
 
 use super::state::{Command, Event, Instrument, UiModel};
@@ -41,7 +41,9 @@ struct App {
 
 impl App {
     fn new(mac: String) -> Self {
-        let model = UiModel::new(mac.clone(), instrument());
+        let tones = tone_availability();
+        let mut model = UiModel::new(mac.clone(), tones[0].clone());
+        model.set_tones(tones);
         Self {
             mac,
             model,
@@ -54,9 +56,12 @@ impl App {
         match command {
             Command::Start(properties) => {
                 let ctx = ctx.clone();
-                self.worker = Some(Worker::spawn(self.mac.clone(), properties, move || {
-                    ctx.request_repaint();
-                }));
+                self.worker = Some(Worker::spawn(
+                    self.mac.clone(),
+                    properties,
+                    self.model.tone(),
+                    move || ctx.request_repaint(),
+                ));
             }
             Command::CheckSensors => {
                 let ctx = ctx.clone();
@@ -81,6 +86,7 @@ impl App {
                     Err(why) => Event::ImportFailed(why),
                 };
                 self.model.apply(event);
+                self.model.set_tones(tone_availability());
             }
         }
     }
@@ -93,13 +99,11 @@ impl App {
     }
 }
 
-fn instrument() -> Instrument {
-    let loaded = import::default_dir()
-        .ok_or_else(|| storage::NO_DATA_DIR.to_owned())
-        .and_then(|dir| audio::load_instrument(&dir, INSTRUMENT_ID).map_err(|e| e.to_string()));
-    match loaded {
-        Ok(_) => Instrument::Ready,
-        Err(why) => Instrument::Missing(why),
+/// Which of the tones are in the instruments directory.
+fn tone_availability() -> Vec<Instrument> {
+    match import::default_dir() {
+        Some(dir) => TONES.iter().map(|t| t.availability(&dir)).collect(),
+        None => vec![Availability::Missing(storage::NO_DATA_DIR.to_owned()); TONES.len()],
     }
 }
 
@@ -125,6 +129,23 @@ impl eframe::App for App {
                 }
                 ui.separator();
             }
+
+            ui.label("Feedback tone");
+            ui.add_enabled_ui(view.can_choose_tone, |ui| {
+                for (tone, shown) in TONES.iter().zip(&view.tones) {
+                    let choice = ui.add_enabled(
+                        shown.available,
+                        egui::RadioButton::new(shown.selected, &shown.label),
+                    );
+                    if choice.clicked() {
+                        self.model.select_tone(tone);
+                    }
+                    if !shown.available {
+                        ui.small(&shown.status);
+                    }
+                }
+            });
+            ui.separator();
 
             ui.add_enabled_ui(view.can_start, |ui| {
                 let p = &mut self.model.properties;

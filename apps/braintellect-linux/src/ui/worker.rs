@@ -11,12 +11,11 @@ use std::time::{Duration, Instant};
 
 use crate::acquisition::rfcomm::{RfcommStream, DEFAULT_CHANNEL};
 use crate::acquisition::session::Session;
+use crate::audio::import;
 use crate::audio::sink::AlsaSink;
-use crate::audio::{self, import};
+use crate::audio::tone::{self, Tone};
 use crate::capture::{self, Recording};
-use crate::live::{
-    self, Environment, GraphStart, SessionProperties, INSTRUMENT_ID, OUTPUT_RATE_HZ,
-};
+use crate::live::{self, Environment, GraphStart, SessionProperties, OUTPUT_RATE_HZ};
 use crate::storage::{self, Store};
 
 use super::state::Event;
@@ -32,15 +31,16 @@ pub struct Worker {
 }
 
 impl Worker {
-    /// Connect to the B-2 at `mac` and run a session; `wake` is called after each
-    /// event so the window redraws.
+    /// Connect to the B-2 at `mac` and run a session playing `tone`; `wake` is
+    /// called after each event so the window redraws.
     pub fn spawn(
         mac: String,
         properties: SessionProperties,
+        tone: &'static Tone,
         wake: impl Fn() + Send + 'static,
     ) -> Self {
         Self::spawn_job(wake, move |flag, send| {
-            session(&mac, &properties, flag, send)
+            session(&mac, &properties, tone, flag, send)
         })
     }
 
@@ -122,11 +122,12 @@ fn check(
 fn session(
     mac: &str,
     properties: &SessionProperties,
+    tone: &Tone,
     stop: &AtomicBool,
     send: &dyn Fn(Event),
 ) -> Result<(), String> {
     let bank_dir = import::default_dir().ok_or(storage::NO_DATA_DIR)?;
-    let bank = audio::load_instrument(&bank_dir, INSTRUMENT_ID).map_err(|e| e.to_string())?;
+    let bank = tone::load_tone(&bank_dir, tone).map_err(|e| e.to_string())?;
     let store = Store::open(&storage::default_path().ok_or(storage::NO_DATA_DIR)?)
         .map_err(|e| e.to_string())?;
     let mut sink = AlsaSink::open(OUTPUT_RATE_HZ).map_err(|e| format!("no audio output: {e}"))?;

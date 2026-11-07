@@ -47,8 +47,6 @@ use crate::storage::{Channel, Header, SessionRecord, Store};
 /// Output rate of the sink: the sample rate of instrument bank 1002
 /// (`audio-feedback.md`, "Wave device and instrument 1002").
 pub const OUTPUT_RATE_HZ: u32 = 96_000;
-/// The instrument the SMART-2 design plays.
-pub const INSTRUMENT_ID: u32 = 1002;
 /// Baseline calibration (`b2-protocol.md`, "Calibration confirmed"):
 /// channelGain 12, sensorGain 10, as the caller supplies them (not read from the device).
 pub const CHANNEL_GAIN: f64 = 12.0;

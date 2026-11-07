@@ -136,7 +136,16 @@ those findings, it cites them.
   Only `sink::AlsaSink` touches a device (libasound loaded with `dlopen`); tests never open
   it and nothing plays audio. The bank bytes are never committed: `tests/parity_audio.rs` and
   the audio tests use synthetic banks (`tests/harness/synthetic_bank.rs`); the ignored real-bank
-  test reads `BT_BANK_1002_DLL`. Recovered behavior: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
+  test reads `BT_BANK_1002_DLL`.
+  Tones (`audio::tone`, `audio::soundfont`; ADR 0006): `TONES` lists the feedback tones in
+  set-up order, the original banks 1002 (`DEFAULT_TONE`, index 0), 1001 and 1003, then recorded
+  Harp, Acoustic guitar and Xylophone. `braintellect-linux import-soundfont <file.sf2>` renders
+  the recorded ones from General MIDI programs 46, 24 and 13 into
+  `tone-<key>.bank` beside the banks (notes 40..76, 96 kHz, 0.8 s; nothing is written unless
+  every tone renders). `Tone::availability` reports a never-imported tone as unavailable, and
+  the window disables it instead of failing the session; `UiModel::select_tone` refuses an
+  unavailable tone or a change while a session runs. The SoundFont is not committed
+  (`tests/harness/synthetic_soundfont.rs` builds a synthetic one; `tests/audio_tone.rs`). Recovered behavior: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
 - **Live session and UI** (`src/live.rs`, `src/ui/`; ADR 0005). `live::run` is the session
   engine: `Session` over `Read + Write` -> `SourceFilters` -> `Smart2Graph` -> `audio::Player`
   -> an `AudioSink` (a trait; `AlsaSink` stays the only device code) -> `Store::save` when the
@@ -187,7 +196,7 @@ those findings, it cites them.
   tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`), `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the in-memory stream). `ui::state::UiModel` is the
   pure model (actions and events in, `View` out) and is tested in `tests/ui_state.rs`;
   `ui::app` only draws it, and `ui::worker` is the device glue (RFCOMM with a 1 s read
-  timeout, ALSA, the default store, bank 1002); neither is unit-tested. The window offers the
+  timeout, ALSA, the default store, the chosen tone); neither is unit-tested. The window offers the
   ADR 0004 import when `load_instrument` reports `Missing`. Entry point:
   `scripts/run braintellect-linux -- ui --mac <MAC>`; the window needs a display and loads
   X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages).

@@ -9,3 +9,4 @@
 | [0003](0003-host-linux-clone-as-run-and-test-unit.md) | Host the BRAINtellect2 Linux Clone as a Run-and-Test Unit | accepted |
 | [0004](0004-read-instrument-samples-from-the-original-install.md) | Read Instrument Samples from the Clinician's Original Install | accepted |
 | [0005](0005-build-the-session-ui-as-an-egui-desktop-window.md) | Build the Session UI as an egui Desktop Window | accepted |
+| [0006](0006-render-recorded-tones-from-a-freely-licensed-soundfont.md) | Render Recorded Tones from a Freely Licensed SoundFont | accepted |

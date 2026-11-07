@@ -40,7 +40,7 @@ pub use graph::{
     Smart2Graph, BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS,
 };
 pub use mode::Mode;
-pub use note::{NoteSelection, PeakFrequencies};
+pub use note::{NoteSelection, PeakFrequencies, NOTE_HIGH, NOTE_LOW};
 pub use peak_frequency::{Peak, PeakDesign, PeakFrequency};
 pub use source::{Interference1, Interference2, SourceDesign, SourceFilters};
 pub use threshold::Threshold;

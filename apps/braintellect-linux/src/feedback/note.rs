@@ -12,8 +12,8 @@ const TRACKER_WINDOW: usize = 15_000;
 /// Samples the note smoother averages (the pipe's smoother window).
 const SMOOTHER_WINDOW: usize = 62;
 /// The sound element's MIDI range at run time (`0x2d4`/`0x2d8` of `SoundElement`).
-const NOTE_LOW: i32 = 40;
-const NOTE_HIGH: i32 = 76;
+pub const NOTE_LOW: i32 = 40;
+pub const NOTE_HIGH: i32 = 76;
 /// `SoundElement`'s default note until one arrives (MIDI 60).
 const DEFAULT_NOTE: i32 = 60;
 
