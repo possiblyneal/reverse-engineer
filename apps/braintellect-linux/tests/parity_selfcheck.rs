@@ -137,6 +137,17 @@ fn control_codes_green_on_baseline_red_on_wrong() {
 }
 
 #[test]
+fn float32_bits_green_on_baseline_red_on_one_ulp() {
+    let baseline: Vec<f32> = [1.0, 0.973_25, 0.812_5, -0.25].repeat(3);
+    assertions::float32_bits("value", &baseline, &baseline).expect("baseline vs itself");
+
+    let mut wrong = baseline.clone();
+    wrong[6] = f32::from_bits(wrong[6].to_bits() + 1);
+    assert!(assertions::float32_bits("value", &baseline, &wrong).is_err());
+    assert!(assertions::float32_bits("value", &baseline, &baseline[1..]).is_err());
+}
+
+#[test]
 fn feedback_fixtures_are_well_formed() {
     let blocks = fixtures::feedback_blocks();
     assert!(blocks.windows(2).all(|w| w[1].time_ms >= w[0].time_ms));

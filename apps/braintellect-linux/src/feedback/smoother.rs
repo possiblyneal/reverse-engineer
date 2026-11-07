@@ -20,6 +20,18 @@ impl Smoother {
         }
     }
 
+    /// A mean that starts full of `value`, so it always divides by `window` (the app's
+    /// constructor `0x654f20` with its count flag clear).
+    pub fn prefilled(window: usize, value: f32) -> Self {
+        let mut ring = VecDeque::with_capacity(window + 1);
+        ring.resize(window, value);
+        Self {
+            window,
+            ring,
+            sum: f64::from(value) * window as f64,
+        }
+    }
+
     /// Add `x` and return the mean of the window, in single precision.
     pub fn push(&mut self, x: f32) -> f32 {
         self.ring.push_back(x);

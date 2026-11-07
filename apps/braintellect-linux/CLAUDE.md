@@ -77,8 +77,12 @@ those findings, it cites them.
   built from `Smart2Design::source`; `Smart2Graph` (`graph.rs`) runs from the Source
   output (`process_evaluated_block`, or `process_filtered_block` with a logged code):
   `BandPass`, `PeakFrequency`, the `continuous` Aggregator, the `Evaluator`
-  (`evaluator.rs`: the four Balance series from the band averages, the decision at each
-  60 s epoch end, default 111; Coherence is not implemented), `ExprTriggerAll`
+  (`evaluator.rs`: the four Balance and two Coherence series from the Aggregators'
+  averages, the decision at each 60 s epoch end by the Coherence then the Balance rule,
+  default 111), the Ch3/Ch4 `Coherence` elements (`coherence.rs`, on the port of the
+  original's IPP order-9 real FFT in `ipp_fft.rs`, pinned bit for bit by
+  `tests/fixtures/ipp_real_fft_512.txt`, the original kernel's output under Unicorn on a
+  synthetic vector), `ExprTriggerAll`
   (`trigger_all`), the Threshold/Counter `TriggerPath` and `NoteSelection`. `Smart2Design` is filled from `smart2_design.tsv`;
   `Smart2Graph::new` refuses a rate other than `RATE_HZ` (500) or an aggregator epoch
   of 0. The run-6 and run-8 replays feed the IPP 16-tap sum-order flags
@@ -92,9 +96,8 @@ those findings, it cites them.
   `SourceFilters::new` refuses it at another rate; its run-8
   amplitudes are asserted bit for bit over blocks 0 to 6599. The ignored
   `end_to_end_note_decisions_match_the_baseline` (`tests/parity_smart2_stages.rs`)
-  fails because run 6 did not log the counter lap read. The Evaluator's Coherence path is
-  unimplemented (`audio-feedback.md`, "Replay capture of the Evaluator inputs"); parity
-  tests pick the logged or the evaluated code with `harness::run8::Codes`.
+  fails because run 6 did not log the counter lap read. Parity tests pick the logged or
+  the evaluated code with `harness::run8::Codes`.
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
   database (`rusqlite`, bundled SQLite), at `$XDG_DATA_HOME/braintellect-linux/sessions.db`,
   else `~/.local/share/braintellect-linux/sessions.db` (a relative
@@ -129,10 +132,11 @@ those findings, it cites them.
   stops the worker and waits for the store). It stores only
   if a frame arrived, and an error (link, audio, store) ends it unstored. It blocks, so it
   runs off the UI thread and reports a `Snapshot` (phase, link health, frames, `StreamStats`,
-  per-channel RMS microvolts over the last second, triggers) through `Environment::report`;
+  per-channel RMS microvolts over the last second, triggers, the control code) through
+  `Environment::report`, every 25 blocks and in the frame a trigger or a code change happens;
   the transport, sink, clock and stop flag are all injected. Live inputs the clone does not
-  derive: the control code comes from the Evaluator (111 until its first
-  full epoch pair; `Snapshot.control` reports it). The IPP scalar-head
+  derive: the control code comes from the Evaluator, both paths (111 until its first
+  full epoch pair; `Snapshot.control` reports it and the session window shows it). The IPP scalar-head
   flags are all `true` (`Mode::Fixed`): the original's sum order follows heap alignment per process and
   cannot be derived, so a live run fixes the order that departs less from run 8's logged
   one. Measured on run 8 and its replay, all-scalar-head differs from the logged order in
@@ -168,7 +172,10 @@ those findings, it cites them.
   the B-2 must be paired, bonded and trusted in BlueZ first (`btmgmt bondable on` before pairing,
   or the bond is not kept).
   `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG framed by
-  `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank.
+  `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank. The ignored
+  `tests/replay_live.rs` reads the #33 capture back through `live::run` (`S33_CAPTURE`,
+  `S33_REPLAY_DIR`) and asserts the original's per-block codes exactly; its Trigger/Note
+  decisions are reported only (`audio-feedback.md`, "Live replay of the #33 capture").
 - **B-2 emulator and capture** (`src/emulate.rs`, `src/capture.rs`). The live session tees its raw
   RX to `<data dir>/captures/b2-<secs>.rx` (`capture::Recording`). `braintellect-linux emulate
   <capture> <socket>` plays a B-2 over a Unix socket (the QEMU serial chardev): `Command::decode`
@@ -179,8 +186,8 @@ those findings, it cites them.
   `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
   `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/` (or the #53 log `tmp/s53/replay/`, `S48_REPLAY_DIR`), and the ignored
   `tests/replay_s48.rs` diffs the clone's decisions on that stream against the original's
-  (via `harness::run8::replay_from`) and asserts the logged A..H amplitudes, every logged Balance value and the per-block
-  Evaluator codes (outside epochs the logged Coherence series decide) exactly; it locates
+  (via `harness::run8::replay_from`) and asserts the logged A..H amplitudes, every logged Balance and
+  Coherence value and the per-block Evaluator codes exactly; it locates
   the unlogged graph start, 45 Hz low-pass switch sample and A..H band to band-pass object ranks
   from those amplitudes (`audio-feedback.md`, "Replay start-up"; the extract keeps all 18 objects'
   flags and the complete logged block prefix, up to 30001); inputs are vendor-derived and stay

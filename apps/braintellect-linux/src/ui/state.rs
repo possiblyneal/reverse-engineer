@@ -78,6 +78,8 @@ pub struct View {
     pub channels: Vec<ChannelView>,
     pub frames: String,
     pub feedback: String,
+    /// The Evaluator's current control code.
+    pub control: String,
     pub elapsed: String,
 }
 
@@ -224,6 +226,7 @@ impl UiModel {
                 Some(note) => format!("{}, last note {note}", plural(s.triggers.into(), "note")),
                 None => "No notes yet".to_owned(),
             }),
+            control: snapshot.map_or_else(String::new, |s| format!("Control code {}", s.control)),
             elapsed: snapshot.map_or_else(String::new, |s| {
                 format!(
                     "{} of {}",

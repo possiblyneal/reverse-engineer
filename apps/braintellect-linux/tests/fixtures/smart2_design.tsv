@@ -10,6 +10,8 @@ bandpass	1	Band 80	23.0	36.0	Hamming	128
 bandpass	2	Band 80	23.0	36.0	Hamming	128
 bandpass	3	Band 80	23.0	36.0	Hamming	128
 bandpass	4	Band 80	23.0	36.0	Hamming	128
+coherence	3	4	Band 10	1.0	3.0	Hamming	128	Relaxed
+coherence	3	4	Band 80	23.0	36.0	Hamming	128	Relaxed
 peak	1	9	6.0	14.0	Hann
 peak	2	9	6.0	14.0	Hann
 peak	3	9	7.0	15.0	Hann
