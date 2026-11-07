@@ -43,9 +43,8 @@ pub const DEFAULT_CONTROL: u32 = 111;
 pub const OUTPUT_RATE_HZ: u32 = 96_000;
 /// The instrument the SMART-2 design plays.
 pub const INSTRUMENT_ID: u32 = 1002;
-/// Baseline calibration (`b2-protocol.md`, "Calibration confirmed"): device
-/// family 12, channelGain 12, sensorGain 10. Not read from the device.
-pub const FAMILY: DeviceFamily = DeviceFamily::F12;
+/// Baseline calibration (`b2-protocol.md`, "Calibration confirmed"):
+/// channelGain 12, sensorGain 10, as the caller supplies them (not read from the device).
 pub const CHANNEL_GAIN: f64 = 12.0;
 pub const SENSOR_GAIN: f64 = 10.0;
 
@@ -57,7 +56,7 @@ pub fn stream_config() -> Result<StreamConfig, String> {
     Ok(StreamConfig {
         calibration: ChannelCalibration::new(CHANNEL_GAIN, SENSOR_GAIN)
             .map_err(|e| format!("{e:?}"))?,
-        family: FAMILY,
+        family: None,
     })
 }
 
@@ -194,6 +193,7 @@ pub fn run<T: Read + Write>(
         last_note: None,
         elapsed_s: 0,
     };
+    let (family, model) = (session.family(), session.info().system1.model);
     let start_ms = (env.clock)();
     let built = Engine::new(properties, env.bank, start_ms);
     let mut engine = match built {
@@ -244,7 +244,7 @@ pub fn run<T: Read + Write>(
         Ok(()) if snapshot.frames == 0 => {
             Phase::Failed("no data was received from the B-2".to_owned())
         }
-        Ok(()) => match env.store.save(&engine.record(properties)) {
+        Ok(()) => match env.store.save(&engine.record(properties, family, model)) {
             Ok(id) => Phase::Saved { id },
             Err(e) => Phase::Failed(format!("the session could not be stored: {e}")),
         },
@@ -398,7 +398,12 @@ impl<'a> Engine<'a> {
     /// The session as stored. The header fields are the baseline record's
     /// (`tests/fixtures/record.tsv`): the app version and design, the montage,
     /// the calibration constants above and the device settings in use.
-    fn record(&self, properties: &SessionProperties) -> SessionRecord {
+    fn record(
+        &self,
+        properties: &SessionProperties,
+        family: DeviceFamily,
+        model: [u16; 2],
+    ) -> SessionRecord {
         let header = Header {
             version: "5.1.57".to_owned(),
             design: "BT-SMART-2-v5.1.2".to_owned(),
@@ -409,8 +414,8 @@ impl<'a> Engine<'a> {
             number_channels: CHANNELS as u32,
             device_gain: CHANNEL_GAIN,
             sensor_gain: SENSOR_GAIN,
-            device_family: FAMILY.code(),
-            device_model: "0002.0004".to_owned(),
+            device_family: family.code(),
+            device_model: format!("{:04}.{:04}", model[0], model[1]),
             interference_filter: match properties.interference1 {
                 Interference1::Off => "Off",
                 Interference1::LowPass45 => "45Hz LP",

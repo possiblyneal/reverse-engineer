@@ -242,17 +242,41 @@ from `[10]` the payload is two-byte pairs each followed by a `03` separator, the
 `03` fill to the end.
 
 - 101: six pairs (12-byte device id), matching the app's `id` log field.
-- 110: six pairs. Pairs 3-4 give the firmware version bytes 17, 1, 1 (pair 3 =
-  17, 1; pair 4 starts 1); pairs 5-6 give the model digits `0002`, `0004` (app
-  log `model: 0002.0004`, `FW version: 17.1.1`). Pairs 1-2 are unidentified.
+- 110 (decoded, see "Handshake replies, live 2026-11-07"): pair 1 second byte =
+  device family, pair 2 first byte = number of channels, pairs 3-4 = firmware
+  17, 1, 1, pairs 5-6 = model `0002`, `0004` (app log `model: 0002.0004`,
+  `FW version: 17.1.1`).
 - 112: one non-zero pair, unidentified.
-- 131-134 (active channels): pair 1 = (channel number 1-4, state byte); pair 2 =
-  (12, 0), where 12 equals the `channelGain` of 12 in the app's `dumpDebug`
-  (inferred mapping). The state byte was 2 in the first pass and 1 in the second,
-  after setMode(Normal EEG) (inferred: current mode).
+- 131-134 (active channels): pair 1 = (channel number 1-4, mode byte); pair 2 =
+  (0, 12), where 12 equals the `channelGain` of 12 in the app's `dumpDebug`
+  (inferred mapping; the 2026-11-04 note had the pair order reversed). The mode
+  byte was 2 in the first pass and 1 in the second, after setMode(Normal EEG)
+  (inferred: current mode).
 - 135-138 (inactive): pair 1 = (channel number 5-8, 0), pair 2 = (0, 0).
 - The app then logs `family: 12` and `numberChannels (from device): 4`, matching
   the four active channel replies.
+
+### Handshake replies, live 2026-11-07
+
+Three handshakes (A, B, C) were captured from the real B-2 over RFCOMM by the
+clone's command sequence; the B-2 was already on, and no power-cycle was done,
+so B and C are reconnects (a fourth connect after a power-off timed out waiting
+for the Operator to switch it back on). Fields common to every capture:
+
+| Field | Source | Value | Status |
+|---|---|---|---|
+| device family | 110 `[11]` | 12 | observed; static: `initializeDevice` (VA `0x55b850`) passes this byte to `setDeviceFamily` (VA `0x55bae3`, wrapper `FUN_0054f0f0`), which accepts 11, 12, 99 |
+| channels | 110 `[13]` | 4 | observed; static: copied by `FUN_00552540` |
+| firmware | 110 `[16]`, `[17]`, `[19]` | 17, 1, 1 | observed |
+| model | 110 `[22..23]`, `[25..26]` big-endian | 2, 4 | observed |
+| 112 payload | 112 `[10]`, `[11]` | `23 83` | observed, meaning unresolved |
+| channel number | 131-138 `[10]` | 1-8 | observed |
+| channel mode | 131-138 `[11]` | 2 first pass of A, then 1; 0 on 135-138 | inferred |
+| channel gain | 131-138 `[14]` | 12 on 131-134, 0 on 135-138 | inferred |
+
+The mode byte on 131 was 1 from the first query on in B and C: the mode set
+by the clone persists across reconnects while the B-2 stays on. The clone reads
+the family from the device; a caller-supplied family is only an override.
 
 ### Calibration confirmed (observed, app log `dumpDebug`)
 
@@ -327,9 +351,12 @@ bit for bit. Not verified against a known test signal, since the session ran wit
 
 ## Unresolved
 
-- 110 pairs 1-2 and the 112 payload meaning.
-- Whether the device reports family itself or the app derives it from the
-  model/firmware fields.
+- 110 pair 1 first byte, pair 2 second byte and pair 4 second byte, and the 112
+  payload pair (`23 83`): the app's initialisation (`initializeDevice`,
+  `FUN_00552540`) never reads them and the live bytes were identical across all
+  handshakes; the 131 handler (string `!*#131` at `0x13fcc80`, in a static table
+  with no referencing function under `analyzeHeadless`) was not located, so the
+  mode and gain readings stay inferred.
 - Why the DataCapture header reports `samplesPerPacket 4` while `DataBuffer` logs 2.
 - How `processData_v5` (`0x556560`) and `processData` (about `0x556ff0`) relate to
   the ring-buffer parser at `0x55a280`; neither ran on the observed path.

@@ -40,7 +40,18 @@ pub struct WireEvent {
 /// The baseline handshake and start sequence, in order (replies carry the
 /// scrubbed serial placeholder).
 pub fn wire() -> Vec<WireEvent> {
-    read("wire.txt")
+    wire_file("wire.txt")
+}
+
+/// A live handshake from the real B-2 (`handshake_live_a.txt`: the first
+/// connection after switch-on; `handshake_live_b.txt`: a reconnect), laid out like
+/// [`wire`] with the commands the clone writes and the serial scrubbed.
+pub fn live_handshake(tag: char) -> Vec<WireEvent> {
+    wire_file(&format!("handshake_live_{tag}.txt"))
+}
+
+fn wire_file(name: &str) -> Vec<WireEvent> {
+    read(name)
         .lines()
         .map(|l| {
             let (dir, hex) = l.split_once(' ').expect("DIR hex");

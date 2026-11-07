@@ -14,7 +14,7 @@
 
 /// Device family reported by the controller, which fixes the reference voltage
 /// `D1` and ADC full-scale count `D2` (`setDeviceFamily`, VA `0x557b50`). The
-/// B-2 is a 24-bit family (12 or 99); which one is resolved by the T2 capture.
+/// B-2 reports 12 (110 reply, pair 1 second byte; `info::SystemInfo1`).
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum DeviceFamily {
     /// 16-bit, Vref 2.4 V.
@@ -26,6 +26,20 @@ pub enum DeviceFamily {
 }
 
 impl DeviceFamily {
+    /// The family for a device-reported code: 11, 12 or 99 (`setDeviceFamily`
+    /// rejects any other).
+    ///
+    /// # Errors
+    /// The code itself when it is none of those.
+    pub fn from_code(code: u8) -> Result<Self, u8> {
+        match code {
+            11 => Ok(Self::F11),
+            12 => Ok(Self::F12),
+            99 => Ok(Self::F99),
+            other => Err(other),
+        }
+    }
+
     /// The family number the app stores (`deviceFamily`: 11, 12 or 99).
     #[must_use]
     pub fn code(self) -> u32 {

@@ -9,7 +9,7 @@ mod harness;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
 
-use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
+use braintellect_linux::acquisition::decode::ChannelCalibration;
 use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::acquisition::stream::StreamConfig;
 use braintellect_linux::capture::Recording;
@@ -55,7 +55,7 @@ fn exercise(
     }
     let config = StreamConfig {
         calibration: ChannelCalibration::new(12.0, 10.0).expect("calibration"),
-        family: DeviceFamily::F12,
+        family: None,
     };
     let mut captured = Vec::new();
     let session =
