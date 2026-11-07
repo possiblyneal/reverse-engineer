@@ -1,11 +1,15 @@
 //! The #33 live session's raw capture replayed through the live engine (`live::run`) over an
-//! in-memory transport, against the original's run on the same capture (ticket #60).
+//! in-memory transport, against the original's run on the same capture (tickets #60, #66).
 //!
 //! The capture is the RX bytes the clone read from the B-2 in the #33 session, handshake
 //! replies included, so reading it back in order replays that session; writes are dropped.
 //! The original consumed the same capture served by `braintellect-linux emulate`; its hook log
 //! is reduced by `scripts/replay-extract.py` to `blocks.tsv` (the code of every block) and
 //! `decisions.tsv` (its Trigger and Note decisions).
+//!
+//! The engine runs in original mode from the stream's first consumed frame, with the
+//! original's graph start, interference switch and clock reads, lap reads included; the
+//! control code of every block and the block and note of every trigger must match exactly.
 //!
 //! Ignored: the capture and the extract are wearer EEG and live outside Git. Run with
 //! `cargo test --release --test replay_live -- --ignored --nocapture`; `S33_CAPTURE` and
@@ -21,11 +25,11 @@ use std::sync::atomic::AtomicBool;
 
 use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::capture::Recording;
-use braintellect_linux::feedback::DEFAULT_CODE;
-use braintellect_linux::live::{self, Environment, Phase, SessionProperties, Snapshot};
+use braintellect_linux::feedback::{Mode, DEFAULT_CODE};
+use braintellect_linux::live::{self, Environment, GraphStart, Phase, SessionProperties, Snapshot};
 use braintellect_linux::storage::Store;
-use harness::assertions;
 use harness::audio::{small_bank, RecordingSink};
+use harness::{assertions, fixtures};
 
 fn path(var: &str, default: &str) -> PathBuf {
     std::env::var_os(var).map_or_else(
@@ -63,6 +67,14 @@ const FRAME_LEN: usize = 32;
 /// The original's graph-start sample on the #33 extract, located by `replay_s48` from its
 /// logged amplitudes (consumed sample 15616, before the first skipped frame).
 const GRAPH_START: usize = 15616;
+/// The original's start on the #33 extract: its Source filters ran every consumed sample
+/// before the graph start, and its 45 Hz low-pass switched in 4 graph samples later
+/// (`replay_s48`).
+const ORIGINAL_START: GraphStart = GraphStart {
+    mode: Mode::Original,
+    warmup_samples: GRAPH_START,
+    interference_switch: 4,
+};
 
 /// The capture's stream frames the original consumed, in order: each consumed sample pair of
 /// `eeg` (one line per sample, four 24-bit hex counts) is the next frame carrying it, so the
@@ -112,13 +124,22 @@ fn the_live_engine_on_the_33_capture_against_the_original() {
     let dir = path("S33_REPLAY_DIR", "tmp/s33/replay");
     let read = |name: &str| fs::read_to_string(dir.join(name)).expect(name);
 
-    let read_ms: Vec<i64> = read("blocks.tsv")
+    // Each block's code, its clock read, and the lap read the counter took when it fired.
+    let blocks: Vec<(u32, i64, Option<i64>)> = read("blocks.tsv")
         .lines()
-        .map(|l| l.split('\t').nth(2).expect("read").parse().expect("read"))
+        .map(|l| {
+            let f: Vec<&str> = l.split('\t').collect();
+            let lap: i64 = f[3].parse().expect("lap");
+            (
+                f[1].parse().expect("code"),
+                f[2].parse().expect("read"),
+                (lap >= 0).then_some(lap),
+            )
+        })
         .collect();
     let stream = consumed_frames(&raw[HANDSHAKE_LEN..], &read("eeg.txt"));
     let mut bytes = raw[..HANDSHAKE_LEN].to_vec();
-    bytes.extend(stream[GRAPH_START / 2..].concat());
+    bytes.extend(stream.concat());
     let session = Session::open(
         Recording::new(Replayed(Cursor::new(bytes)), io::sink()),
         live::stream_config().expect("config"),
@@ -130,9 +151,18 @@ fn the_live_engine_on_the_33_capture_against_the_original() {
     let store = Store::open(&db).expect("store");
     let mut sink = RecordingSink::default();
     let stop = AtomicBool::new(false);
-    // The graph is built on the first read, then one read per block: the original's.
-    let mut reads = std::iter::once(read_ms[0]).chain(read_ms.iter().copied());
-    let mut clock = move || reads.next().expect("a logged read per block");
+    // The original's reads in its order: one as the graph is built, then one per block and
+    // the lap read of each block where it fired.
+    let mut reads = std::iter::once(blocks[0].1).chain(
+        blocks
+            .iter()
+            .flat_map(|&(_, read, lap)| std::iter::once(read).chain(lap)),
+    );
+    let mut clock = move || {
+        reads
+            .next()
+            .expect("the clone fired where the original did not")
+    };
     let mut reports: Vec<Snapshot> = Vec::new();
     let last = live::run(
         session,
@@ -146,6 +176,7 @@ fn the_live_engine_on_the_33_capture_against_the_original() {
             store: &store,
             stop: &stop,
             clock: &mut clock,
+            graph: ORIGINAL_START,
             report: &mut |s: &Snapshot| reports.push(s.clone()),
         },
     );
@@ -155,19 +186,10 @@ fn the_live_engine_on_the_33_capture_against_the_original() {
         last.phase
     );
 
-    let logged: Vec<u32> = read("blocks.tsv")
-        .lines()
-        .map(|l| l.split('\t').nth(1).expect("code").parse().expect("code"))
-        .collect();
-    let logged_notes: Vec<(i64, u32)> = read("decisions.tsv")
-        .lines()
-        .filter_map(|l| {
-            let f: Vec<&str> = l.split('\t').collect();
-            (f[1] == "Note").then(|| (f[0].parse().expect("time"), f[2].parse().expect("note")))
-        })
-        .collect();
     // A code change or a trigger is reported in the frame that closes its block.
-    let block_of = |s: &Snapshot| usize::try_from(s.frames / 2).expect("blocks") - 1;
+    let warmup_frames = (GRAPH_START / 2) as u64;
+    let block_of =
+        |s: &Snapshot| usize::try_from((s.frames - warmup_frames) / 2).expect("blocks") - 1;
     let mut clone_codes = vec![(0, DEFAULT_CODE)];
     let mut clone_notes = Vec::new();
     let mut triggers = 0;
@@ -178,14 +200,15 @@ fn the_live_engine_on_the_33_capture_against_the_original() {
         if s.triggers != triggers {
             triggers = s.triggers;
             let note = u32::try_from(s.last_note.expect("note")).expect("MIDI");
-            clone_notes.push((read_ms[block_of(s)], note));
+            clone_notes.push((block_of(s), note));
         }
     }
     assert_eq!(
-        last.frames / 2,
-        logged.len() as u64,
+        (last.frames - warmup_frames) / 2,
+        blocks.len() as u64,
         "every logged block ran"
     );
+    let logged: Vec<u32> = blocks.iter().map(|b| b.0).collect();
     // The code of every block, from the reported changes.
     let clone: Vec<u32> = (0..logged.len())
         .map(|b| {
@@ -200,28 +223,19 @@ fn the_live_engine_on_the_33_capture_against_the_original() {
     println!("clone codes {clone_codes:?}");
     assertions::control_codes(&logged, &clone).expect("per-block code parity");
 
-    // Trigger and Note are reported, not asserted: the live engine starts its Source chain
-    // cold at the graph start and runs its own clock and sum-order policies, where the
-    // original warmed the chain on the pre-session stream (`audio-feedback.md`, "Live
-    // replay of the #33 capture").
-    let same: Vec<bool> = clone_notes
-        .iter()
-        .map(|n| logged_notes.contains(n))
-        .collect();
+    let logged_notes = fixtures::trigger_notes(&read("decisions.tsv"));
     println!(
-        "notes (read ms, note): original {}, clone {}, identical {}; clone only {:?}; original only {:?}",
+        "triggers: original {}, clone {}; clone only {:?}; original only {:?}",
         logged_notes.len(),
         clone_notes.len(),
-        same.iter().filter(|&&s| s).count(),
         clone_notes
             .iter()
-            .zip(&same)
-            .filter(|(_, &s)| !s)
-            .map(|(n, _)| n)
+            .filter(|n| !logged_notes.contains(n))
             .collect::<Vec<_>>(),
         logged_notes
             .iter()
             .filter(|n| !clone_notes.contains(n))
             .collect::<Vec<_>>()
     );
+    assertions::trigger_notes(&logged_notes, &clone_notes).expect("Trigger/Note parity");
 }

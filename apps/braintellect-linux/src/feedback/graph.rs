@@ -19,7 +19,7 @@ use super::evaluator::{balances, BALANCES, COHERENCES};
 use super::peak_frequency::{Peak, PeakDesign, PeakFrequency};
 use super::source::SourceDesign;
 use super::{
-    BandAmplitudes, BlockClock, Evaluator, Mode, NoteSelection, PeakFrequencies, Smoother,
+    BandAmplitudes, CounterClock, Evaluator, Mode, NoteSelection, PeakFrequencies, Smoother,
     TriggerPath, RATE_HZ,
 };
 
@@ -272,13 +272,13 @@ impl Smart2Graph {
     /// Evaluator still runs, so the block's Balance and Coherence values are reported.
     pub fn process_filtered_block(
         &mut self,
-        clock: impl Into<BlockClock>,
+        clock: impl CounterClock,
         control: u32,
         block: &[[f64; CHANNELS]],
     ) -> BlockDecision {
         let samples: Vec<SampleOutput> = block.iter().map(|&s| self.push_filtered(s)).collect();
         let inputs = self.evaluate(block, &samples);
-        self.decide(clock.into(), control, inputs, samples)
+        self.decide(clock, control, inputs, samples)
     }
 
     /// Like [`Self::process_filtered_block`], under the code the Evaluator decides from
@@ -286,13 +286,13 @@ impl Smart2Graph {
     /// completes it.
     pub fn process_evaluated_block(
         &mut self,
-        clock: impl Into<BlockClock>,
+        clock: impl CounterClock,
         block: &[[f64; CHANNELS]],
     ) -> BlockDecision {
         let samples: Vec<SampleOutput> = block.iter().map(|&s| self.push_filtered(s)).collect();
         let inputs = self.evaluate(block, &samples);
         let control = self.evaluator.code();
-        self.decide(clock.into(), control, inputs, samples)
+        self.decide(clock, control, inputs, samples)
     }
 
     /// The Evaluator code now in effect.
@@ -342,7 +342,7 @@ impl Smart2Graph {
 
     fn decide(
         &mut self,
-        clock: BlockClock,
+        clock: impl CounterClock,
         control: u32,
         (balances, coherences): ([f32; BALANCES], [f32; COHERENCES]),
         samples: Vec<SampleOutput>,

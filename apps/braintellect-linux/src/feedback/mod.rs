@@ -27,7 +27,7 @@ mod threshold;
 mod trigger_all;
 
 pub use band_pass::{BandPass, BandPassDesign};
-pub use counter::{BlockClock, Counter, TRIGGER_EPOCH_MS};
+pub use counter::{BlockClock, Counter, CounterClock, TRIGGER_EPOCH_MS};
 pub use evaluator::{balances, Evaluator, BALANCES, COHERENCES, DEFAULT_CODE};
 pub use graph::{
     BandPassSpec, BlockDecision, CoherenceSpec, DesignError, PeakSpec, SampleOutput, Smart2Design,
@@ -84,7 +84,7 @@ impl TriggerPath {
     /// smoothing, then [`TriggerPath::process_block`].
     pub fn process_amplitudes(
         &mut self,
-        clock: impl Into<BlockClock>,
+        clock: impl CounterClock,
         control: u32,
         block: &[BandAmplitudes],
     ) -> BlockOutput {
@@ -98,10 +98,10 @@ impl TriggerPath {
     }
 
     /// Process one block of smoothed inputs read at `clock`.
-    pub fn process_block(&mut self, clock: impl Into<BlockClock>, values: &[f64]) -> BlockOutput {
+    pub fn process_block(&mut self, mut clock: impl CounterClock, values: &[f64]) -> BlockOutput {
         let passes: Vec<bool> = values.iter().map(|&v| self.threshold.push(v)).collect();
         self.threshold.end_block();
-        let trigger = self.counter.process_block(clock.into(), &passes);
+        let trigger = self.counter.process_block(&mut clock, &passes);
         BlockOutput { passes, trigger }
     }
 }

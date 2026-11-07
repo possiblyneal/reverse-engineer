@@ -153,6 +153,25 @@ pub fn notes(expected: &[i32], actual: &[i32]) -> Parity {
     }
 }
 
+/// Every trigger's block and the note it plays match the baseline's one for one (integers:
+/// no tolerance applies, so a trigger one block early is red).
+pub fn trigger_notes(expected: &[(usize, u32)], actual: &[(usize, u32)]) -> Parity {
+    if expected.len() != actual.len() {
+        return mismatch(format!(
+            "trigger count: expected {}, got {}",
+            expected.len(),
+            actual.len()
+        ));
+    }
+    match expected.iter().zip(actual).position(|(e, a)| e != a) {
+        Some(i) => mismatch(format!(
+            "trigger {i} (block, note): expected {:?}, got {:?}",
+            expected[i], actual[i]
+        )),
+        None => Ok(()),
+    }
+}
+
 /// The control code the Evaluator decides for each block matches the baseline's, block for
 /// block (integers: no tolerance applies).
 pub fn control_codes(expected: &[u32], actual: &[u32]) -> Parity {

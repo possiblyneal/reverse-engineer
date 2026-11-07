@@ -610,6 +610,26 @@ pub fn run8_decisions() -> Vec<Decision> {
     time_kind_value_decisions("run8_decisions.tsv")
 }
 
+/// `(block, note)` of every trigger in a `time kind value` decisions log whose Trigger value
+/// is the block and whose Note follows its Trigger (`scripts/replay-extract.py`).
+pub fn trigger_notes(log: &str) -> Vec<(usize, u32)> {
+    let rows: Vec<Vec<&str>> = log.lines().map(|l| l.split('\t').collect()).collect();
+    rows.chunks_exact(2)
+        .map(|pair| {
+            assert_eq!((pair[0][1], pair[1][1]), ("Trigger", "Note"), "{pair:?}");
+            (
+                pair[0][2].parse().expect("block"),
+                pair[1][2].parse().expect("note"),
+            )
+        })
+        .collect()
+}
+
+/// `(block, note)` of every trigger over run 8.
+pub fn run8_trigger_notes() -> Vec<(usize, u32)> {
+    trigger_notes(&read("run8_decisions.tsv"))
+}
+
 /// Blocks of logged E..H amplitudes the run 8 fixtures keep (`RUN8_AMP_BLOCKS` in
 /// `scripts/make-fixtures.py`).
 pub const RUN8_AMPLITUDE_BLOCKS: usize = 6600;

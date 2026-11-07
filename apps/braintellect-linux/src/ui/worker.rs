@@ -14,7 +14,9 @@ use crate::acquisition::session::Session;
 use crate::audio::sink::AlsaSink;
 use crate::audio::{self, import};
 use crate::capture::{self, Recording};
-use crate::live::{self, Environment, SessionProperties, INSTRUMENT_ID, OUTPUT_RATE_HZ};
+use crate::live::{
+    self, Environment, GraphStart, SessionProperties, INSTRUMENT_ID, OUTPUT_RATE_HZ,
+};
 use crate::storage::{self, Store};
 
 use super::state::Event;
@@ -156,6 +158,7 @@ fn session(
             store: &store,
             stop,
             clock: &mut clock,
+            graph: GraphStart::LIVE,
             report: &mut report,
         },
     );
