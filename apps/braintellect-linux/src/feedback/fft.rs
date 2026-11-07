@@ -8,7 +8,7 @@ use std::f64::consts::PI;
 
 /// `DSPFFT::process` scales each magnitude by `+0x54 / +0x50`: 1/128 (`+0x54`, as
 /// captured for the 512-point FFT) over the window's mean (`+0x50`).
-const SPECTRUM_GAIN: f64 = 1.0 / 128.0;
+pub(super) const SPECTRUM_GAIN: f64 = 1.0 / 128.0;
 
 /// In-place radix-2 FFT of a power-of-two length.
 pub fn radix2(re: &mut [f64], im: &mut [f64]) {

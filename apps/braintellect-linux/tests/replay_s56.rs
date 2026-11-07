@@ -19,7 +19,8 @@ mod harness;
 
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::feedback::{
-    Interference1, Interference2, SourceDesign, SourceFilters, StoredSeries, CHANNELS, RATE_HZ,
+    Interference1, Interference2, SourceDesign, SourceFilters, StoredSeries, CHANNELS,
+    FFT_NORMAL_ORDER, RATE_HZ,
 };
 use braintellect_linux::storage::{Channel, Point, Series};
 
@@ -110,7 +111,11 @@ fn stored_band_series_match_the_original() {
         .enumerate()
         .map(|(c, series)| Channel {
             name: format!("Channel{}", c + 1),
-            series,
+            // This capture's record has no spectrum to compare (`replay_s59` holds it).
+            series: series
+                .into_iter()
+                .filter(|s| s.name != FFT_NORMAL_ORDER)
+                .collect(),
         })
         .collect();
     let worst = expected

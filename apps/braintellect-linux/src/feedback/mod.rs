@@ -31,7 +31,7 @@ mod source;
 mod threshold;
 mod trigger_all;
 
-pub use assess::StoredSeries;
+pub use assess::{StoredSeries, FFT_NORMAL_ORDER};
 pub use band_pass::{BandPass, BandPassDesign};
 pub use counter::{BlockClock, Counter, CounterClock, TRIGGER_EPOCH_MS};
 pub use evaluator::{balances, Evaluator, BALANCES, COHERENCES, DEFAULT_CODE};
