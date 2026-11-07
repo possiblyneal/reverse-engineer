@@ -237,6 +237,20 @@ The original's report over the stored no-wearer exercise 146, hooked at `0x5c455
   partition offset, `ntfsfix -d` after a forced stop). The rig was restored to its `.pre-rig`
   state and the lock released.
 
+## Result: the BAGSD discrete FFT against the consumed volts (#59, 2026-11-07)
+
+The #56 run with a `DSPFFT::process` hook added (rig tags 30 and 31: the object, the input at
+entry and return, the output, and each new window buffer; `scripts/fft-extract.py` reduces the
+log). Exercise 147: 262,116 consumed samples per channel, stop 240040 ms, 120,020 graph samples.
+
+- Logged: 214 `DSPFFT` calls per channel during the exercise (the live display, not stored) and
+  241 per channel in the BAGSD run (240 blocks of 500 samples and the 20-sample partial at the
+  stop). The stored `FFT-Normal-Order` is the mean of those 241 outputs.
+- This guest's graph start and 45 Hz switch were both consumed sample 107196 on every channel.
+  They are found by matching the first logged FFT input block to the clone's Source output.
+- The log (`s59.bin`, 385 MB) and the extracted inputs stay in the main checkout's `tmp/s59/`
+  (`run2/`, `replay/`). See `bagsd-design.md`, "Clone and parity".
+
 ## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
 
 The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00

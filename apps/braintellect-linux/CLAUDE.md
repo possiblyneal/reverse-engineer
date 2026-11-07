@@ -182,10 +182,15 @@ those findings, it cites them.
   the stop (`session-storage.md`, "Stored series (#56)"). The ignored `tests/replay_s56.rs`
   holds them to the original's exercise 146 record within `RECORD_EPSILON`
   (`assertions::stored_series`; inputs `vol146.txt` and `b146/series.tsv` in `tmp/s56`,
-  `S56_REPLAY_DIR`). The design's discrete FFT is `feedback::FftSpectrum`; the ignored
-  `tests/replay_s59.rs` only reports its deviation from the stored `FFT-Normal-Order` vectors
-  (`bagsd-design.md`, "Clone and parity"). BAGSD is a post-session design, so the session
-  window does not offer it.
+  `S56_REPLAY_DIR`). The design's discrete FFT is `feedback::FftSpectrum` (500-sample blocks,
+  the partial block at the stop included); `StoredSeries` stores its mean as each channel's
+  third series, `FFT-Normal-Order` (256 points, `x` the bin index, microvolts;
+  `session-storage.md`, "Stored FFT (#59)"). The ignored `tests/replay_s59.rs` holds the whole
+  report (bands and spectrum) to exercise 147's record within `RECORD_EPSILON` (inputs
+  `volts.tsv` from `scripts/fft-extract.py` and `ed_9.xml` in `tmp/s59/replay`,
+  `S59_REPLAY_DIR`; `bagsd-design.md`, "Clone and parity"). A single block still differs from
+  the logged `DSPFFT` output by 1 to 3 `float32` ulp in some bins. BAGSD is a post-session
+  design, so the session window does not offer it.
 - **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
   `stateChangeDelay` debounce and the engine lifecycle, off while a session connects or runs
   (`ui::state::Event::Sensor` carries it). `sensor::SensorMonitor` is the pre-session feed

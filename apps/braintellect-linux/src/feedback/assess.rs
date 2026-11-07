@@ -1,16 +1,22 @@
-//! The stored Band 10 and Band 80 series. The original does not store the SMART-2
-//! graph's band amplitudes: after the exercise its `Session Assess 3.4-v3.3` flow design
-//! (BAGSD run `0x44b700`) reads the session's stored filtered data back and writes the
-//! type-9 `00-90` series from it (`session-storage.md`, "Stored series (#56)"). Per
-//! channel and band: the Source output as stored (whole ADC counts), an order-1
-//! Butterworth band-pass, `OutAmplitude`, then a `discrete` Aggregator of 5 s.
+//! The stored BAGSD report: the Band 10 and Band 80 series and the `FFT-Normal-Order`
+//! spectrum. The original does not store the SMART-2 graph's band amplitudes: after the
+//! exercise its `Session Assess 3.4-v3.3` flow design (BAGSD run `0x44b700`) reads the
+//! session's stored filtered data back and writes the type-9 series from it
+//! (`session-storage.md`, "Stored series (#56)", "Stored FFT (#59)"). Per channel and band:
+//! the Source output as stored (whole ADC counts), an order-1 Butterworth band-pass,
+//! `OutAmplitude`, then a `discrete` Aggregator of 5 s. Per channel, the same stored output
+//! goes through [`FftSpectrum`].
 
 use std::collections::VecDeque;
 
 use super::band_pass::{SlidingMax, MEAN_TAPS};
+use super::fft_spectrum::FftSpectrum;
 use super::graph::{BAND_HIGH, BAND_LOW, BLOCK_LEN, CHANNELS};
 use super::iir::Biquad;
 use crate::storage::{Point, Series};
+
+/// The name of each channel's stored spectrum series: one point per bin, `x` the bin index.
+pub const FFT_NORMAL_ORDER: &str = "FFT-Normal-Order";
 
 /// Label, low and high edge (Hz) of the stored band-passes (`Band-10`, `Band-80` of
 /// the design; the other nine bands are not stored by the clone).
@@ -31,6 +37,8 @@ pub struct StoredSeries {
     samples: usize,
     /// Channel-major: `BANDS.len()` per channel.
     bands: Vec<BandSeries>,
+    /// The discrete `FFT` of each channel.
+    ffts: Vec<FftSpectrum>,
 }
 
 struct BandSeries {
@@ -66,6 +74,9 @@ impl StoredSeries {
             epoch_len,
             samples: 0,
             bands,
+            ffts: (0..CHANNELS)
+                .map(|_| FftSpectrum::new(counts_per_volt))
+                .collect(),
         }
     }
 
@@ -74,6 +85,9 @@ impl StoredSeries {
         self.samples += 1;
         let emit = self.samples.is_multiple_of(self.epoch_len);
         let x = self.x_ms();
+        for (fft, &volts) in self.ffts.iter_mut().zip(volts) {
+            fft.push(volts);
+        }
         for (k, band) in self.bands.iter_mut().enumerate() {
             let stored = stored_volts(volts[k / BANDS.len()], self.counts_per_volt);
             band.push(stored, self.epoch_len);
@@ -83,9 +97,10 @@ impl StoredSeries {
         }
     }
 
-    /// The series per channel, in `BANDS` order. A stream that stops inside an epoch
-    /// closes each series with one more point: the mean of the last epoch's worth of
-    /// amplitudes, at the stop time (the 240 016 ms point of exercise 146).
+    /// The series per channel: the bands in `BANDS` order, then [`FFT_NORMAL_ORDER`]. A
+    /// stream that stops inside an epoch closes each band with one more point: the mean of
+    /// the last epoch's worth of amplitudes, at the stop time (the 240 016 ms point of
+    /// exercise 146). The spectrum is the mean of the block spectra up to the stop.
     pub fn series(&self) -> Vec<Vec<Series>> {
         let closing = !self.samples.is_multiple_of(self.epoch_len);
         let mut series = self.bands.iter().map(|band| {
@@ -98,8 +113,21 @@ impl StoredSeries {
                 points,
             }
         });
-        (0..CHANNELS)
-            .map(|_| series.by_ref().take(BANDS.len()).collect())
+        self.ffts
+            .iter()
+            .map(|fft| {
+                let mut channel: Vec<Series> = series.by_ref().take(BANDS.len()).collect();
+                channel.push(Series {
+                    name: FFT_NORMAL_ORDER.to_owned(),
+                    points: fft
+                        .spectrum()
+                        .into_iter()
+                        .enumerate()
+                        .map(|(bin, y)| Point { x: bin as f64, y })
+                        .collect(),
+                });
+                channel
+            })
             .collect()
     }
 
@@ -165,9 +193,24 @@ mod tests {
         let series = run(5008, 2.0, 1e-5);
         assert_eq!(series.len(), CHANNELS);
         let names: Vec<&str> = series[0].iter().map(|s| s.name.as_str()).collect();
-        assert_eq!(names, [BAND_LOW, BAND_HIGH]);
+        assert_eq!(names, [BAND_LOW, BAND_HIGH, FFT_NORMAL_ORDER]);
         let xs: Vec<f64> = series[0][0].points.iter().map(|p| p.x).collect();
         assert_eq!(xs, [5000.0, 10000.0, 10016.0]);
+    }
+
+    #[test]
+    fn the_report_closes_with_the_256_bin_block_mean_spectrum_of_each_channel() {
+        let series = run(5008, 2.0, 1e-5);
+        let fft = &series[0][2];
+        let bins: Vec<f64> = fft.points.iter().map(|p| p.x).collect();
+        assert_eq!(bins, (0..256).map(f64::from).collect::<Vec<_>>());
+        // 2 Hz at 500 Hz sampling is bin 2.05: the low bins carry it, the top does not.
+        assert!(fft.points[2].y > 10.0 * fft.points[200].y);
+        assert_eq!(series[3][2], *fft);
+    }
+
+    #[test]
+    fn a_stop_on_the_epoch_boundary_adds_no_closing_band_point() {
         let whole: Vec<f64> = run(5000, 2.0, 1e-5)[0][0]
             .points
             .iter()

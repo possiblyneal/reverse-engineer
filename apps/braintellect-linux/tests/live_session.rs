@@ -146,10 +146,16 @@ fn a_run_to_the_end_of_the_stream_is_stored_and_readable() {
     // One point per channel and band every 5 s, as the baseline record keeps.
     let series = &record.channels[0].series;
     let names: Vec<&str> = series.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["Band 10", "Band 80"]);
+    assert_eq!(names, ["Band 10", "Band 80", "FFT-Normal-Order"]);
     let xs: Vec<f64> = series[0].points.iter().map(|p| p.x).collect();
     assert_eq!(xs, [5000.0, 10000.0, 15000.0, 20000.0, 25000.0, 30000.0]);
     assert!(series[0].points.iter().all(|p| p.y > 0.0));
+    // The BAGSD report's spectrum is stored with the bands: 256 bins per channel.
+    for channel in &record.channels {
+        let fft = &channel.series[2];
+        assert_eq!(fft.points.len(), 256, "{}", channel.name);
+        assert!(fft.points.iter().any(|p| p.y > 0.0), "{}", channel.name);
+    }
 }
 
 #[test]
