@@ -180,5 +180,20 @@ Coherence series value per epoch, the chosen code) and on bands A..D. The captur
   from the Win+R dialog is the untried-to-completion route: the screen lags the guest by
   several seconds and HMP `sendkey` text drops characters when typed at 0.12 s per key, so the
   Run dialog did not launch it reliably.
-- Next try: launch a clicker script from the CAP image's own `s53-run.cmd` (start it before the
-  app, with waits tuned to the Start time in `emu.log`) so no typing is needed in the guest.
+- GUI driving is solved (observed): an in-guest PowerShell clicker (`EnumWindows` title waits,
+  `SetCursorPos` plus `mouse_event`) started from the guest's Startup folder, with the files
+  placed on the stopped guest's NTFS disk (`ntfs-3g` loop mount at offset 269484032; after a
+  forced stop it needs `ntfsfix -d` on the loop device first). It reached user select, the
+  licence wizard, the gear dialog, OK and Play unattended. The app's title has two spaces
+  (`BRAINtellect 2  Version 5.1.57`), so a single-space `-like` pattern waits out its timeout.
+- The remaining blocker is the guest's speed (observed, three runs): with the emulator
+  streaming from connect, the graph consumes about 10 blocks a second instead of 125 (tag 12,
+  about 600 a minute, `s53.bin`), the 5 s heartbeat timer fires irregularly, and the GUI
+  clicks take minutes (the gear dialog opens about one minute after the click, the app
+  titles read `(Not Responding)`). Hooks are not the cause: no Evaluator record had fired yet,
+  and `hook11.js` alone (the hook set of the run-8 capture, output renamed) is equally slow.
+  A guest process list taken every minute (PowerShell `Get-Process`) shows `braintellect`
+  using about one core continuously and `MsMpEng` (Defender) about 0.15 core; QEMU runs the
+  two vCPUs at 220 percent. The cause is not identified. Untried: stop the emulator until
+  Play (the stream starts at the handshake's `#48,1`), disable Defender real-time scanning
+  offline, give the guest more vCPUs, and run with no frida to get the app's own rate.
