@@ -25,6 +25,35 @@ fn microvolts_green_on_baseline_red_on_wrong() {
     assert!(assertions::microvolts(&baseline, &baseline[1..]).is_err());
 }
 
+fn four_channels() -> Vec<Vec<f64>> {
+    (0..4)
+        .map(|c| (0..6).map(|i| f64::from(c * 100 + i) * 0.37).collect())
+        .collect()
+}
+
+#[test]
+fn channel_microvolts_green_on_equal_red_on_one_bit_or_length() {
+    let baseline = four_channels();
+    assertions::channel_microvolts(&baseline, &baseline).expect("baseline vs itself");
+
+    // One ulp on one sample of channel 2 is a mismatch, reported with its position.
+    let mut one_ulp = baseline.clone();
+    one_ulp[2][4] = f64::from_bits(one_ulp[2][4].to_bits() + 1);
+    let err = assertions::channel_microvolts(&baseline, &one_ulp).expect_err("1 ulp is red");
+    assert!(err.0.contains("channel 2 sample 4"), "{}", err.0);
+
+    // The first differing sample in channel order is the one reported.
+    let mut two = one_ulp.clone();
+    two[1][5] += 1.0;
+    let err = assertions::channel_microvolts(&baseline, &two).expect_err("red");
+    assert!(err.0.contains("channel 1 sample 5"), "{}", err.0);
+
+    let mut short = baseline.clone();
+    short[3].pop();
+    assert!(assertions::channel_microvolts(&baseline, &short).is_err());
+    assert!(assertions::channel_microvolts(&baseline, &baseline[..3]).is_err());
+}
+
 #[test]
 fn command_bytes_green_on_baseline_red_on_wrong() {
     let baseline = fixtures::commands_sent();
