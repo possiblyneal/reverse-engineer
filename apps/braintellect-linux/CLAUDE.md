@@ -196,8 +196,11 @@ those findings, it cites them.
 - **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
   `stateChangeDelay` debounce and the engine lifecycle, off while a session connects or runs
   (`ui::state::Event::Sensor` carries it). `sensor::SensorMonitor` is the pre-session feed
-  (512-sample FFT blocks per channel, five band levels, then the evaluator). `live::monitor`
-  runs it on an opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check
+  (per channel 500 samples plus 12 zeros into the 512-point FFT, five band levels, ground
+  ceiling -10 dB; the evaluator runs on a `TICK_MS` (60 ms) display tick, not per block, so the
+  debounce and the pre-block "Adjust Fit" follow the clock). `live::monitor`
+  runs it on an opened B-2 before a session, with the LOD Source (45 Hz low-pass off, 25 Hz
+  band-stop on, `SessionProperties::lod_source`) (`ui::worker::Worker::spawn_check`, the "Check
   sensors" button, `Command::CheckSensors`), needs no tone, and returns why it could not run or
   broke off, which ends the check with that reason in the notice. The FFT stage is
   `feedback::DspFft` (`DSPFFT::process`: f32 Bartlett, `RealFft512`, the `rsqrtps` magnitude of
@@ -206,7 +209,11 @@ those findings, it cites them.
   The `rsqrtps` table is Intel's. Tests: `tests/parity_sensor_status.rs`
   (synthetic fault tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`),
   `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the
-  in-memory stream).
+  in-memory stream). The ignored `tests/replay_s61.rs` holds both worn captures (good fit, T4
+  lifted) to the original's per-block levels (bit exact) and overlay states over the frames the
+  original consumed (`S61_GOODFIT_CAPTURE`, `S61_T4OFF_CAPTURE`, `S61_REPLAY_DIR` from
+  `scripts/worn-sensor-extract.py`; `sensor-status.md`, "Observed: worn replays"). The
+  original's host skips frames the stream does not reveal, so the clone cannot match those.
 - **Session UI** (`src/ui/`). `ui::state::UiModel` is the pure model (actions and events in,
   `View` out), tested in `tests/ui_state.rs`; `ui::app` only draws it, and `ui::worker` is the
   device glue (RFCOMM with a 1 s read timeout, ALSA, the default store, the chosen tone);

@@ -41,7 +41,7 @@ use crate::feedback::{
     CounterClock, Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign,
     SourceFilters, StoredSeries, BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
 };
-use crate::sensor::{SensorDesign, SensorMonitor, SensorStatus, BLOCK_SAMPLES};
+use crate::sensor::{SensorDesign, SensorMonitor, SensorStatus, TICK_MS};
 use crate::storage::{Channel, Header, SessionRecord, Store};
 
 /// Output rate of the sink: the sample rate of instrument bank 1002
@@ -113,6 +113,18 @@ impl Default for SessionProperties {
 }
 
 impl SessionProperties {
+    /// The Source settings of the BT-LOD sensor check: the original's LOD Source runs with
+    /// the 45 Hz low-pass off and the 25 Hz band-stop on, whatever the session's
+    /// interference setting (2026-11-08 worn replays; `sensor-status.md`).
+    #[must_use]
+    pub fn lod_source(&self) -> SourceDesign {
+        SourceDesign {
+            interference1: Interference1::Off,
+            interference2: Interference2::Hz25,
+            ..self.source()
+        }
+    }
+
     fn source(&self) -> SourceDesign {
         SourceDesign {
             interference1: self.interference1,
@@ -298,10 +310,11 @@ pub fn run<T: Read + Write>(
 }
 
 /// The sensor status before a session (`sensor-status.md`): the Source output of an
-/// opened B-2 runs through the BT-LOD design alone, with no SMART-2 graph and no audio,
-/// and `report` gets the overlay state after each 512-sample block. Ends when `stop` is
-/// raised or the link closes; the stream is stopped on the way out. `clock` is read
-/// once per block, for the `stateChangeDelay` debounce.
+/// opened B-2 runs through the BT-LOD design alone, with no SMART-2 graph and no audio.
+/// The display timer ticks every [`TICK_MS`] (from `clock`, in milliseconds) and `report`
+/// gets the overlay state at each tick, as the original's display re-evaluates it between
+/// blocks. Ends when `stop` is raised or the link closes; the stream is stopped on the way
+/// out. `clock` is read once at the start, then after every frame and quiet read.
 ///
 /// # Errors
 /// Why the check could not run or broke off: the Source filters cannot be built, the
@@ -314,7 +327,7 @@ pub fn monitor<T: Read + Write>(
     report: &mut dyn FnMut(SensorStatus),
 ) -> Result<(), String> {
     let mut source = (0..CHANNELS)
-        .map(|_| SourceFilters::new(&properties.source(), RATE_HZ))
+        .map(|_| SourceFilters::new(&properties.lod_source(), RATE_HZ))
         .collect::<Result<Vec<_>, _>>()
         .map_err(|e| e.to_string())?;
     session
@@ -336,32 +349,25 @@ fn sensor_loop<T: Read + Write>(
 ) -> Result<(), String> {
     let mut sensors = SensorMonitor::new(SensorDesign::bt_lod());
     sensors.set_engine_running(true);
-    let mut samples = 0usize;
+    let mut next_tick = clock() + TICK_MS;
     while !stop.load(Ordering::Relaxed) {
         match session.next_frame() {
             Ok(Some(frame)) => {
                 for n in 0..frame.channels[0].len() {
                     let volts: [f64; CHANNELS] =
                         std::array::from_fn(|c| source[c].push(frame.channels[c][n] * 1e-6));
-                    samples += 1;
-                    // The clock is read only for the sample that completes a block.
-                    let now_ms = if samples.is_multiple_of(BLOCK_SAMPLES) {
-                        clock()
-                    } else {
-                        0
-                    };
-                    if let Some(status) = sensors.push(now_ms, &volts) {
-                        report(status);
-                        if stop.load(Ordering::Relaxed) {
-                            return Ok(());
-                        }
-                    }
+                    sensors.push(&volts);
                 }
             }
             Ok(None) => return Ok(()),
             Err(SessionError::Io(e))
                 if matches!(e.kind(), ErrorKind::TimedOut | ErrorKind::WouldBlock) => {}
             Err(e) => return Err(e.to_string()),
+        }
+        let now_ms = clock();
+        if now_ms >= next_tick {
+            next_tick = now_ms + TICK_MS;
+            report(sensors.tick(now_ms));
         }
     }
     Ok(())
