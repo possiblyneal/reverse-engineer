@@ -257,7 +257,8 @@ outside Git).
   1031 ms, and "Ready" shows at block 0.
 - The original did not consume a few received frames (3 in good fit, 4 in T4 lifted;
   observed). The cause is inferred as host timing: the streams show no counter gap or failed
-  validation there, so they cannot be found from the bytes; the first level difference of a naive replay is exactly the first skipped frame.
+  validation there, so they cannot be found from the bytes; the first level difference of a
+  naive replay is exactly the first skipped frame.
   The replay leaves them out, as `replay_live` does. Not reproducible by the clone.
 
 Not observed: a shorted pair (the criterion of #61 stays open).
