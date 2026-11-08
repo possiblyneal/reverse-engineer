@@ -255,9 +255,9 @@ outside Git).
 - Debounce: driven by the display timer, about 60 ms a tick, not by block completion. Before
   block 0 the default (all zero) levels fail the pair test, "Adjust Fit" shows at about
   1031 ms, and "Ready" shows at block 0.
-- The original's host skips a few received frames (3 in good fit, 4 in T4 lifted). The
-  streams show no counter gap or failed validation there, so they cannot be found from the
-  bytes; the first level difference of a naive replay is exactly the first skipped frame.
+- The original did not consume a few received frames (3 in good fit, 4 in T4 lifted;
+  observed). The cause is inferred as host timing: the streams show no counter gap or failed
+  validation there, so they cannot be found from the bytes; the first level difference of a naive replay is exactly the first skipped frame.
   The replay leaves them out, as `replay_live` does. Not reproducible by the clone.
 
 Not observed: a shorted pair (the criterion of #61 stays open).
@@ -266,5 +266,7 @@ Not observed: a shorted pair (the criterion of #61 stays open).
 
 - Whether a ground item sets an `errorThreshold` in the design (the -10 dB ceiling is
   observed, its source is not).
+- Whether the LOD Source's low-pass and high-pass cutoffs follow the session's: the worn
+  replays ran only with the defaults (150 Hz, 1.5 Hz), and the clone takes the session's.
 - The 50 Hz branch and the operand order of the 50/60 Hz rule (`0x565300`).
 - The source string compared with `"placebo"` in `launchExercise` (`0x4e4410`).

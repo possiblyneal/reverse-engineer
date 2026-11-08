@@ -199,10 +199,11 @@ those findings, it cites them.
   (per channel 500 samples plus 12 zeros into the 512-point FFT, five band levels, ground
   ceiling -10 dB; the evaluator runs on a `TICK_MS` (60 ms) display tick, not per block, so the
   debounce and the pre-block "Adjust Fit" follow the clock). `live::monitor`
-  runs it on an opened B-2 before a session, with the LOD Source (45 Hz low-pass off, 25 Hz
-  band-stop on, `SessionProperties::lod_source`) (`ui::worker::Worker::spawn_check`, the "Check
-  sensors" button, `Command::CheckSensors`), needs no tone, and returns why it could not run or
-  broke off, which ends the check with that reason in the notice. The FFT stage is
+  runs it on an opened B-2 before a session with the LOD Source (45 Hz low-pass off, 25 Hz
+  band-stop on, `SessionProperties::lod_source`), needs no tone, and returns why it could not
+  run or broke off, which ends the check with that reason in the notice.
+  `ui::worker::Worker::spawn_check` (the "Check sensors" button, `Command::CheckSensors`)
+  starts it. The FFT stage is
   `feedback::DspFft` (`DSPFFT::process`: f32 Bartlett, `RealFft512`, the `rsqrtps` magnitude of
   `ipp_magnitude.rs`, the x87 scale); the spectra, levels and evaluator fault flag are all
   replay-asserted bit exact against the original's sensors-off capture (`sensor-status.md`).
@@ -213,7 +214,8 @@ those findings, it cites them.
   lifted) to the original's per-block levels (bit exact) and overlay states over the frames the
   original consumed (`S61_GOODFIT_CAPTURE`, `S61_T4OFF_CAPTURE`, `S61_REPLAY_DIR` from
   `scripts/worn-sensor-extract.py`; `sensor-status.md`, "Observed: worn replays"). The
-  original's host skips frames the stream does not reveal, so the clone cannot match those.
+  original did not consume a few frames (cause inferred as host timing; no counter gap or
+  validation failure marks them), so the clone cannot match those.
 - **Session UI** (`src/ui/`). `ui::state::UiModel` is the pure model (actions and events in,
   `View` out), tested in `tests/ui_state.rs`; `ui::app` only draws it, and `ui::worker` is the
   device glue (RFCOMM with a 1 s read timeout, ALSA, the default store, the chosen tone);

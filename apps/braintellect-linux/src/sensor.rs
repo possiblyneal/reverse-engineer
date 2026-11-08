@@ -17,8 +17,8 @@ pub const LINE_NOISE_DIFFERENCE: f32 = 15.5;
 pub const PAIR_DIFFERENCE: f32 = 0.5;
 /// `stateChangeDelay`, in milliseconds.
 pub const STATE_CHANGE_DELAY_MS: i64 = 1000;
-/// The ceiling: the ground item's `errorThreshold` (observed in the 2026-11-08 worn
-/// replays; `sensor-status.md`).
+/// The ceiling, observed at -10 dB in the 2026-11-08 worn replays; its source is not
+/// recovered (`sensor-status.md`, Unresolved).
 pub const GROUND_CEILING_DB: f32 = -10.0;
 /// The share of a pair's band levels that must match for the pair to fault
 /// (`0x18943f0`, `0x565cb0`).

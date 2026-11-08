@@ -5,7 +5,7 @@
 The log (`s61.bin`) was written while the original, fed the capture by `braintellect-linux
 emulate`, ran its Optimize-tab sensor status (`docs/reverse-engineering/braintellect2/
 sensor-status.md`, "Worn replays"). Tags: 12 consumed sample `[12, 6, ts, channel, count, uV]`,
-32 Head2D level update (four per block), 41 overlay state `[41, n, ts, state]`.
+32 Head2D level update (four per block), 41 overlay state `[41, n, ts, this, state]`.
 
 Writes to `--out` (default the log's directory):
 
@@ -47,17 +47,14 @@ def records(path):
 
 
 def stream_frames(capture):
+    """The capture's 32-byte chunks after the handshake, numbered as `replay_s61.rs` numbers
+    them; a chunk that is not a frame stops the run, since the two numberings would split."""
     data = capture.read_bytes()[HANDSHAKE_LEN:]
-    frames, at = [], 0
-    while True:
-        start = data.find(MARKER, at)
-        if start < 0 or start + 32 > len(data):
-            return frames
-        frame = data[start : start + 32]
-        at = start + 4
-        if frame[6:8] == b"\x03\x03" and all(frame[8 + 3 * k + 2] & 3 == 3 for k in range(8)):
-            frames.append(frame)
-            at = start + 32
+    frames = [data[i : i + 32] for i in range(0, len(data) // 32 * 32, 32)]
+    for n, frame in enumerate(frames):
+        if not frame.startswith(MARKER) or frame[6:8] != b"\x03\x03":
+            raise SystemExit(f"chunk {n} after the handshake is not a stream frame")
+    return frames
 
 
 def count(frame, n):

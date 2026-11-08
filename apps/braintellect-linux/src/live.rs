@@ -115,7 +115,9 @@ impl Default for SessionProperties {
 impl SessionProperties {
     /// The Source settings of the BT-LOD sensor check: the original's LOD Source runs with
     /// the 45 Hz low-pass off and the 25 Hz band-stop on, whatever the session's
-    /// interference setting (2026-11-08 worn replays; `sensor-status.md`).
+    /// interference setting (2026-11-08 worn replays; `sensor-status.md`). The low-pass and
+    /// high-pass cutoffs follow the session's; the replays covered only the defaults, so
+    /// whether the original's do is unresolved (`sensor-status.md`, Unresolved).
     #[must_use]
     pub fn lod_source(&self) -> SourceDesign {
         SourceDesign {
