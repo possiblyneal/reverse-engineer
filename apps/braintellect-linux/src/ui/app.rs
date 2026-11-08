@@ -11,14 +11,17 @@ use crate::audio::tone::{self, Availability, TONES};
 use crate::feedback::{Interference1, Interference2};
 use crate::storage;
 
+use super::bluetooth::BluetoothHost;
+use super::bluez::Bluez;
 use super::state::{Command, Event, UiModel};
 use super::worker::Worker;
 
-/// Open the window for the B-2 at `mac` and run until it is closed.
+/// Open the window and run until it is closed. The B-2 is at `mac`, or else the
+/// one BlueZ has paired, or else the window offers Pair and connect.
 ///
 /// # Errors
 /// Fails if the window cannot be created.
-pub fn run(mac: String) -> eframe::Result {
+pub fn run(mac: Option<String>) -> eframe::Result {
     let options = eframe::NativeOptions {
         viewport: egui::ViewportBuilder::default()
             .with_title("BRAINtellect2")
@@ -33,19 +36,21 @@ pub fn run(mac: String) -> eframe::Result {
 }
 
 struct App {
-    mac: String,
     model: UiModel,
     worker: Option<Worker>,
     lib_dir: String,
 }
 
 impl App {
-    fn new(mac: String) -> Self {
+    fn new(mac: Option<String>) -> Self {
         let tones = tone_availability();
-        let mut model = UiModel::new(mac.clone(), tones[tone::default_index()].clone());
+        let default = tones[tone::default_index()].clone();
+        let mut model = match mac.or_else(paired_b2) {
+            Some(mac) => UiModel::new(mac, default),
+            None => UiModel::without_address(default),
+        };
         model.set_tones(tones);
         Self {
-            mac,
             model,
             worker: None,
             lib_dir: String::new(),
@@ -53,11 +58,12 @@ impl App {
     }
 
     fn run(&mut self, command: Command, ctx: &egui::Context) {
+        let mac = self.model.address().unwrap_or_default().to_owned();
         match command {
             Command::Start(properties) => {
                 let ctx = ctx.clone();
                 self.worker = Some(Worker::spawn(
-                    self.mac.clone(),
+                    mac,
                     properties,
                     self.model.tone(),
                     move || ctx.request_repaint(),
@@ -66,7 +72,14 @@ impl App {
             Command::CheckSensors => {
                 let ctx = ctx.clone();
                 self.worker = Some(Worker::spawn_check(
-                    self.mac.clone(),
+                    mac,
+                    self.model.properties.clone(),
+                    move || ctx.request_repaint(),
+                ));
+            }
+            Command::PairAndConnect => {
+                let ctx = ctx.clone();
+                self.worker = Some(Worker::spawn_pair_and_connect(
                     self.model.properties.clone(),
                     move || ctx.request_repaint(),
                 ));
@@ -99,6 +112,14 @@ impl App {
     }
 }
 
+/// The B-2 BlueZ has already paired, if BlueZ can be asked.
+fn paired_b2() -> Option<String> {
+    Bluez::connect()
+        .and_then(|mut host| host.paired())
+        .ok()
+        .flatten()
+}
+
 /// Which of the tones are in the instruments directory.
 fn tone_availability() -> Vec<Availability> {
     match import::default_dir() {
@@ -115,7 +136,11 @@ impl eframe::App for App {
         let mut command = None;
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Neurofeedback session");
-            ui.label(format!("B-2: {}", self.mac));
+            if view.address.is_empty() {
+                ui.label("B-2: not paired yet");
+            } else {
+                ui.label(format!("B-2: {}", view.address));
+            }
             ui.separator();
 
             if view.needs_import {
@@ -194,6 +219,12 @@ impl eframe::App for App {
             ui.separator();
 
             ui.horizontal(|ui| {
+                if ui
+                    .add_enabled(view.can_pair, egui::Button::new("Pair and connect"))
+                    .clicked()
+                {
+                    command = self.model.pair_and_connect();
+                }
                 if ui
                     .add_enabled(view.can_start, egui::Button::new("Start session"))
                     .clicked()

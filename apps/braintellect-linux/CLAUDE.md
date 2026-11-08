@@ -39,8 +39,8 @@ those findings, it cites them.
   output, `tmp/s55/replay`, `S55_REPLAY_DIR`).
 - **Transport boundary.** Protocol logic runs over `Read + Write`; only
   `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
-  (`scripts/run braintellect-linux -- ui --mac <MAC>`, or `-- --mac <MAC>` for a raw frame dump) uses the server's BlueZ, the adapter's only
-  owner (`device-connection.md`, #38), and is manual.
+  (`scripts/run braintellect-linux -- ui`, or `-- --mac <MAC>` for a raw frame dump) uses the running host's BlueZ, which owns the
+  bond if it paired last (`device-connection.md`, #38), and is manual.
 - **Do not copy the original's bugs outside parity.** Reproduce intended behavior, not
   defects. Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
   audio endpoint exists, and the validation-induced null cascades where the
@@ -224,11 +224,17 @@ those findings, it cites them.
   device glue (RFCOMM with a 1 s read timeout, ALSA, the default store, the chosen tone);
   neither is unit-tested. The window offers the ADR 0004 import when the default tone
   (`DEFAULT_TONE`, found by key) is not imported. Entry point:
-  `scripts/run braintellect-linux -- ui --mac <MAC>`; the window needs a display and loads
+  `scripts/run braintellect-linux -- ui` (`--mac <MAC>` overrides the address); the window needs a display and loads
   X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages). On
-  Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`; the
-  B-2 must be paired, bonded and trusted in BlueZ first (`btmgmt bondable on` before pairing, or
-  the bond is not kept).
+  Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`. The
+  **Pair and connect** button
+  (`UiModel::pair_and_connect`, shown while no address is known) finds the B-2, pairs it unless BlueZ
+  already has, trusts it and then runs the sensor check. The flow runs over the `ui::bluetooth::BluetoothHost`
+  seam (`pair_b2`, tested in `tests/ui_state.rs` with a fake host: found, not found, refused, already
+  paired); `ui::bluez::Bluez` is its only implementation, D-Bus via `zbus` (blocking), setting
+  `Adapter1.Pairable`, registering a NoInputNoOutput agent and stopping discovery. It is device code and
+  not unit-tested. Without `--mac` the window uses the B-2 BlueZ has paired, else offers the button. The
+  last host to pair owns the bond (inferred, `device-connection.md`).
 - **Live tests.** `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG
   framed by `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank. The
   ignored `tests/replay_live.rs` reads the #33 capture back through `live::run`

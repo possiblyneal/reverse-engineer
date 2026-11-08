@@ -18,6 +18,8 @@ use crate::capture::{self, Recording};
 use crate::live::{self, Environment, GraphStart, SessionProperties, OUTPUT_RATE_HZ};
 use crate::storage::{self, Store};
 
+use super::bluetooth::{pair_b2, PairFailure};
+use super::bluez::Bluez;
 use super::state::Event;
 
 /// How long a read waits on a quiet link before the engine looks at Stop.
@@ -54,6 +56,31 @@ impl Worker {
         Self::spawn_job(wake, move |flag, send| {
             let result = check(&mac, &properties, flag, send);
             send(Event::SensorCheckEnded(result.err()));
+            Ok(())
+        })
+    }
+
+    /// Find the B-2, pair and trust it, then report its sensor status until stopped.
+    /// The events are [`Event::Paired`] or [`Event::PairFailed`], then those of
+    /// [`Self::spawn_check`].
+    pub fn spawn_pair_and_connect(
+        properties: SessionProperties,
+        wake: impl Fn() + Send + 'static,
+    ) -> Self {
+        Self::spawn_job(wake, move |flag, send| {
+            let event = match Bluez::connect() {
+                Ok(mut host) => pair_b2(&mut host),
+                Err(why) => Event::PairFailed(PairFailure::Unavailable(why)),
+            };
+            let paired = match &event {
+                Event::Paired(mac) => Some(mac.clone()),
+                _ => None,
+            };
+            send(event);
+            if let Some(mac) = paired {
+                let result = check(&mac, &properties, flag, send);
+                send(Event::SensorCheckEnded(result.err()));
+            }
             Ok(())
         })
     }

@@ -4,6 +4,7 @@
 use braintellect_linux::acquisition::stream::StreamStats;
 use braintellect_linux::audio::tone::{Availability, Tone, DEFAULT_TONE, TONES};
 use braintellect_linux::live::{Health, Phase, SessionProperties, Snapshot};
+use braintellect_linux::ui::bluetooth::{pair_b2, BluetoothHost, PairFailure};
 use braintellect_linux::ui::state::{Command, Event, Stage, UiModel};
 
 fn ready() -> UiModel {
@@ -327,4 +328,172 @@ fn the_tone_cannot_change_while_a_session_runs() {
 
     assert!(!model.select_tone(tone_key("harp")));
     assert_eq!(model.tone(), &DEFAULT_TONE);
+}
+
+fn unpaired() -> UiModel {
+    UiModel::without_address(Availability::Ready)
+}
+
+#[test]
+fn without_an_address_the_window_offers_pair_and_connect_and_a_known_address_does_not() {
+    let model = unpaired();
+    assert!(model.view().can_pair);
+    assert_eq!(model.view().address, "");
+    assert!(!model.view().can_check, "nothing to check without a B-2");
+    assert!(!model.view().can_start);
+
+    let known = ready();
+    assert!(!known.view().can_pair);
+    assert_eq!(known.view().address, "00:11:22:33:44:55");
+}
+
+#[test]
+fn pair_and_connect_pairs_then_checks_the_sensors_at_the_found_address() {
+    let mut model = unpaired();
+
+    assert_eq!(model.pair_and_connect(), Some(Command::PairAndConnect));
+    assert_eq!(model.stage(), &Stage::Pairing);
+    assert!(!model.view().can_pair, "no second pairing while one runs");
+    assert_eq!(model.pair_and_connect(), None);
+
+    model.apply(Event::Paired("AA:BB:CC:DD:EE:FF".to_owned()));
+
+    assert_eq!(model.stage(), &Stage::Setup);
+    assert_eq!(model.view().address, "AA:BB:CC:DD:EE:FF");
+    assert!(!model.view().can_pair);
+    assert!(
+        model.view().checking,
+        "the sensor check follows the pairing"
+    );
+    assert_eq!(model.address(), Some("AA:BB:CC:DD:EE:FF"));
+}
+
+#[test]
+fn a_b2_that_is_not_found_says_so_and_can_be_retried() {
+    let mut model = unpaired();
+    model.pair_and_connect();
+
+    model.apply(Event::PairFailed(PairFailure::NotFound));
+
+    assert_eq!(model.stage(), &Stage::Setup);
+    assert!(model.view().notice.contains("No B-2 found"));
+    assert!(model.view().can_pair);
+    assert_eq!(model.pair_and_connect(), Some(Command::PairAndConnect));
+}
+
+#[test]
+fn a_refused_pairing_says_why_and_can_be_retried() {
+    let mut model = unpaired();
+    model.pair_and_connect();
+
+    model.apply(Event::PairFailed(PairFailure::Refused(
+        "Authentication Rejected".to_owned(),
+    )));
+
+    assert!(model.view().notice.contains("refused"));
+    assert!(model.view().notice.contains("Authentication Rejected"));
+    assert!(model.view().can_pair);
+}
+
+/// A scripted Bluetooth host that records the calls the flow makes.
+struct FakeHost {
+    paired: Result<Option<String>, String>,
+    found: Result<Option<String>, String>,
+    pair: Result<(), String>,
+    trust: Result<(), String>,
+    calls: Vec<String>,
+}
+
+impl FakeHost {
+    fn new() -> Self {
+        Self {
+            paired: Ok(None),
+            found: Ok(Some(B2.to_owned())),
+            pair: Ok(()),
+            trust: Ok(()),
+            calls: Vec::new(),
+        }
+    }
+}
+
+const B2: &str = "AA:BB:CC:DD:EE:FF";
+
+impl BluetoothHost for FakeHost {
+    fn paired(&mut self) -> Result<Option<String>, String> {
+        self.calls.push("paired".to_owned());
+        self.paired.clone()
+    }
+    fn discover(&mut self) -> Result<Option<String>, String> {
+        self.calls.push("discover".to_owned());
+        self.found.clone()
+    }
+    fn pair(&mut self, address: &str) -> Result<(), String> {
+        self.calls.push(format!("pair {address}"));
+        self.pair.clone()
+    }
+    fn trust(&mut self, address: &str) -> Result<(), String> {
+        self.calls.push(format!("trust {address}"));
+        self.trust.clone()
+    }
+}
+
+#[test]
+fn a_found_b2_is_paired_trusted_and_reported() {
+    let mut host = FakeHost::new();
+
+    let event = pair_b2(&mut host);
+
+    assert_eq!(event, Event::Paired(B2.to_owned()));
+    assert_eq!(
+        host.calls,
+        [
+            "paired",
+            "discover",
+            &format!("pair {B2}"),
+            &format!("trust {B2}")
+        ]
+    );
+}
+
+#[test]
+fn an_already_paired_b2_is_trusted_without_pairing_again() {
+    let mut host = FakeHost::new();
+    host.paired = Ok(Some(B2.to_owned()));
+
+    let event = pair_b2(&mut host);
+
+    assert_eq!(event, Event::Paired(B2.to_owned()));
+    assert_eq!(host.calls, ["paired", &format!("trust {B2}")]);
+}
+
+#[test]
+fn no_b2_in_range_is_reported_as_not_found() {
+    let mut host = FakeHost::new();
+    host.found = Ok(None);
+
+    assert_eq!(pair_b2(&mut host), Event::PairFailed(PairFailure::NotFound));
+    assert_eq!(host.calls, ["paired", "discover"]);
+}
+
+#[test]
+fn a_refused_pairing_is_reported_with_the_reason_and_not_trusted() {
+    let mut host = FakeHost::new();
+    host.pair = Err("Authentication Rejected".to_owned());
+
+    assert_eq!(
+        pair_b2(&mut host),
+        Event::PairFailed(PairFailure::Refused("Authentication Rejected".to_owned()))
+    );
+    assert!(!host.calls.iter().any(|c| c.starts_with("trust")));
+}
+
+#[test]
+fn a_bluetooth_host_that_cannot_be_reached_is_reported_as_unavailable() {
+    let mut host = FakeHost::new();
+    host.paired = Err("no adapter".to_owned());
+
+    assert_eq!(
+        pair_b2(&mut host),
+        Event::PairFailed(PairFailure::Unavailable("no adapter".to_owned()))
+    );
 }

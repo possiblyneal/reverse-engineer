@@ -6,6 +6,8 @@ use crate::audio::tone::{self, Availability, Tone, TONES};
 use crate::live::{Health, Phase, SessionProperties, Snapshot};
 use crate::sensor::SensorStatus;
 
+use super::bluetooth::PairFailure;
+
 /// The channel names of the montage `FP1FP2T3T4`, in the engine's channel order.
 const CHANNEL_LABELS: [&str; 4] = ["FP1", "FP2", "T3", "T4"];
 
@@ -24,6 +26,10 @@ pub enum Event {
     Cancelled,
     Imported,
     ImportFailed(String),
+    /// The B-2 at this address is paired and trusted; the sensor check that
+    /// follows is running.
+    Paired(String),
+    PairFailed(PairFailure),
 }
 
 /// What the model asks the app to do.
@@ -36,11 +42,15 @@ pub enum Command {
     StopCheck,
     /// Copy the instrument banks from the original's `lib` directory.
     Import(PathBuf),
+    /// Find the B-2, pair and trust it, then show its sensor status.
+    PairAndConnect,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Stage {
     Setup,
+    /// Looking for the B-2 and pairing with it.
+    Pairing,
     Connecting,
     Running,
     /// The last session ended; its outcome is in the notice.
@@ -71,6 +81,10 @@ pub struct View {
     pub can_start: bool,
     pub can_stop: bool,
     pub can_check: bool,
+    /// No B-2 address is known and none is being paired.
+    pub can_pair: bool,
+    /// The B-2 address in use; empty until one is known.
+    pub address: String,
     /// The sensor check is streaming.
     pub checking: bool,
     /// The original's default bank is not imported yet.
@@ -93,7 +107,8 @@ pub struct View {
 }
 
 pub struct UiModel {
-    mac: String,
+    /// The B-2's address; `None` until it is passed in or paired.
+    mac: Option<String>,
     /// Availability of each of [`TONES`], in order (`docs/adrs/0004-*.md`).
     tones: Vec<Availability>,
     /// Index into [`TONES`] of the tone a session plays.
@@ -112,6 +127,14 @@ impl UiModel {
     /// and every other tone not imported until [`Self::set_tones`].
     #[must_use]
     pub fn new(mac: String, default: Availability) -> Self {
+        let mut model = Self::without_address(default);
+        model.mac = Some(mac);
+        model
+    }
+
+    /// A model that has no B-2 address yet: the window offers Pair and connect.
+    #[must_use]
+    pub fn without_address(default: Availability) -> Self {
         let notice = match &default {
             Availability::Ready => String::new(),
             Availability::Missing(why) => why.clone(),
@@ -120,7 +143,7 @@ impl UiModel {
         let tone = tone::default_index();
         tones[tone] = default;
         Self {
-            mac,
+            mac: None,
             tones,
             tone,
             properties: SessionProperties::default(),
@@ -135,6 +158,23 @@ impl UiModel {
     #[must_use]
     pub fn stage(&self) -> &Stage {
         &self.stage
+    }
+
+    /// The B-2's address, once known.
+    #[must_use]
+    pub fn address(&self) -> Option<&str> {
+        self.mac.as_deref()
+    }
+
+    /// Start finding and pairing the B-2, then showing its sensor status. Only when
+    /// no address is known and nothing else is under way.
+    pub fn pair_and_connect(&mut self) -> Option<Command> {
+        if !self.can_pair() {
+            return None;
+        }
+        self.stage = Stage::Pairing;
+        self.notice.clear();
+        Some(Command::PairAndConnect)
     }
 
     /// The tone a session plays.
@@ -180,7 +220,7 @@ impl UiModel {
     /// Start showing the sensor status from the B-2 stream. It plays no tone, so no
     /// tone needs to be imported.
     pub fn check_sensors(&mut self) -> Option<Command> {
-        if !self.idle() {
+        if !self.idle() || self.mac.is_none() {
             return None;
         }
         self.checking = true;
@@ -234,6 +274,15 @@ impl UiModel {
                 self.notice = "Instrument imported.".to_owned();
             }
             Event::ImportFailed(why) => self.notice = format!("Import failed: {why}"),
+            Event::Paired(address) => {
+                self.mac = Some(address);
+                self.stage = Stage::Setup;
+                self.checking = true;
+            }
+            Event::PairFailed(failure) => {
+                self.stage = Stage::Setup;
+                self.notice = failure.message();
+            }
         }
     }
 
@@ -243,7 +292,9 @@ impl UiModel {
         View {
             can_start: self.startable(),
             can_stop: matches!(self.stage, Stage::Connecting | Stage::Running),
-            can_check: self.idle(),
+            can_check: self.idle() && self.mac.is_some(),
+            can_pair: self.can_pair(),
+            address: self.mac.clone().unwrap_or_default(),
             checking: self.checking,
             needs_import: matches!(self.tones[tone::default_index()], Availability::Missing(_)),
             can_choose_tone: self.idle(),
@@ -300,15 +351,21 @@ impl UiModel {
     fn sensor_label(&self) -> &'static str {
         match self.stage {
             Stage::Setup | Stage::Done => self.sensor.label(),
-            Stage::Connecting | Stage::Running => SensorStatus::NotAvailable.label(),
+            Stage::Pairing | Stage::Connecting | Stage::Running => {
+                SensorStatus::NotAvailable.label()
+            }
         }
     }
 
     fn startable(&self) -> bool {
-        self.tones[self.tone] == Availability::Ready && self.idle()
+        self.tones[self.tone] == Availability::Ready && self.idle() && self.mac.is_some()
     }
 
-    /// No session or sensor check is under way.
+    fn can_pair(&self) -> bool {
+        self.mac.is_none() && self.idle()
+    }
+
+    /// No session, pairing or sensor check is under way.
     fn idle(&self) -> bool {
         !self.checking && matches!(self.stage, Stage::Setup | Stage::Done)
     }
@@ -331,7 +388,10 @@ impl UiModel {
 
     fn connection(&self) -> String {
         match (&self.stage, self.snapshot.as_ref().map(|s| s.health)) {
-            (Stage::Connecting, _) => format!("Connecting to {}", self.mac),
+            (Stage::Pairing, _) => "Looking for the B-2 and pairing".to_owned(),
+            (Stage::Connecting, _) => {
+                format!("Connecting to {}", self.mac.as_deref().unwrap_or_default())
+            }
             (Stage::Running, Some(Health::Streaming)) => "Streaming".to_owned(),
             (Stage::Running, Some(Health::NoData)) => "No data from the B-2".to_owned(),
             (Stage::Running, _) => "Connected, waiting for data".to_owned(),
