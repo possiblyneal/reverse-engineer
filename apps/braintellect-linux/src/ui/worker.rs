@@ -3,6 +3,7 @@
 //! user's data directory); CI never runs it, and the engine it drives is tested
 //! in `tests/live_session.rs`.
 
+use std::io::ErrorKind;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
@@ -18,7 +19,7 @@ use crate::capture::{self, Recording};
 use crate::live::{self, Environment, GraphStart, SessionProperties, OUTPUT_RATE_HZ};
 use crate::storage::{self, Store};
 
-use super::bluetooth::{pair_b2, PairFailure};
+use super::bluetooth::{connect_b2, OpenError, PairFailure};
 use super::bluez::Bluez;
 use super::state::Event;
 
@@ -68,18 +69,13 @@ impl Worker {
         wake: impl Fn() + Send + 'static,
     ) -> Self {
         Self::spawn_job(wake, move |flag, send| {
-            let event = match Bluez::connect() {
-                Ok(mut host) => pair_b2(&mut host),
-                Err(why) => Event::PairFailed(PairFailure::Unavailable(why)),
-            };
-            let paired = match &event {
-                Event::Paired(mac) => Some(mac.clone()),
-                _ => None,
-            };
-            send(event);
-            if let Some(mac) = paired {
-                let result = check(&mac, &properties, flag, send);
-                send(Event::SensorCheckEnded(result.err()));
+            match open_b2(None) {
+                Ok((mac, stream)) => {
+                    send(Event::Paired(mac));
+                    let result = monitor(stream, &properties, flag, send);
+                    send(Event::SensorCheckEnded(result.err()));
+                }
+                Err(failure) => send(Event::PairFailed(failure)),
             }
             Ok(())
         })
@@ -125,6 +121,29 @@ impl Drop for Worker {
     }
 }
 
+/// Open the RFCOMM link to the B-2 (at `known`, else found and paired). A refused or
+/// dropped connect looks like a stale bond, so BlueZ removes it and pairs again once
+/// (`bluetooth::connect_b2`).
+fn open_b2(known: Option<&str>) -> Result<(String, RfcommStream), PairFailure> {
+    let mut host = Bluez::connect().map_err(PairFailure::Unavailable)?;
+    connect_b2(&mut host, known, |mac| {
+        let stream = RfcommStream::connect(mac, DEFAULT_CHANNEL).map_err(|e| {
+            let why = format!("cannot connect to {mac}: {e}");
+            match e.kind() {
+                ErrorKind::ConnectionRefused
+                | ErrorKind::ConnectionReset
+                | ErrorKind::ConnectionAborted
+                | ErrorKind::PermissionDenied => OpenError::Authentication(why),
+                _ => OpenError::Other(why),
+            }
+        })?;
+        stream
+            .set_read_timeout(READ_TIMEOUT)
+            .map_err(|e| OpenError::Other(e.to_string()))?;
+        Ok(stream)
+    })
+}
+
 /// The sensor status before a session: no audio, no store, no capture file.
 fn check(
     mac: &str,
@@ -132,11 +151,16 @@ fn check(
     stop: &AtomicBool,
     send: &dyn Fn(Event),
 ) -> Result<(), String> {
-    let stream = RfcommStream::connect(mac, DEFAULT_CHANNEL)
-        .map_err(|e| format!("cannot connect to {mac}: {e}"))?;
-    stream
-        .set_read_timeout(READ_TIMEOUT)
-        .map_err(|e| e.to_string())?;
+    let (_, stream) = open_b2(Some(mac)).map_err(|failure| failure.message())?;
+    monitor(stream, properties, stop, send)
+}
+
+fn monitor(
+    stream: RfcommStream,
+    properties: &SessionProperties,
+    stop: &AtomicBool,
+    send: &dyn Fn(Event),
+) -> Result<(), String> {
     let session = Session::open(stream, live::stream_config()?).map_err(|e| e.to_string())?;
     let origin = Instant::now();
     let mut clock = move || i64::try_from(origin.elapsed().as_millis()).unwrap_or(i64::MAX);
@@ -157,11 +181,7 @@ fn session(
     let store = Store::open(&storage::default_path().ok_or(storage::NO_DATA_DIR)?)
         .map_err(|e| e.to_string())?;
     let mut sink = AlsaSink::open(OUTPUT_RATE_HZ).map_err(|e| format!("no audio output: {e}"))?;
-    let stream = RfcommStream::connect(mac, DEFAULT_CHANNEL)
-        .map_err(|e| format!("cannot connect to {mac}: {e}"))?;
-    stream
-        .set_read_timeout(READ_TIMEOUT)
-        .map_err(|e| e.to_string())?;
+    let (_, stream) = open_b2(Some(mac)).map_err(|failure| failure.message())?;
     // The raw RX bytes, handshake included, go to the data directory: the B-2
     // emulator replays them into the original app (`capture.rs`).
     let data_dir = storage::default_data_dir().ok_or(storage::NO_DATA_DIR)?;

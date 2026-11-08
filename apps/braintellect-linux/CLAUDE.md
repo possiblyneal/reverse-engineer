@@ -231,7 +231,12 @@ those findings, it cites them.
   (`UiModel::pair_and_connect`, shown while no address is known) finds the B-2, pairs it unless BlueZ
   already has, trusts it and then runs the sensor check. The flow runs over the `ui::bluetooth::BluetoothHost`
   seam (`pair_b2`, tested in `tests/ui_state.rs` with a fake host: found, not found, refused, already
-  paired); `ui::bluez::Bluez` is its only implementation, D-Bus via `zbus` (blocking), setting
+  paired). Every RFCOMM connect (Pair and connect, Check sensors, Start) goes through
+  `bluetooth::connect_b2`: a connect refused, reset, aborted or denied (`OpenError::Authentication`)
+  looks like a stale bond, so it calls `BluetoothHost::remove` (`Adapter1.RemoveDevice`), finds, pairs
+  and trusts the B-2 again and connects once more; a second failure, or any other connect error,
+  is `PairFailure::ConnectFailed` for the Operator, never a loop (`device-connection.md`, "Connect
+  symptoms"). `ui::bluez::Bluez` is its only implementation, D-Bus via `zbus` (blocking), setting
   `Adapter1.Pairable`, registering a NoInputNoOutput agent and stopping discovery. It is device code and
   not unit-tested. Without `--mac` the window uses the B-2 BlueZ has paired, else offers the button. The
   last host to pair owns the bond (inferred, `device-connection.md`).

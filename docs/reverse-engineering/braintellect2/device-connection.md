@@ -250,6 +250,6 @@ With BlueZ as the owner, `0x17` has not been seen; the matching reset would be
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Connect fails after the B-2 was paired on another stack or host (a guest, or another machine's BlueZ) | Inferred: that pairing replaced the B-2's key, so this stack's bond is stale | Pair again on the host you are using (the clone's **Pair and connect**) and take the adapter away from any guest; expected, not tested |
+| Connect fails after the B-2 was paired on another stack or host (a guest, or another machine's BlueZ) | Inferred: that pairing replaced the B-2's key, so this stack's bond is stale | Pair again on the host you are using and take the adapter away from any guest. The clone does this itself: when the connect is refused, reset, aborted or denied it removes the local bond (`Adapter1.RemoveDevice`), rediscovers, pairs, trusts and connects once more, and reports a second failure instead of looping (fake-host tested, not run against a real stale bond) |
 | Pairing refused within ~100 ms, `Disconnection_Complete` reason `0x17`, no `Link_Key_Request` | The adapter holds an authentication back-off | Reset the adapter (previous section) |
 | `Create_Connection` ends `PageTimeout` (`0x04`) | The B-2 is asleep or off (observed ~15 min after pairing with no open port) | Wake or switch on the B-2 |

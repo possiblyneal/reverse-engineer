@@ -30,6 +30,30 @@ pub trait BluetoothHost {
     /// # Errors
     /// Fails if the host's Bluetooth cannot be reached.
     fn trust(&mut self, address: &str) -> Result<(), String>;
+
+    /// Forget the device at `address` and its bond, so a later pairing starts clean.
+    ///
+    /// # Errors
+    /// Fails if the host's Bluetooth cannot be reached.
+    fn remove(&mut self, address: &str) -> Result<(), String>;
+}
+
+/// Why opening the link to the B-2 failed.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum OpenError {
+    /// The B-2 refused or dropped the link the way a stale bond does
+    /// (`device-connection.md`, "Connect symptoms").
+    Authentication(String),
+    /// Anything else, such as a B-2 that is asleep.
+    Other(String),
+}
+
+impl OpenError {
+    fn into_message(self) -> String {
+        match self {
+            Self::Authentication(why) | Self::Other(why) => why,
+        }
+    }
 }
 
 /// Why Pair and connect stopped.
@@ -41,6 +65,9 @@ pub enum PairFailure {
     Refused(String),
     /// The host's Bluetooth could not be used.
     Unavailable(String),
+    /// The B-2 is paired but the link to it could not be opened, after pairing again
+    /// where the first failure looked like a stale bond.
+    ConnectFailed(String),
 }
 
 impl PairFailure {
@@ -52,6 +79,10 @@ impl PairFailure {
             }
             Self::Refused(why) => format!("Pairing with the B-2 was refused: {why}"),
             Self::Unavailable(why) => format!("Bluetooth is not available: {why}"),
+            Self::ConnectFailed(why) => format!(
+                "Could not connect to the B-2, even after pairing it again: {why}. \
+                 Switch it off and on, then try again."
+            ),
         }
     }
 }
@@ -63,6 +94,33 @@ pub fn pair_b2(host: &mut impl BluetoothHost) -> Event {
         Ok(address) => Event::Paired(address),
         Err(failure) => Event::PairFailed(failure),
     }
+}
+
+/// Pair the B-2 (at `known`, else found and paired) and open the link with `open`.
+/// If opening fails like a stale bond, remove the bond, find, pair and trust the B-2
+/// again and open once more; a second failure is reported, never retried.
+///
+/// # Errors
+/// [`PairFailure`] for the pairing, or [`PairFailure::ConnectFailed`] for the link.
+pub fn connect_b2<S>(
+    host: &mut impl BluetoothHost,
+    known: Option<&str>,
+    mut open: impl FnMut(&str) -> Result<S, OpenError>,
+) -> Result<(String, S), PairFailure> {
+    let address = match known {
+        Some(address) => address.to_owned(),
+        None => try_pair(host)?,
+    };
+    match open(&address) {
+        Ok(stream) => return Ok((address, stream)),
+        Err(OpenError::Other(why)) => return Err(PairFailure::ConnectFailed(why)),
+        Err(OpenError::Authentication(_)) => {}
+    }
+    host.remove(&address).map_err(PairFailure::Unavailable)?;
+    let address = try_pair(host)?;
+    open(&address)
+        .map(|stream| (address, stream))
+        .map_err(|e| PairFailure::ConnectFailed(e.into_message()))
 }
 
 fn try_pair(host: &mut impl BluetoothHost) -> Result<String, PairFailure> {

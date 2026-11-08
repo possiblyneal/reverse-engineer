@@ -4,7 +4,9 @@
 use braintellect_linux::acquisition::stream::StreamStats;
 use braintellect_linux::audio::tone::{Availability, Tone, DEFAULT_TONE, TONES};
 use braintellect_linux::live::{Health, Phase, SessionProperties, Snapshot};
-use braintellect_linux::ui::bluetooth::{pair_b2, BluetoothHost, PairFailure};
+use braintellect_linux::ui::bluetooth::{
+    connect_b2, pair_b2, BluetoothHost, OpenError, PairFailure,
+};
 use braintellect_linux::ui::state::{Command, Event, Stage, UiModel};
 
 fn ready() -> UiModel {
@@ -435,6 +437,135 @@ impl BluetoothHost for FakeHost {
         self.calls.push(format!("trust {address}"));
         self.trust.clone()
     }
+    fn remove(&mut self, address: &str) -> Result<(), String> {
+        self.calls.push(format!("remove {address}"));
+        self.paired = Ok(None);
+        Ok(())
+    }
+}
+
+/// A connect that fails with `failures` in turn, then succeeds; it counts its tries.
+fn scripted_open(
+    failures: Vec<OpenError>,
+    tries: &mut usize,
+) -> impl FnMut(&str) -> Result<&'static str, OpenError> + '_ {
+    let mut failures = failures.into_iter();
+    move |_| {
+        *tries += 1;
+        failures.next().map_or(Ok("stream"), Err)
+    }
+}
+
+fn stale() -> OpenError {
+    OpenError::Authentication("Connection refused".to_owned())
+}
+
+#[test]
+fn a_stale_bond_is_removed_then_the_b2_is_paired_again_and_connected() {
+    let mut host = FakeHost::new();
+    host.paired = Ok(Some(B2.to_owned()));
+    let mut tries = 0;
+
+    let result = connect_b2(&mut host, None, scripted_open(vec![stale()], &mut tries));
+
+    assert_eq!(result, Ok((B2.to_owned(), "stream")));
+    assert_eq!(tries, 2);
+    assert_eq!(
+        host.calls,
+        [
+            "paired".to_owned(),
+            format!("trust {B2}"),
+            format!("remove {B2}"),
+            "paired".to_owned(),
+            "discover".to_owned(),
+            format!("pair {B2}"),
+            format!("trust {B2}"),
+        ]
+    );
+}
+
+#[test]
+fn a_known_address_that_fails_to_connect_is_repaired_the_same_way() {
+    let mut host = FakeHost::new();
+    host.paired = Ok(Some(B2.to_owned()));
+    let mut tries = 0;
+
+    let result = connect_b2(
+        &mut host,
+        Some(B2),
+        scripted_open(vec![stale()], &mut tries),
+    );
+
+    assert_eq!(result, Ok((B2.to_owned(), "stream")));
+    assert_eq!(host.calls[0], format!("remove {B2}"));
+    assert!(host.calls.contains(&format!("pair {B2}")));
+}
+
+#[test]
+fn a_second_failure_is_reported_and_not_retried() {
+    let mut host = FakeHost::new();
+    let mut tries = 0;
+
+    let result = connect_b2(
+        &mut host,
+        Some(B2),
+        scripted_open(vec![stale(), stale(), stale()], &mut tries),
+    );
+
+    assert_eq!(
+        result,
+        Err(PairFailure::ConnectFailed("Connection refused".to_owned()))
+    );
+    assert_eq!(tries, 2, "one retry, no loop");
+    assert_eq!(
+        host.calls
+            .iter()
+            .filter(|c| c.starts_with("remove"))
+            .count(),
+        1
+    );
+}
+
+#[test]
+fn a_failure_that_is_not_authentication_leaves_the_bond_alone() {
+    let mut host = FakeHost::new();
+    let mut tries = 0;
+
+    let result = connect_b2(
+        &mut host,
+        Some(B2),
+        scripted_open(
+            vec![OpenError::Other("Host is down".to_owned())],
+            &mut tries,
+        ),
+    );
+
+    assert_eq!(
+        result,
+        Err(PairFailure::ConnectFailed("Host is down".to_owned()))
+    );
+    assert_eq!(tries, 1);
+    assert!(host.calls.is_empty());
+}
+
+#[test]
+fn a_connect_that_works_pairs_once_and_removes_nothing() {
+    let mut host = FakeHost::new();
+    let mut tries = 0;
+
+    let result = connect_b2(&mut host, None, scripted_open(vec![], &mut tries));
+
+    assert_eq!(result, Ok((B2.to_owned(), "stream")));
+    assert_eq!(tries, 1);
+    assert!(!host.calls.iter().any(|c| c.starts_with("remove")));
+}
+
+#[test]
+fn a_failed_reconnect_tells_the_operator_what_to_do() {
+    let message = PairFailure::ConnectFailed("Connection refused".to_owned()).message();
+
+    assert!(message.contains("Connection refused"));
+    assert!(message.contains("pairing it again"), "{message}");
 }
 
 #[test]

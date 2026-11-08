@@ -32,6 +32,7 @@ const AGENT_CAPABILITY: &str = "NoInputNoOutput";
 trait Adapter {
     fn start_discovery(&self) -> zbus::Result<()>;
     fn stop_discovery(&self) -> zbus::Result<()>;
+    fn remove_device(&self, device: &ObjectPath<'_>) -> zbus::Result<()>;
     #[zbus(property)]
     fn set_pairable(&self, value: bool) -> zbus::Result<()>;
 }
@@ -214,6 +215,11 @@ impl BluetoothHost for Bluez {
         DeviceProxy::new(&self.connection, device.path)
             .and_then(|proxy| proxy.set_trusted(true))
             .map_err(text)
+    }
+
+    fn remove(&mut self, address: &str) -> Result<(), String> {
+        let device = self.device(address)?;
+        self.adapter()?.remove_device(&device.path).map_err(text)
     }
 }
 
