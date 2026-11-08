@@ -1,7 +1,8 @@
 //! Five commands.
 //!
-//! `braintellect-linux ui --mac <MAC>` opens the session window: connection and
-//! signal status, session properties, start and stop, live feedback, and the
+//! `braintellect-linux ui [--mac <MAC>]` opens the session window: pairing and
+//! connecting to the B-2 (`--mac` names it; without it the window uses the B-2
+//! BlueZ has paired or offers Pair and connect), connection and signal status, session properties, start and stop, live feedback, and the
 //! one-time instrument import. This is the clinician's entry point.
 //!
 //! `braintellect-linux import <lib-dir>` copies the original's instrument banks
@@ -59,7 +60,7 @@ fn run(mac: &str) -> Result<(), Box<dyn std::error::Error>> {
     Ok(())
 }
 
-const USAGE: &str = "usage: braintellect-linux ui --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>\n       braintellect-linux import-soundfont <file.sf2>\n       braintellect-linux emulate <capture file> <serial socket>";
+const USAGE: &str = "usage: braintellect-linux ui [--mac <AA:BB:CC:DD:EE:FF>]\n       braintellect-linux --mac <AA:BB:CC:DD:EE:FF>\n       braintellect-linux import <original lib dir>\n       braintellect-linux import-soundfont <file.sf2>\n       braintellect-linux emulate <capture file> <serial socket>";
 
 /// How long the emulator waits for the app's bytes before it checks the stream
 /// clock; a frame is due every 4 ms.
@@ -129,7 +130,8 @@ fn main() -> ExitCode {
         .collect::<Vec<_>>()
         .as_slice()
     {
-        ["ui", "--mac", mac] => ui::app::run((*mac).to_owned()).map_err(Into::into),
+        ["ui"] => ui::app::run(None).map_err(Into::into),
+        ["ui", "--mac", mac] => ui::app::run(Some((*mac).to_owned())).map_err(Into::into),
         ["--mac", mac] => run(mac),
         ["import", lib_dir] => import_banks(lib_dir),
         ["import-soundfont", file] => import_soundfont(file),

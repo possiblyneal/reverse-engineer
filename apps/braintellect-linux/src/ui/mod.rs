@@ -4,5 +4,7 @@
 //! turns clicks into model calls.
 
 pub mod app;
+pub mod bluetooth;
+pub mod bluez;
 pub mod state;
 pub mod worker;
