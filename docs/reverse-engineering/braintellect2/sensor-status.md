@@ -103,7 +103,7 @@ The evaluator `0x568d30` sets a fault flag if any of three tests fails:
 - **Level ceiling**: `m` exceeds the ground item's `errorThreshold` (`+0xc0` `+0x64`,
   set by `errorThresholdChanged` messages at `0x566487`). With no ground item the
   ceiling stays `0.0` (`0x568d39`–`0x568d51`). The BT-LOD design connects no ground
-  channel.
+  channel; the worn replays show the ceiling at -10 dB ("Observed: worn replays").
 - **Bridged pair**: for `FP1`/`FP2` (`+0xb0`/`+0xb4`) and `T3`/`T4` (`+0xb8`/`+0xbc`),
   `0x565cb0` counts the band levels where `|a − b| < lineNoiseChannelPairDifference`
   and reports a fault when the count is at least half of them (`0.5` at `0x18943f0`).
@@ -151,11 +151,11 @@ it at `0x444a8a`.
   tests failed. None of them checks that a sensor touches skin. They flag one channel
   that differs from the others, a level above a ceiling, or two paired channels that
   look identical. Floating inputs pick up similar, low, uncorrelated noise. Every
-  channel then sits near the minimum, below a `0.0` dB ceiling, and the pairs differ,
-  so no fault is raised and the overlay goes green. This was not tested against
-  values. It predicts "Adjust Fit" when one sensor is off while the others are on, or
-  when a pair's inputs are shorted together or read exactly zero (identical default
-  levels).
+  channel then sits near the minimum, below the ceiling, and the pairs differ, so no
+  fault is raised and the overlay goes green (sensors-off replay, and "Observed: worn
+  replays" below for a wearer). Not yet observed: a pair's inputs shorted together.
+  Identical default levels (all zero) raise the pair test, which is the pre-block
+  "Adjust Fit" below.
 - `Engine::State` values `3` and `4` are read as paused/stopped and running from their
   callers. The enum names were not recovered.
 
@@ -165,7 +165,7 @@ it at `0x444a8a`.
 - The line-noise level `m` is the mains level. The pair test compares the vector [70, 40, 12] Hz of each channel with its partner (order does not affect the count).
 - Head2D `+0x94` is `max(mean 50 Hz level, mean 60 Hz level)` over the channels (`0x562400`); the dispatcher compares it with the ground item's thresholds.
 - `deviceMinFloor` and `deviceOffHeadFloor` are stored at Head2D `+0x44` / `+0x48` (moderate confidence) and logged. They are read only at `0x569e61`, on the path for a data source other than "Line noise" (red when a level is below `+0x48`). They are unused for BT-LOD "Line noise".
-- The clone feeds this through `SensorMonitor` (`src/sensor.rs`): 512-sample blocks per channel, Bartlett-windowed FFT, these five levels, then the evaluator. The scale and bin rule are in the next section.
+- The clone feeds this through `SensorMonitor` (`src/sensor.rs`): blocks of 500 samples per channel padded with 12 zeros to the 512-point Bartlett-windowed FFT, these five levels, then the evaluator on a display tick. The scale and bin rule are in the next section.
 
 ## Observed: levels against the original (2026-11-07 sensors-off replay)
 
@@ -179,7 +179,8 @@ all asserted by `tests/parity_sensor_status.rs` (fixtures `sensor_inputs.tsv`,
 "state sequence" held is the evaluator's per-block fault flag; the overlay state itself was
 not observed:
 
-- FFT: Bartlett window (order 9), 512-sample blocks, output scale `8/511` of the mean-
+- FFT: Bartlett window (order 9), 512-point blocks of 500 samples plus 12 zeros (the
+  committed `sensor_inputs.tsv` rows are 512 long with the last 12 zero), output scale `8/511` of the mean-
   normalized magnitude (the clone's `1/128 / mean(window)`); level = `20 log10(bin / 0.04)`,
   that is the bin plus 27.9588 dB.
 - A band reads the bin `trunc(freq / 0.9766)`: 51 (50 Hz), 61 (60 Hz), 12 (12 Hz), 40
@@ -190,8 +191,8 @@ not observed:
 - The pair test faulted T3/T4 on blocks 16, 20 and 31 and FP1/FP2 on blocks 58 and 77;
   the outlier and ceiling tests never fired.
 
-Not observed: the overlay state itself (the `setVisible` hook did not fire), so the
-`stateChangeDelay` timing is checked on synthetic levels only; the 50 Hz branch of the
+The overlay state was not observed here (the `setVisible` hook never fires; see
+`replay-rig.md`); the worn replays below observe it. Not observed: the 50 Hz branch of the
 line rule and its operand order (decompile only; the captured stream picks 60 Hz).
 
 ## Level bit exactness (2026-11-07, static and emulated, no VM)
@@ -232,9 +233,41 @@ spectrum and levels):
   The clone's `DspFft` (`src/feedback/dsp_fft.rs`) is this chain, and its window is the IPP
   recipe above; `FftSpectrum` uses it too.
 
+## Observed: worn replays (2026-11-08, #61)
+
+Two captures from a worn B-2 ("good fit" and "T4 lifted", 89 blocks each) were replayed
+into the original through the emulator (`replay-rig.md`) with hooks on the consumed samples,
+the Head2D level update and the overlay sites. The state is the overlay shown when each
+block's interval ended; levels are the Head2D line-noise, 12, 40 and 70 Hz levels. The
+clone matches the original in every block, levels bit exact and state equal, on both
+captures over the frames the original consumed (`tests/replay_s61.rs`, ignored, inputs
+outside Git).
+
+- Good fit: "Adjust Fit" appears 14 times, with the fault first seen at blocks 9, 24, 28, 31,
+  34, 40, 44, 50, 55, 63, 67, 74, 79 and 87. Every one is the T3/T4 pair test (2 of 3 bands
+  within 0.5 dB); the outlier and ceiling tests do not fire. The 1000 ms debounce holds the
+  red overlay into the following blocks. Otherwise "Ready".
+- T4 lifted: "Ready" throughout. T4 sits about 1.5 dB above the minimum, inside the 15.5 dB
+  outlier limit, and no pair test fires. A lifted sensor does not raise "Adjust Fit" here.
+- Block: the FFT input is 500 consecutive samples plus 12 zeros, not 512 samples.
+- Source filters: the LOD Source runs with the 45 Hz low-pass off and the 25 Hz band-stop on.
+- Ceiling: the ground ceiling is -10 dB.
+- Debounce: driven by the display timer, about 60 ms a tick, not by block completion. Before
+  block 0 the default (all zero) levels fail the pair test, "Adjust Fit" shows at about
+  1031 ms, and "Ready" shows at block 0.
+- The original did not consume a few received frames (3 in good fit, 4 in T4 lifted;
+  observed). The cause is inferred as host timing: the streams show no counter gap or failed
+  validation there, so they cannot be found from the bytes; the first level difference of a
+  naive replay is exactly the first skipped frame.
+  The replay leaves them out, as `replay_live` does. Not reproducible by the clone.
+
+Not observed: a shorted pair (the criterion of #61 stays open).
+
 ## Unresolved
 
-- The overlay state and its debounce timing on a captured stream, and whether a ground
-  item sets an `errorThreshold`.
+- Whether a ground item sets an `errorThreshold` in the design (the -10 dB ceiling is
+  observed, its source is not).
+- Whether the LOD Source's low-pass and high-pass cutoffs follow the session's: the worn
+  replays ran only with the defaults (150 Hz, 1.5 Hz), and the clone takes the session's.
 - The 50 Hz branch and the operand order of the 50/60 Hz rule (`0x565300`).
 - The source string compared with `"placebo"` in `launchExercise` (`0x4e4410`).

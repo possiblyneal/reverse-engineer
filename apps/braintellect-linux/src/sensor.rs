@@ -17,8 +17,9 @@ pub const LINE_NOISE_DIFFERENCE: f32 = 15.5;
 pub const PAIR_DIFFERENCE: f32 = 0.5;
 /// `stateChangeDelay`, in milliseconds.
 pub const STATE_CHANGE_DELAY_MS: i64 = 1000;
-/// The ceiling when no ground item supplies an `errorThreshold` (`0x568d39`).
-pub const NO_GROUND_CEILING: f32 = 0.0;
+/// The ceiling, observed at -10 dB in the 2026-11-08 worn replays; its source is not
+/// recovered (`sensor-status.md`, Unresolved).
+pub const GROUND_CEILING_DB: f32 = -10.0;
 /// The share of a pair's band levels that must match for the pair to fault
 /// (`0x18943f0`, `0x565cb0`).
 const PAIR_MATCH_SHARE: f32 = 0.5;
@@ -61,7 +62,7 @@ impl SensorDesign {
             line_noise_difference: LINE_NOISE_DIFFERENCE,
             pair_difference: PAIR_DIFFERENCE,
             state_change_delay_ms: STATE_CHANGE_DELAY_MS,
-            ceiling: NO_GROUND_CEILING,
+            ceiling: GROUND_CEILING_DB,
         }
     }
 }
@@ -100,8 +101,15 @@ pub fn level_db(bin: f32, previous: f32) -> f32 {
     }
 }
 
-/// Samples per FFT block: `fftOrder` 9, discrete (non-overlapping) blocks.
+/// FFT length: `fftOrder` 9.
 pub const BLOCK_SAMPLES: usize = crate::feedback::FFT_BLOCK;
+/// Source samples per block: 1 s at 500 Hz, discrete (non-overlapping) blocks. The FFT
+/// input is these followed by `BLOCK_SAMPLES - SOURCE_SAMPLES` zeros (2026-11-08 worn
+/// replays; `sensor-status.md`).
+pub const SOURCE_SAMPLES: usize = 500;
+/// The display timer's period: the Head2D display re-evaluates the overlay about every
+/// 60 ms, not only when a block completes.
+pub const TICK_MS: i64 = 60;
 /// The Source rate the design runs at.
 const RATE_HZ: f32 = 500.0;
 /// Spectrum values per block.
@@ -171,7 +179,7 @@ impl SensorMonitor {
         Self {
             engine: SensorStatusEngine::new(design),
             fft: DspFft::new(),
-            block: std::array::from_fn(|_| Vec::with_capacity(BLOCK_SAMPLES)),
+            block: std::array::from_fn(|_| Vec::with_capacity(SOURCE_SAMPLES)),
             levels: std::array::from_fn(|_| BandLevels::default()),
             updates: 0,
             line: None,
@@ -214,18 +222,20 @@ impl SensorMonitor {
         self.engine.set_engine_running(running);
     }
 
-    /// One Source sample per channel (stored as `float32`), read at `now_ms`. After the
-    /// 512th sample of a block the display updates and the status is returned.
-    pub fn push(&mut self, now_ms: i64, volts: &[f64; CHANNELS]) -> Option<SensorStatus> {
+    /// One Source sample per channel (stored as `float32`). Returns whether it completed
+    /// a block: after the 500th sample the FFT input (those samples and 12 zeros) updates
+    /// the levels. The overlay state changes only in [`Self::tick`].
+    pub fn push(&mut self, volts: &[f64; CHANNELS]) -> bool {
         for (block, &v) in self.block.iter_mut().zip(volts) {
             block.push(v as f32);
         }
-        if self.block[0].len() < BLOCK_SAMPLES {
-            return None;
+        if self.block[0].len() < SOURCE_SAMPLES {
+            return false;
         }
         for (block, levels) in self.block.iter_mut().zip(&mut self.levels) {
-            let block_samples = block.as_slice().try_into().expect("a full block");
-            levels.update(&self.fft.process(block_samples));
+            let mut input = [0.0_f32; BLOCK_SAMPLES];
+            input[..SOURCE_SAMPLES].copy_from_slice(block);
+            levels.update(&self.fft.process(&input));
             block.clear();
         }
         self.current = std::array::from_fn(|c| ChannelLevels {
@@ -238,7 +248,14 @@ impl SensorMonitor {
         if self.line.is_none() && self.updates.is_multiple_of(LINE_NOISE_TEST_DELAY) {
             self.line = self.choose_line();
         }
-        Some(self.engine.update(now_ms, &self.current))
+        true
+    }
+
+    /// One display timer tick at `now_ms`: the overlay state on the levels after the
+    /// last block. Before the first block those are the defaults (all zero), which fail
+    /// the pair test.
+    pub fn tick(&mut self, now_ms: i64) -> SensorStatus {
+        self.engine.update(now_ms, &self.current)
     }
 }
 

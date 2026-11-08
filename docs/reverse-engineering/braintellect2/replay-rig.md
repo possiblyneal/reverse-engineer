@@ -265,6 +265,23 @@ next to the existing tag 30 (raw block and final spectrum): 388 calls over 97 bl
   NTFS disk (`C:\cap`), staged and read back with `ntfs-3g` after `ntfsfix -d` while the VM was
   off.
 
+## Result: worn captures and the overlay state (#61, 2026-11-08)
+
+Two worn-B-2 captures replayed (`hook` set `g/s61.js`: tag 12 consumed sample, tag 32 Head2D
+level update, tag 41 overlay state), reduced by `scripts/worn-sensor-extract.py`; findings in
+`sensor-status.md`, "Observed: worn replays".
+
+- Standard unattended step: a Startup-folder launch file starts the app under `frida-inject -f`
+  and the clicker, with the hook files and the log on the guest's NTFS disk, staged and read
+  back with `ntfs-3g` after `ntfsfix -d` while the VM is off. Use it for every run.
+- The emulator does not retry its socket connect: start it after the socket is forwarded and
+  before the app starts, or the run connects to nothing.
+- The `QWidget::setVisible` hook never fires, so the overlay state needs instruction-site
+  hooks: the overlay show sites `0x568f29` (red), `0x568f59` (green) and `0x569cc8`
+  (offline), and the debounce elapsed check at `0x568f21`.
+- The original's host skips some received frames; replays feed the clone only the consumed
+  frames (`audio-feedback.md`, #33 and #55).
+
 ## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
 
 The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00
