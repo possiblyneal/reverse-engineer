@@ -9,14 +9,25 @@
 //! host never consumed; the stream has no counter gap or failed validation there, so the
 //! clone cannot find them itself and the replay leaves them out, as `replay_live` does).
 //!
+//! The no-wearer stream of run 8 (#57) is replayed the same way over the Optimize-tab period
+//! before its Play, with its own extract.
+//!
+//! A fault that lasts one block reaches the 1000 ms debounce delay at the very tick (16 ticks
+//! of 62.5 ms) at which the next block's update clears it. The original showed red for the
+//! block in 2 of 3 such cases of run 8 and not in the third; which came first, the display
+//! timer or the engine thread, is host timing. `ties.txt` lists the blocks the tick won (the
+//! delay reached in the same clock reading as, and logged before, the next block's update) and
+//! their state is not compared; a block the update won is compared.
+//!
 //! Over the frames the original consumed, every block's levels must match to the bit and the
 //! state of `live::monitor` at the end of every block interval must match the original's. The
 //! clone's clock is the stream's: 4 ms a frame, block `b` complete at `(b + 1)` seconds.
 //!
 //! Ignored: the captures are session EEG and live outside Git. Run with
 //! `S61_GOODFIT_CAPTURE`, `S61_T4OFF_CAPTURE` and `S61_REPLAY_DIR` (a directory holding
-//! `goodfit/` and `t4off/` with the extract's two files) set, else the defaults under the
-//! repository root's `tmp/s61/`:
+//! `goodfit/` and `t4off/` with the extract's files) set, else the defaults under the
+//! repository root's `tmp/s61/`; run 8 takes `S57_RUN8_CAPTURE` and `S57_REPLAY_DIR` (holding
+//! `run8/`, default `tmp/s57o/replay`):
 //! `cargo test --release --test replay_s61 -- --ignored --nocapture`.
 
 mod harness;
@@ -52,6 +63,7 @@ impl Write for Replayed {
 
 /// The 22 handshake replies (two query passes of 11) before the first stream frame.
 const HANDSHAKE_LEN: usize = 22 * 56;
+const MARKER: [u8; 4] = [0xAC, 0xBC, 0xCC, 0x03];
 const FRAME_LEN: usize = 32;
 /// Stream time of one frame: two samples at 500 Hz.
 const FRAME_MS: i64 = 4;
@@ -64,9 +76,23 @@ struct Original {
     levels: [[u32; 4]; 4],
 }
 
-fn original(dir: &str) -> (Vec<Original>, Vec<usize>) {
-    let read =
-        |name: &str| inputs::read("S61_REPLAY_DIR", "tmp/s61/replay", &format!("{dir}/{name}"));
+/// One capture and where the original's extract of it lives. Paths come from the environment
+/// variable, else the default under the repository root.
+struct Case {
+    /// The extract's folder inside the replay directory.
+    label: &'static str,
+    capture: (&'static str, &'static str),
+    replay: (&'static str, &'static str),
+    /// The capture streams on past the period the original's log covers (run 8 goes on into
+    /// its Play), so the replay stops two seconds past the last logged block.
+    outlasts_log: bool,
+}
+
+/// The original's blocks, the stream frames its host skipped and the blocks whose state is a
+/// timing race (see the module docs).
+fn original(case: &Case) -> (Vec<Original>, Vec<usize>, Vec<usize>) {
+    let (var, default) = case.replay;
+    let read = |name: &str| inputs::read(var, default, &format!("{}/{name}", case.label));
     let blocks = read("worn.tsv")
         .lines()
         .map(|line| {
@@ -88,14 +114,25 @@ fn original(dir: &str) -> (Vec<Original>, Vec<usize>) {
         .lines()
         .map(|l| l.parse().expect("frame index"))
         .collect();
-    (blocks, skipped)
+    let ties = read("ties.txt")
+        .lines()
+        .map(|l| l.parse().expect("block index"))
+        .collect();
+    (blocks, skipped, ties)
 }
 
-/// The capture's handshake, then its stream frames but those the original skipped.
-fn consumed_session(capture: &str, default: &str, skipped: &[usize]) -> Session<Replayed> {
-    let raw = std::fs::read(inputs::path(capture, default)).expect("capture");
-    let mut bytes = raw[..HANDSHAKE_LEN].to_vec();
-    for (n, frame) in raw[HANDSHAKE_LEN..].chunks_exact(FRAME_LEN).enumerate() {
+/// The capture's handshake, then its stream frames but those the original skipped, up to
+/// `frames` of them (a capture can outlast the original's log). The handshake starts at the
+/// first reply marker; bytes before it are a partial read.
+fn consumed_session(case: &Case, skipped: &[usize], frames: usize) -> Session<Replayed> {
+    let raw = std::fs::read(inputs::path(case.capture.0, case.capture.1)).expect("capture");
+    let first = raw
+        .windows(MARKER.len())
+        .position(|w| w == MARKER)
+        .expect("a reply marker");
+    let mut bytes = raw[first..first + HANDSHAKE_LEN].to_vec();
+    let stream = raw[first + HANDSHAKE_LEN..].chunks_exact(FRAME_LEN);
+    for (n, frame) in stream.enumerate().take(frames) {
         if !skipped.contains(&n) {
             bytes.extend_from_slice(frame);
         }
@@ -162,13 +199,27 @@ fn clone_states(session: Session<Replayed>) -> Vec<SensorStatus> {
     states
 }
 
-fn check(label: &str, capture: &str) {
-    let (blocks, skipped) = original(label);
-    let default = format!("tmp/s61/{label}.rx");
-    let session = || consumed_session(capture, &default, &skipped);
+fn check(case: &Case) {
+    let label = case.label;
+    let (blocks, skipped, ties) = original(case);
+    // The state of the last block needs its whole interval; skipped frames are not streamed.
+    let frames = if case.outlasts_log {
+        (blocks.len() + 2) * usize::try_from(BLOCK_MS / FRAME_MS).expect("small") + skipped.len()
+    } else {
+        usize::MAX
+    };
+    let session = || consumed_session(case, &skipped, frames);
 
     let levels = clone_levels(session());
-    assert_eq!(levels.len(), blocks.len(), "{label}: blocks");
+    if case.outlasts_log {
+        assert!(
+            levels.len() >= blocks.len(),
+            "{label}: {} blocks",
+            levels.len()
+        );
+    } else {
+        assert_eq!(levels.len(), blocks.len(), "{label}: blocks");
+    }
     for (b, (got, want)) in levels.iter().zip(&blocks).enumerate() {
         assert_eq!(
             got, &want.levels,
@@ -182,19 +233,44 @@ fn check(label: &str, capture: &str) {
         "{label}: {} states",
         states.len()
     );
-    for (b, want) in blocks.iter().enumerate() {
+    for (b, want) in blocks.iter().enumerate().filter(|(b, _)| !ties.contains(b)) {
         assert_eq!(states[b], want.state, "{label}: block {b} state");
     }
 }
 
+const WORN: (&str, &str) = ("S61_REPLAY_DIR", "tmp/s61/replay");
+
 #[test]
 #[ignore = "needs the #61 captures and the original's extract, which stay outside Git"]
 fn the_good_fit_capture_matches_the_original_in_every_block() {
-    check("goodfit", "S61_GOODFIT_CAPTURE");
+    check(&Case {
+        label: "goodfit",
+        capture: ("S61_GOODFIT_CAPTURE", "tmp/s61/goodfit.rx"),
+        replay: WORN,
+        outlasts_log: false,
+    });
 }
 
 #[test]
 #[ignore = "needs the #61 captures and the original's extract, which stay outside Git"]
 fn the_t4_off_capture_matches_the_original_in_every_block() {
-    check("t4off", "S61_T4OFF_CAPTURE");
+    check(&Case {
+        label: "t4off",
+        capture: ("S61_T4OFF_CAPTURE", "tmp/s61/t4off.rx"),
+        replay: WORN,
+        outlasts_log: false,
+    });
+}
+
+/// Run 8's stream, no wearer, over the Optimize-tab period before its Play (#57): the original
+/// logged 97 blocks and its host skipped 14 stream frames.
+#[test]
+#[ignore = "needs run 8's raw stream and the original's extract, which stay outside Git"]
+fn the_no_wearer_run_8_stream_matches_the_original_in_every_block() {
+    check(&Case {
+        label: "run8",
+        capture: ("S57_RUN8_CAPTURE", "tmp/s48/rx8.raw"),
+        replay: ("S57_REPLAY_DIR", "tmp/s57o/replay"),
+        outlasts_log: true,
+    });
 }

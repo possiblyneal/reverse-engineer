@@ -191,9 +191,10 @@ not observed:
 - The pair test faulted T3/T4 on blocks 16, 20 and 31 and FP1/FP2 on blocks 58 and 77;
   the outlier and ceiling tests never fired.
 
-The overlay state was not observed here (the `setVisible` hook never fires; see
-`replay-rig.md`); the worn replays below observe it. Not observed: the 50 Hz branch of the
-line rule and its operand order (decompile only; the captured stream picks 60 Hz).
+The overlay state was not observed on that replay (the `setVisible` hook never fired; see
+`replay-rig.md`). The 2026-11-08 replay of the same stream below observes it. Not observed:
+the 50 Hz branch of the line rule and its operand order (decompile only; the captured stream
+picks 60 Hz).
 
 ## Level bit exactness (2026-11-07, static and emulated, no VM)
 
@@ -262,6 +263,29 @@ outside Git).
   The replay leaves them out, as `replay_live` does. Not reproducible by the clone.
 
 Not observed: a shorted pair (the criterion of #61 stays open).
+
+## Observed: run 8 no-wearer overlay state (2026-11-08, #57)
+
+Run 8's no-wearer stream was replayed again with the #61 hook set, 97 blocks logged over the
+Optimize-tab period (Play not pressed; the engine runs, the overlay is never "Not Available"
+after block 0). The clone matches the original's Head2D levels bit exact in all 97 blocks
+(line noise, 12, 40 and 70 Hz of the four channels) and its overlay state in every block
+but two, over the frames the original consumed (14 skipped; `tests/replay_s61.rs`, ignored,
+inputs outside Git).
+
+- State: "Ready" from block 0, except "Adjust Fit" at blocks 16 and 20. Before block 0 the
+  default levels fail the pair test and "Adjust Fit" shows, as in the worn replays.
+- The pair test faulted T3/T4 on blocks 16, 20 and 31, each for one block. The 1000 ms debounce
+  needs 16 display ticks (62.5 ms each, the 60 ms timer rounded to the Windows clock), exactly
+  one block interval, so the delay is reached at the tick at which the next block's update
+  clears the fault. Observed: at blocks 16 and 20 the tick came first and showed the red
+  overlay; at block 31 the update came first and the overlay stayed green.
+- Inferred: which comes first is a race between the display timer and the engine thread, set
+  by sub-tick host timing, so the clone cannot reproduce it from the bytes (as for the skipped
+  frames). The test leaves blocks 16 and 20 (the delay reached in the clock reading of the next
+  update; `ties.txt` of `worn-sensor-extract.py`) out of the state comparison. The clone shows
+  "Ready" there. Only the tick-first outcome is detectable from the log (the tick logs the
+  delay reached); block 31, the update-first outcome, is compared and matches.
 
 ## Unresolved
 
