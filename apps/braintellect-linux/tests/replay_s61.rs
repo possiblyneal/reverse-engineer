@@ -65,7 +65,8 @@ struct Original {
 }
 
 fn original(dir: &str) -> (Vec<Original>, Vec<usize>) {
-    let read = |name: &str| inputs::read("S61_REPLAY_DIR", "tmp/s61/replay", &format!("{dir}/{name}"));
+    let read =
+        |name: &str| inputs::read("S61_REPLAY_DIR", "tmp/s61/replay", &format!("{dir}/{name}"));
     let blocks = read("worn.tsv")
         .lines()
         .map(|line| {
@@ -99,8 +100,11 @@ fn consumed_session(capture: &str, default: &str, skipped: &[usize]) -> Session<
             bytes.extend_from_slice(frame);
         }
     }
-    Session::open(Replayed(Cursor::new(bytes)), live::stream_config().expect("config"))
-        .expect("handshake")
+    Session::open(
+        Replayed(Cursor::new(bytes)),
+        live::stream_config().expect("config"),
+    )
+    .expect("handshake")
 }
 
 /// The monitor's levels after each block, as the bits `Original::levels` holds.
@@ -166,11 +170,18 @@ fn check(label: &str, capture: &str) {
     let levels = clone_levels(session());
     assert_eq!(levels.len(), blocks.len(), "{label}: blocks");
     for (b, (got, want)) in levels.iter().zip(&blocks).enumerate() {
-        assert_eq!(got, &want.levels, "{label}: block {b} levels (line noise, 12, 40, 70 Hz)");
+        assert_eq!(
+            got, &want.levels,
+            "{label}: block {b} levels (line noise, 12, 40, 70 Hz)"
+        );
     }
 
     let states = clone_states(session());
-    assert!(states.len() >= blocks.len(), "{label}: {} states", states.len());
+    assert!(
+        states.len() >= blocks.len(),
+        "{label}: {} states",
+        states.len()
+    );
     for (b, want) in blocks.iter().enumerate() {
         assert_eq!(states[b], want.state, "{label}: block {b} state");
     }
