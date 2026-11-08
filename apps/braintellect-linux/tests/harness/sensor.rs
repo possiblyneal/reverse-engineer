@@ -4,6 +4,7 @@
 use braintellect_linux::feedback::DspFft;
 use braintellect_linux::sensor::{
     ChannelLevels, SensorDesign, SensorMonitor, SensorStatus, SensorStatusEngine, BLOCK_SAMPLES,
+    SOURCE_SAMPLES, TICK_MS,
 };
 
 use super::fixtures::SensorBlock;
@@ -27,6 +28,25 @@ pub fn healthy() -> Levels {
     ]
 }
 
+/// Loud channels close together (so the outlier test passes), FP2 at `fp2` dB.
+fn near_ceiling(fp2: f32) -> Levels {
+    let mut l = healthy();
+    for (c, level) in l.iter_mut().zip([-12.0, fp2, -12.5, -13.0]) {
+        c.line_noise = level;
+    }
+    l
+}
+
+/// FP2 just above the -10 dB ceiling.
+pub fn just_above_ceiling() -> Levels {
+    near_ceiling(-9.0)
+}
+
+/// FP2 just below the -10 dB ceiling.
+pub fn just_below_ceiling() -> Levels {
+    near_ceiling(-11.0)
+}
+
 /// One channel 20 dB above the others.
 pub fn faulty_outlier() -> Levels {
     let mut l = healthy();
@@ -34,7 +54,7 @@ pub fn faulty_outlier() -> Levels {
     l
 }
 
-/// A level above the 0.0 dB ceiling.
+/// A level above the -10 dB ceiling.
 pub fn faulty_ceiling() -> Levels {
     let mut l = healthy();
     l[1].line_noise = 1.0;
@@ -63,7 +83,7 @@ const RATE: f64 = 500.0;
 /// `blocks` blocks of Source output in volts, one `[f64; 4]` per sample, from
 /// `tone(channel, t_seconds)`.
 pub fn stream(blocks: usize, tone: fn(usize, f64) -> f64) -> Vec<[f64; 4]> {
-    (0..blocks * BLOCK_SAMPLES)
+    (0..blocks * SOURCE_SAMPLES)
         .map(|n| {
             let t = n as f64 / RATE;
             std::array::from_fn(|c| tone(c, t))
@@ -105,29 +125,57 @@ pub fn tones_none(_c: usize, _t: f64) -> f64 {
     0.0
 }
 
-/// The overlay state after each completed block of `samples`, with the engine
-/// running and the clock at the stream time of the block's last sample.
+/// The overlay state at the first display tick after each completed block of `samples`
+/// (the moment the display shows the block's levels), with the engine running and the
+/// timer ticking every [`TICK_MS`] of stream time (500 Hz: 2 ms a sample).
 pub fn run_feed(samples: &[[f64; 4]]) -> Vec<SensorStatus> {
     let mut monitor = SensorMonitor::new(SensorDesign::bt_lod());
     monitor.set_engine_running(true);
+    let (mut states, mut pending) = (Vec::new(), false);
+    let mut now = 0;
+    for volts in samples {
+        now += 2;
+        pending |= monitor.push(volts);
+        if now % TICK_MS == 0 {
+            let status = monitor.tick(now);
+            if std::mem::take(&mut pending) {
+                states.push(status);
+            }
+        }
+    }
+    if pending {
+        states.push(monitor.tick((now / TICK_MS + 1) * TICK_MS));
+    }
+    states
+}
+
+/// The overlay state at every display tick over `samples`.
+pub fn run_ticks(samples: &[[f64; 4]]) -> Vec<SensorStatus> {
+    let mut monitor = SensorMonitor::new(SensorDesign::bt_lod());
+    monitor.set_engine_running(true);
+    let mut now = 0;
     samples
         .iter()
-        .enumerate()
-        .filter_map(|(n, volts)| monitor.push((n as i64 + 1) * 2, volts))
+        .filter_map(|volts| {
+            now += 2;
+            monitor.push(volts);
+            (now % TICK_MS == 0).then(|| monitor.tick(now))
+        })
         .collect()
 }
 
 /// The levels and fault flag the monitor holds after each of `blocks`, fed the
-/// original's FFT inputs; the clock is irrelevant to both.
+/// original's FFT inputs (500 samples, then the 12 zeros the monitor adds); the clock is
+/// irrelevant to both.
 pub fn replay_blocks(blocks: &[SensorBlock]) -> Vec<(Levels, bool)> {
     let mut monitor = SensorMonitor::new(SensorDesign::bt_lod());
     monitor.set_engine_running(true);
     blocks
         .iter()
         .map(|block| {
-            for n in 0..BLOCK_SAMPLES {
+            for n in 0..SOURCE_SAMPLES {
                 let volts = std::array::from_fn(|c| f64::from(block.samples[c][n]));
-                monitor.push(0, &volts);
+                monitor.push(&volts);
             }
             (monitor.levels().clone(), monitor.faulted())
         })
