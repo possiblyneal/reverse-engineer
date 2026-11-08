@@ -15,9 +15,9 @@
 //! A fault that lasts one block reaches the 1000 ms debounce delay at the very tick (16 ticks
 //! of 62.5 ms) at which the next block's update clears it. The original showed red for the
 //! block in 2 of 3 such cases of run 8 and not in the third; which came first, the display
-//! timer or the engine thread, is host timing. `ties.txt` lists these blocks (the delay
-//! reached in the same clock reading as the next block's update) and their state is not
-//! compared.
+//! timer or the engine thread, is host timing. `ties.txt` lists the blocks the tick won (the
+//! delay reached in the same clock reading as, and logged before, the next block's update) and
+//! their state is not compared; a block the update won is compared.
 //!
 //! Over the frames the original consumed, every block's levels must match to the bit and the
 //! state of `live::monitor` at the end of every block interval must match the original's. The
@@ -83,6 +83,9 @@ struct Case {
     label: &'static str,
     capture: (&'static str, &'static str),
     replay: (&'static str, &'static str),
+    /// The capture streams on past the period the original's log covers (run 8 goes on into
+    /// its Play), so the replay stops two seconds past the last logged block.
+    outlasts_log: bool,
 }
 
 /// The original's blocks, the stream frames its host skipped and the blocks whose state is a
@@ -199,16 +202,24 @@ fn clone_states(session: Session<Replayed>) -> Vec<SensorStatus> {
 fn check(case: &Case) {
     let label = case.label;
     let (blocks, skipped, ties) = original(case);
-    // Two seconds past the last logged block: the state of the last block needs its interval.
-    let frames = (blocks.len() + 2) * usize::try_from(BLOCK_MS / FRAME_MS).expect("small");
+    // The state of the last block needs its whole interval; skipped frames are not streamed.
+    let frames = if case.outlasts_log {
+        (blocks.len() + 2) * usize::try_from(BLOCK_MS / FRAME_MS).expect("small") + skipped.len()
+    } else {
+        usize::MAX
+    };
     let session = || consumed_session(case, &skipped, frames);
 
     let levels = clone_levels(session());
-    assert!(
-        levels.len() >= blocks.len(),
-        "{label}: {} blocks",
-        levels.len()
-    );
+    if case.outlasts_log {
+        assert!(
+            levels.len() >= blocks.len(),
+            "{label}: {} blocks",
+            levels.len()
+        );
+    } else {
+        assert_eq!(levels.len(), blocks.len(), "{label}: blocks");
+    }
     for (b, (got, want)) in levels.iter().zip(&blocks).enumerate() {
         assert_eq!(
             got, &want.levels,
@@ -236,6 +247,7 @@ fn the_good_fit_capture_matches_the_original_in_every_block() {
         label: "goodfit",
         capture: ("S61_GOODFIT_CAPTURE", "tmp/s61/goodfit.rx"),
         replay: WORN,
+        outlasts_log: false,
     });
 }
 
@@ -246,6 +258,7 @@ fn the_t4_off_capture_matches_the_original_in_every_block() {
         label: "t4off",
         capture: ("S61_T4OFF_CAPTURE", "tmp/s61/t4off.rx"),
         replay: WORN,
+        outlasts_log: false,
     });
 }
 
@@ -258,5 +271,6 @@ fn the_no_wearer_run_8_stream_matches_the_original_in_every_block() {
         label: "run8",
         capture: ("S57_RUN8_CAPTURE", "tmp/s48/rx8.raw"),
         replay: ("S57_REPLAY_DIR", "tmp/s57o/replay"),
+        outlasts_log: true,
     });
 }

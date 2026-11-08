@@ -268,8 +268,9 @@ next to the existing tag 30 (raw block and final spectrum): 388 calls over 97 bl
 ## Result: worn captures and the overlay state (#61, 2026-11-08)
 
 Two worn-B-2 captures replayed (`hook` set `g/s61.js`: tag 12 consumed sample, tag 32 Head2D
-level update, tag 41 overlay state), reduced by `scripts/worn-sensor-extract.py`; findings in
-`sensor-status.md`, "Observed: worn replays".
+level update, tag 41 overlay state, tag 42 debounce tick `[42, n, ts, this, elapsed, delay]`
+from the overlay's `stateChangeDelay` check), reduced by `scripts/worn-sensor-extract.py`;
+findings in `sensor-status.md`, "Observed: worn replays".
 
 - Standard unattended step: a Startup-folder launch file starts the app under `frida-inject -f`
   and the clicker, with the hook files and the log on the guest's NTFS disk, staged and read
@@ -317,10 +318,10 @@ host's clock, not the guest, the hooks or Defender.
 Run 8's raw stream (`rx8.raw`: 24 bytes of partial read, then the handshake replies, then frames)
 replayed with the #61 rig and hook set (`g/s61.js`) for the 100 s the clicker streams, no Play:
 97 blocks logged. `scripts/worn-sensor-extract.py` reduces it (the handshake starts at the first
-reply marker; a no-wearer stream needs `--min-count 50 --tolerance 3`), `tests/replay_s61.rs`
+reply marker; a no-wearer stream needs `--min-count 50`), `tests/replay_s61.rs`
 compares; findings in `sensor-status.md`, "Observed: run 8 no-wearer overlay state".
 
-- Run steps as #61 plus rig-up: the live quadlet had no serial chardev, so `rig-s48` was copied
-  over it (`pre-rig` kept) and put back after the run.
+- Run steps as #61. The rig needs the serial-chardev quadlet (`rig-s48`) in place of the live
+  one; keep the live one aside and restore it after the run.
 - The tick `Date.now()` stamps step by 15.6 ms (62.5 ms ticks); a debounce that reaches its delay
   in the stamp of the next block's update is a thread race (`ties.txt`).

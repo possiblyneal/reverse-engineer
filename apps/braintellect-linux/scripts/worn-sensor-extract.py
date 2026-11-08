@@ -5,7 +5,8 @@
 The log (`s61.bin`) was written while the original, fed the capture by `braintellect-linux
 emulate`, ran its Optimize-tab sensor status (`docs/reverse-engineering/braintellect2/
 sensor-status.md`, "Worn replays"). Tags: 12 consumed sample `[12, 6, ts, channel, count, uV]`,
-32 Head2D level update (four per block), 41 overlay state `[41, n, ts, this, state]`.
+32 Head2D level update (four per block), 41 overlay state `[41, n, ts, this, state]`, 42
+debounce tick (below).
 
 Writes to `--out` (default the log's directory):
 
@@ -18,13 +19,13 @@ Writes to `--out` (default the log's directory):
   skips are found by matching the consumed channel-0 samples to the capture's frames.
 - `ties.txt`: the blocks whose fault reached the debounce delay (tag 42, `[42, n, ts, this,
   elapsed, delay]`) in the same clock reading (`Date.now()`, 15.6 ms steps) as the next
-  block's update. Whether the red overlay showed before that update cleared the fault is a
-  race between the display timer and the engine thread; the state of such a block cannot be
-  found from the bytes, and the test leaves it out.
+  block's update, the tick logged first. Whether the red overlay showed before that update
+  cleared the fault is a race between the display timer and the engine thread that the bytes
+  do not settle, and the test leaves the block out. The same race won by the update (no tick
+  reaches the delay) is not listed: the overlay stayed green and the test compares it.
 
 Bytes before the capture's first reply marker (a partial read) are ignored. A no-wearer stream
-stays far below the worn captures' 1000 counts, so it needs `--min-count 50` for the scale fit
-and a `--tolerance` of 3 counts so that a skipped frame is not hidden by a neighbouring sample.
+stays far below the worn captures' 1000 counts, so it needs `--min-count 50` for the scale fit.
 
 Nothing written here is committed: the output stays under the repo's `tmp/`.
 Usage: python3 -I worn-sensor-extract.py <s61.bin> <capture.rx> [--out DIR]
@@ -75,12 +76,14 @@ def count(frame, n):
     return int.from_bytes(frame[8 + 3 * slot : 11 + 3 * slot], "big", signed=True) >> 8
 
 
-def skipped(consumed, frames, tolerance, min_count):
+def skipped(consumed, frames, min_count):
     """Frame indices the consumed channel-0 samples (volts) leave out."""
     counts = [count(f, n) for f in frames for n in range(2)]
     pairs = [(v, c) for v, c in zip(consumed[:2000], counts) if abs(c) > min_count]
+    if not pairs:
+        raise SystemExit(f"no channel-0 sample above {min_count} counts to fit the scale; lower --min-count")
     scale = statistics.median(v / c for v, c in pairs)
-    matches = lambda v, c: abs(v / scale - c) <= tolerance
+    matches = lambda v, c: abs(v / scale - c) <= COUNT_TOLERANCE
     out, shift, j = [], 0, 0
     while j < len(consumed):
         if j + shift < len(counts) and matches(consumed[j], counts[j + shift]):
@@ -102,7 +105,6 @@ def main():
     ap.add_argument("log", type=pathlib.Path)
     ap.add_argument("capture", type=pathlib.Path)
     ap.add_argument("--out", type=pathlib.Path)
-    ap.add_argument("--tolerance", type=int, default=COUNT_TOLERANCE, help="match slack in counts")
     ap.add_argument("--min-count", type=int, default=SCALE_MIN_COUNT, help="scale-fit floor in counts")
     args = ap.parse_args()
     out = args.out or args.log.parent
@@ -139,7 +141,7 @@ def main():
         for n, b in enumerate(blocks):
             hexes = [f"{f32(v):08x}" for ch in b["levels"] for v in ch]
             f.write("\t".join([str(n), b["state"] or "-", *hexes]) + "\n")
-    skips = skipped(consumed, stream_frames(args.capture), args.tolerance, args.min_count)
+    skips = skipped(consumed, stream_frames(args.capture), args.min_count)
     (out / "skipped.txt").write_text("".join(f"{i}\n" for i in skips))
     (out / "ties.txt").write_text("".join(f"{i}\n" for i in ties))
     print(f"blocks {len(blocks)} consumed {len(consumed)} skipped frames {len(skips)} ties {ties}")

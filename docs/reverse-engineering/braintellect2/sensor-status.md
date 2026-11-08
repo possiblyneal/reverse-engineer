@@ -192,8 +192,9 @@ not observed:
   the outlier and ceiling tests never fired.
 
 The overlay state was not observed on that replay (the `setVisible` hook never fired; see
-`replay-rig.md`). The 2026-11-08 replay of the same stream below observes it. Not observed: the 50 Hz branch of the
-line rule and its operand order (decompile only; the captured stream picks 60 Hz).
+`replay-rig.md`). The 2026-11-08 replay of the same stream below observes it. Not observed:
+the 50 Hz branch of the line rule and its operand order (decompile only; the captured stream
+picks 60 Hz).
 
 ## Level bit exactness (2026-11-07, static and emulated, no VM)
 
@@ -283,7 +284,8 @@ inputs outside Git).
   by sub-tick host timing, so the clone cannot reproduce it from the bytes (as for the skipped
   frames). The test leaves blocks 16 and 20 (the delay reached in the clock reading of the next
   update; `ties.txt` of `worn-sensor-extract.py`) out of the state comparison. The clone shows
-  "Ready" there.
+  "Ready" there. Only the tick-first outcome is detectable from the log (the tick logs the
+  delay reached); block 31, the update-first outcome, is compared and matches.
 
 ## Unresolved
 
