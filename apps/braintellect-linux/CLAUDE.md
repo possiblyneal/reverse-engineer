@@ -211,9 +211,12 @@ those findings, it cites them.
   (synthetic fault tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`),
   `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the
   in-memory stream). The ignored `tests/replay_s61.rs` holds both worn captures (good fit, T4
-  lifted) to the original's per-block levels (bit exact) and overlay states over the frames the
-  original consumed (`S61_GOODFIT_CAPTURE`, `S61_T4OFF_CAPTURE`, `S61_REPLAY_DIR` from
-  `scripts/worn-sensor-extract.py`; `sensor-status.md`, "Observed: worn replays"). The
+  lifted) and run 8's no-wearer stream (#57) to the original's per-block levels (bit exact) and
+  overlay states over the frames the original consumed (`S61_GOODFIT_CAPTURE`,
+  `S61_T4OFF_CAPTURE`, `S61_REPLAY_DIR`, `S57_RUN8_CAPTURE`, `S57_REPLAY_DIR` from
+  `scripts/worn-sensor-extract.py`; `sensor-status.md`, "Observed: worn replays" and "Observed:
+  run 8 no-wearer overlay state"). A fault that reaches the debounce delay in the clock reading
+  of the next block's update is a host-timing race and its state is not compared (`ties.txt`). The
   original did not consume a few frames (cause inferred as host timing; no counter gap or
   validation failure marks them), so the clone cannot match those.
 - **Session UI** (`src/ui/`). `ui::state::UiModel` is the pure model (actions and events in,
