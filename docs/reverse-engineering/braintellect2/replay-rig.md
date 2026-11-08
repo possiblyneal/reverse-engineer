@@ -311,3 +311,16 @@ host's clock, not the guest, the hooks or Defender.
 - Fix: run step 0 (turbo on for the run). 2.3 GHz also held the rate, so capping the night
   window with `max_perf_pct=60` instead of `no_turbo=1` would keep both night-time rigs and
   the schedule's "base clock" intent; that host change is not made.
+
+## Result: run 8's no-wearer stream and the overlay state (#57, 2026-11-08)
+
+Run 8's raw stream (`rx8.raw`: 24 bytes of partial read, then the handshake replies, then frames)
+replayed with the #61 rig and hook set (`g/s61.js`) for the 100 s the clicker streams, no Play:
+97 blocks logged. `scripts/worn-sensor-extract.py` reduces it (the handshake starts at the first
+reply marker; a no-wearer stream needs `--min-count 50 --tolerance 3`), `tests/replay_s61.rs`
+compares; findings in `sensor-status.md`, "Observed: run 8 no-wearer overlay state".
+
+- Run steps as #61 plus rig-up: the live quadlet had no serial chardev, so `rig-s48` was copied
+  over it (`pre-rig` kept) and put back after the run.
+- The tick `Date.now()` stamps step by 15.6 ms (62.5 ms ticks); a debounce that reaches its delay
+  in the stamp of the next block's update is a thread race (`ties.txt`).
