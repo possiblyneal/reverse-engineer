@@ -7,7 +7,7 @@
 mod harness;
 
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
 use braintellect_linux::acquisition::decode::ChannelCalibration;
 use braintellect_linux::acquisition::session::Session;
@@ -36,11 +36,14 @@ struct Outcome {
     captured: Vec<u8>,
 }
 
-/// A fresh store per test and per process, so a concurrent run of this suite cannot
-/// delete this one's rollback journal (SQLite `IOERR_DELETE_NOENT`).
+/// A fresh store per call and per process, so neither a concurrent run of this suite
+/// nor two tests sharing a helper (`first_sounding_block`) can delete another store's
+/// rollback journal (SQLite `IOERR_DELETE_NOENT`).
 fn scratch_store(name: &str) -> Store {
+    static CALLS: AtomicUsize = AtomicUsize::new(0);
+    let call = CALLS.fetch_add(1, Ordering::Relaxed);
     let path = PathBuf::from(env!("CARGO_TARGET_TMPDIR"))
-        .join(format!("live-{name}-{}.db", std::process::id()));
+        .join(format!("live-{name}-{}-{call}.db", std::process::id()));
     let _ = std::fs::remove_file(&path);
     Store::open(&path).expect("scratch store")
 }
