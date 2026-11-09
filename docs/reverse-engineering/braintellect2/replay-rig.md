@@ -23,8 +23,8 @@ the rig, the run steps and the result of replaying run 8.
 
 Changed only in the host quadlet `~/.config/containers/systemd/braintellect-offline.container`
 (on `neal@10.10.10.10`); the rig version is kept beside it as
-`braintellect-offline.container.rig-s48`. Neither passes the Bluetooth adapter through: the
-server's BlueZ is its only owner (`device-connection.md`, #38). Both publish noVNC on 8017
+`braintellect-offline.container.rig-s48`. Neither passes the Bluetooth adapter through
+(`device-connection.md`, #38). Both publish noVNC on 8017
 (8007 is bound by another service). The rig differs from the live quadlet only in:
 
 ```

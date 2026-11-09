@@ -122,18 +122,22 @@ impl Drop for Worker {
 }
 
 /// Open the RFCOMM link to the B-2 (at `known`, else found and paired). A refused or
-/// dropped connect looks like a stale bond, so BlueZ removes it and pairs again once
-/// (`bluetooth::connect_b2`).
+/// dropped connect, or a missing link key, looks like a stale bond, so BlueZ removes
+/// it and pairs again once (`bluetooth::connect_b2`). A refusal can also be a B-2
+/// whose link another host holds; the bond lost then is recovered by Pair and connect.
 fn open_b2(known: Option<&str>) -> Result<(String, RfcommStream), PairFailure> {
     let mut host = Bluez::connect().map_err(PairFailure::Unavailable)?;
     connect_b2(&mut host, known, |mac| {
         let stream = RfcommStream::connect(mac, DEFAULT_CHANNEL).map_err(|e| {
             let why = format!("cannot connect to {mac}: {e}");
+            // The kernel reports HCI "PIN or Key Missing" as `EBADE`.
+            let key_missing = e.raw_os_error() == Some(libc::EBADE);
             match e.kind() {
                 ErrorKind::ConnectionRefused
                 | ErrorKind::ConnectionReset
                 | ErrorKind::ConnectionAborted
                 | ErrorKind::PermissionDenied => OpenError::Authentication(why),
+                _ if key_missing => OpenError::Authentication(why),
                 _ => OpenError::Other(why),
             }
         })?;
@@ -151,8 +155,23 @@ fn check(
     stop: &AtomicBool,
     send: &dyn Fn(Event),
 ) -> Result<(), String> {
-    let (_, stream) = open_b2(Some(mac)).map_err(|failure| failure.message())?;
+    let Some(stream) = open_paired(mac, send)? else {
+        return Ok(());
+    };
     monitor(stream, properties, stop, send)
+}
+
+/// Open the link to the B-2 at `mac`. A lost bond is told as [`Event::PairFailed`],
+/// so the window forgets the address and offers Pair and connect, and gives `None`.
+fn open_paired(mac: &str, send: &dyn Fn(Event)) -> Result<Option<RfcommStream>, String> {
+    match open_b2(Some(mac)) {
+        Ok((_, stream)) => Ok(Some(stream)),
+        Err(failure @ PairFailure::BondLost(_)) => {
+            send(Event::PairFailed(failure));
+            Ok(None)
+        }
+        Err(failure) => Err(failure.message()),
+    }
 }
 
 fn monitor(
@@ -181,7 +200,9 @@ fn session(
     let store = Store::open(&storage::default_path().ok_or(storage::NO_DATA_DIR)?)
         .map_err(|e| e.to_string())?;
     let mut sink = AlsaSink::open(OUTPUT_RATE_HZ).map_err(|e| format!("no audio output: {e}"))?;
-    let (_, stream) = open_b2(Some(mac)).map_err(|failure| failure.message())?;
+    let Some(stream) = open_paired(mac, send)? else {
+        return Ok(());
+    };
     // The raw RX bytes, handshake included, go to the data directory: the B-2
     // emulator replays them into the original app (`capture.rs`).
     let data_dir = storage::default_data_dir().ok_or(storage::NO_DATA_DIR)?;

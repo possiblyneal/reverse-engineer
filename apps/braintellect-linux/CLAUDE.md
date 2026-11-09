@@ -230,14 +230,17 @@ those findings, it cites them.
   **Pair and connect** button
   (`UiModel::pair_and_connect`, shown while no address is known) finds the B-2, pairs it unless BlueZ
   already has, trusts it and then runs the sensor check. The flow runs over the `ui::bluetooth::BluetoothHost`
-  seam (`pair_b2`, tested in `tests/ui_state.rs` with a fake host: found, not found, refused, already
-  paired). Every RFCOMM connect (Pair and connect, Check sensors, Start) goes through
-  `bluetooth::connect_b2`: a connect refused, reset, aborted or denied (`OpenError::Authentication`)
-  looks like a stale bond, so it calls `BluetoothHost::remove` (`Adapter1.RemoveDevice`), finds, pairs
-  and trusts the B-2 again and connects once more; a second failure, or any other connect error,
-  is `PairFailure::ConnectFailed` for the Operator, never a loop (`device-connection.md`, "Connect
-  symptoms"). `ui::bluez::Bluez` is its only implementation, D-Bus via `zbus` (blocking), setting
-  `Adapter1.Pairable`, registering a NoInputNoOutput agent and stopping discovery. It is device code and
+  seam (tested in `tests/ui_state.rs` with a fake host: found, not found, refused, already
+  paired, stale bond). Every RFCOMM connect (Pair and connect, Check sensors, Start) goes through
+  `bluetooth::connect_b2`: a connect refused, reset, aborted, denied or missing its link key
+  (`OpenError::Authentication`) looks like a stale bond, so it calls `BluetoothHost::remove`
+  (`Adapter1.RemoveDevice`), finds, pairs and trusts the B-2 again and connects once more, never
+  a loop. Any other first failure is `PairFailure::ConnectFailed`; a failed retry is
+  `ConnectFailedAfterRepair`; a failed re-pair is `BondLost`, on which the window forgets the
+  address and offers Pair and connect again (`device-connection.md`, "Connect symptoms").
+  `ui::bluez::Bluez` is its only implementation, D-Bus via `zbus` (blocking): it sets
+  `Adapter1.Pairable` for the pairing and restores it, registers a NoInputNoOutput agent, and
+  finds a known device by address whatever its name. It is device code and
   not unit-tested. Without `--mac` the window uses the B-2 BlueZ has paired, else offers the button. The
   last host to pair owns the bond (inferred, `device-connection.md`).
 - **Live tests.** `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG

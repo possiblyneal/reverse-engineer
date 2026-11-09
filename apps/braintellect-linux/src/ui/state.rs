@@ -26,9 +26,11 @@ pub enum Event {
     Cancelled,
     Imported,
     ImportFailed(String),
-    /// The B-2 at this address is paired and trusted; the sensor check that
-    /// follows is running.
+    /// The B-2 at this address is paired and trusted; the worker goes on to the
+    /// sensor check, whose events end with [`Event::SensorCheckEnded`].
     Paired(String),
+    /// Pairing failed; after [`PairFailure::BondLost`] the host has no bond, so the
+    /// address is forgotten and Pair and connect is offered again.
     PairFailed(PairFailure),
 }
 
@@ -280,6 +282,9 @@ impl UiModel {
                 self.checking = true;
             }
             Event::PairFailed(failure) => {
+                if matches!(failure, PairFailure::BondLost(_)) {
+                    self.mac = None;
+                }
                 self.stage = Stage::Setup;
                 self.notice = failure.message();
             }

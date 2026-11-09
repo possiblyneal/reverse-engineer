@@ -4,9 +4,7 @@
 use braintellect_linux::acquisition::stream::StreamStats;
 use braintellect_linux::audio::tone::{Availability, Tone, DEFAULT_TONE, TONES};
 use braintellect_linux::live::{Health, Phase, SessionProperties, Snapshot};
-use braintellect_linux::ui::bluetooth::{
-    connect_b2, pair_b2, BluetoothHost, OpenError, PairFailure,
-};
+use braintellect_linux::ui::bluetooth::{connect_b2, BluetoothHost, OpenError, PairFailure};
 use braintellect_linux::ui::state::{Command, Event, Stage, UiModel};
 
 fn ready() -> UiModel {
@@ -514,7 +512,9 @@ fn a_second_failure_is_reported_and_not_retried() {
 
     assert_eq!(
         result,
-        Err(PairFailure::ConnectFailed("Connection refused".to_owned()))
+        Err(PairFailure::ConnectFailedAfterRepair(
+            "Connection refused".to_owned()
+        ))
     );
     assert_eq!(tries, 2, "one retry, no loop");
     assert_eq!(
@@ -562,19 +562,78 @@ fn a_connect_that_works_pairs_once_and_removes_nothing() {
 
 #[test]
 fn a_failed_reconnect_tells_the_operator_what_to_do() {
-    let message = PairFailure::ConnectFailed("Connection refused".to_owned()).message();
+    let message = PairFailure::ConnectFailedAfterRepair("Connection refused".to_owned()).message();
 
     assert!(message.contains("Connection refused"));
     assert!(message.contains("pairing it again"), "{message}");
 }
 
 #[test]
+fn a_first_connect_failure_does_not_claim_a_repair() {
+    let message = PairFailure::ConnectFailed("Host is down".to_owned()).message();
+
+    assert!(message.contains("Host is down"));
+    assert!(!message.contains("pairing it again"), "{message}");
+}
+
+#[test]
+fn a_stale_bond_that_cannot_be_paired_again_is_a_lost_bond() {
+    let mut host = FakeHost::new();
+    host.found = Ok(None);
+    let mut tries = 0;
+
+    let result = connect_b2(
+        &mut host,
+        Some(B2),
+        scripted_open(vec![stale()], &mut tries),
+    );
+
+    assert_eq!(
+        result,
+        Err(PairFailure::BondLost(Box::new(PairFailure::NotFound)))
+    );
+    assert_eq!(tries, 1);
+}
+
+#[test]
+fn a_lost_bond_message_reads_as_one_sentence_per_instruction() {
+    let message = PairFailure::BondLost(Box::new(PairFailure::NotFound)).message();
+
+    assert!(!message.contains(".."), "{message}");
+    assert!(message.ends_with("press Pair and connect."), "{message}");
+}
+
+#[test]
+fn a_lost_bond_forgets_the_address_and_offers_pairing() {
+    let mut model = UiModel::new(B2.to_owned(), Availability::Ready);
+
+    model.apply(Event::PairFailed(PairFailure::BondLost(Box::new(
+        PairFailure::NotFound,
+    ))));
+
+    assert_eq!(model.address(), None);
+    assert!(model.view().can_pair);
+}
+
+#[test]
+fn another_pair_failure_keeps_the_address() {
+    let mut model = UiModel::new(B2.to_owned(), Availability::Ready);
+
+    model.apply(Event::PairFailed(PairFailure::NotFound));
+
+    assert_eq!(model.address(), Some(B2));
+}
+
+/// Pair and connect with a link that opens at once: only the pairing is under test.
+fn pair(host: &mut FakeHost) -> Result<String, PairFailure> {
+    connect_b2(host, None, |_| Ok(())).map(|(address, ())| address)
+}
+
+#[test]
 fn a_found_b2_is_paired_trusted_and_reported() {
     let mut host = FakeHost::new();
 
-    let event = pair_b2(&mut host);
-
-    assert_eq!(event, Event::Paired(B2.to_owned()));
+    assert_eq!(pair(&mut host), Ok(B2.to_owned()));
     assert_eq!(
         host.calls,
         [
@@ -591,9 +650,7 @@ fn an_already_paired_b2_is_trusted_without_pairing_again() {
     let mut host = FakeHost::new();
     host.paired = Ok(Some(B2.to_owned()));
 
-    let event = pair_b2(&mut host);
-
-    assert_eq!(event, Event::Paired(B2.to_owned()));
+    assert_eq!(pair(&mut host), Ok(B2.to_owned()));
     assert_eq!(host.calls, ["paired", &format!("trust {B2}")]);
 }
 
@@ -602,7 +659,7 @@ fn no_b2_in_range_is_reported_as_not_found() {
     let mut host = FakeHost::new();
     host.found = Ok(None);
 
-    assert_eq!(pair_b2(&mut host), Event::PairFailed(PairFailure::NotFound));
+    assert_eq!(pair(&mut host), Err(PairFailure::NotFound));
     assert_eq!(host.calls, ["paired", "discover"]);
 }
 
@@ -612,8 +669,8 @@ fn a_refused_pairing_is_reported_with_the_reason_and_not_trusted() {
     host.pair = Err("Authentication Rejected".to_owned());
 
     assert_eq!(
-        pair_b2(&mut host),
-        Event::PairFailed(PairFailure::Refused("Authentication Rejected".to_owned()))
+        pair(&mut host),
+        Err(PairFailure::Refused("Authentication Rejected".to_owned()))
     );
     assert!(!host.calls.iter().any(|c| c.starts_with("trust")));
 }
@@ -624,7 +681,7 @@ fn a_bluetooth_host_that_cannot_be_reached_is_reported_as_unavailable() {
     host.paired = Err("no adapter".to_owned());
 
     assert_eq!(
-        pair_b2(&mut host),
-        Event::PairFailed(PairFailure::Unavailable("no adapter".to_owned()))
+        pair(&mut host),
+        Err(PairFailure::Unavailable("no adapter".to_owned()))
     );
 }

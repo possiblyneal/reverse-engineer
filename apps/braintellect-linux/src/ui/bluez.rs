@@ -34,6 +34,8 @@ trait Adapter {
     fn stop_discovery(&self) -> zbus::Result<()>;
     fn remove_device(&self, device: &ObjectPath<'_>) -> zbus::Result<()>;
     #[zbus(property)]
+    fn pairable(&self) -> zbus::Result<bool>;
+    #[zbus(property)]
     fn set_pairable(&self, value: bool) -> zbus::Result<()>;
 }
 
@@ -79,7 +81,10 @@ impl Agent {
 /// One `org.bluez.Device1` as BlueZ lists it.
 struct Device {
     path: OwnedObjectPath,
+    /// The adapter BlueZ lists the device under.
+    adapter: Option<OwnedObjectPath>,
     address: String,
+    name: String,
     paired: bool,
     /// BlueZ reports a signal strength only while discovery sees the device.
     in_range: bool,
@@ -114,6 +119,7 @@ impl Bluez {
             .map_err(text)
     }
 
+    /// The first adapter BlueZ lists: discovery and pairing assume the host has one.
     fn adapter_path(&self) -> Result<OwnedObjectPath, String> {
         self.objects()?
             .into_iter()
@@ -126,16 +132,16 @@ impl Bluez {
         AdapterProxy::new(&self.connection, self.adapter_path()?).map_err(text)
     }
 
-    /// The devices named [`DEVICE_NAME`].
-    fn b2_devices(&self) -> Result<Vec<Device>, String> {
+    fn devices(&self) -> Result<Vec<Device>, String> {
         Ok(self
             .objects()?
             .into_iter()
             .filter_map(|(path, interfaces)| {
                 let device = interfaces.get("org.bluez.Device1")?;
-                let name = string(device.get("Name")?)?;
-                (name == DEVICE_NAME).then(|| Device {
+                Some(Device {
+                    adapter: device.get("Adapter").and_then(object_path),
                     address: device.get("Address").and_then(string).unwrap_or_default(),
+                    name: device.get("Name").and_then(string).unwrap_or_default(),
                     paired: device.get("Paired").and_then(flag).unwrap_or(false),
                     in_range: device.contains_key("RSSI"),
                     path,
@@ -144,10 +150,20 @@ impl Bluez {
             .collect())
     }
 
-    fn device(&self, address: &str) -> Result<Device, String> {
-        self.b2_devices()?
-            .into_iter()
-            .find(|d| d.address == address)
+    /// The devices named [`DEVICE_NAME`].
+    fn b2_devices(&self) -> Result<Vec<Device>, String> {
+        let mut devices = self.devices()?;
+        devices.retain(|d| d.name == DEVICE_NAME);
+        Ok(devices)
+    }
+
+    /// The device at `address`, whatever name BlueZ has for it.
+    fn device(&self, address: &str) -> Result<Option<Device>, String> {
+        Ok(self.devices()?.into_iter().find(|d| d.address == address))
+    }
+
+    fn known_device(&self, address: &str) -> Result<Device, String> {
+        self.device(address)?
             .ok_or_else(|| format!("{address} is no longer known to BlueZ"))
     }
 
@@ -174,7 +190,6 @@ impl BluetoothHost for Bluez {
 
     fn discover(&mut self) -> Result<Option<String>, String> {
         let adapter = self.adapter()?;
-        adapter.set_pairable(true).map_err(text)?;
         adapter.start_discovery().map_err(text)?;
         let found = self.wait_for_b2();
         adapter.stop_discovery().map_err(text)?;
@@ -182,8 +197,10 @@ impl BluetoothHost for Bluez {
     }
 
     fn pair(&mut self, address: &str) -> Result<(), String> {
-        let device = self.device(address)?;
-        self.adapter()?.set_pairable(true).map_err(text)?;
+        let device = self.known_device(address)?;
+        let adapter = self.adapter()?;
+        let was_pairable = adapter.pairable().map_err(text)?;
+        adapter.set_pairable(true).map_err(text)?;
         let agent = ObjectPath::try_from(AGENT_PATH).map_err(text)?;
         self.connection
             .object_server()
@@ -207,29 +224,42 @@ impl BluetoothHost for Bluez {
             .connection
             .object_server()
             .remove::<Agent, _>(AGENT_PATH);
+        if !was_pairable {
+            let _ = adapter.set_pairable(false);
+        }
         result
     }
 
     fn trust(&mut self, address: &str) -> Result<(), String> {
-        let device = self.device(address)?;
+        let device = self.known_device(address)?;
         DeviceProxy::new(&self.connection, device.path)
             .and_then(|proxy| proxy.set_trusted(true))
             .map_err(text)
     }
 
     fn remove(&mut self, address: &str) -> Result<(), String> {
-        let device = self.device(address)?;
-        self.adapter()?.remove_device(&device.path).map_err(text)
+        let Some(device) = self.device(address)? else {
+            return Ok(());
+        };
+        let adapter = match device.adapter {
+            Some(path) => AdapterProxy::new(&self.connection, path).map_err(text)?,
+            None => self.adapter()?,
+        };
+        adapter.remove_device(&device.path).map_err(text)
     }
 }
 
-/// BlueZ's error text without the D-Bus wrapper's type name.
+/// A D-Bus error as the text the window shows.
 fn text(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
 
 fn string(value: &OwnedValue) -> Option<String> {
     String::try_from(value.clone()).ok()
+}
+
+fn object_path(value: &OwnedValue) -> Option<OwnedObjectPath> {
+    OwnedObjectPath::try_from(value.clone()).ok()
 }
 
 fn flag(value: &OwnedValue) -> Option<bool> {
