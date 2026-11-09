@@ -27,11 +27,11 @@ certification text, the battery date code and the white sticker areas are left o
 | J59 | white 2-pin plug housing, silkscreen `BATT` | battery connector | observed [`j59-batt-j58`] |
 | U60 | `12F1840` (Microchip PIC12F1840, SOIC-8) | 8-bit MCU on the power path | marking observed [`u60-q50-j56`, `u52-vbata-u60`]; role unresolved, see "U60" |
 | Q50 | Diodes `P2038US` (SOIC-8) = DMP2038USS | -20 V P-channel MOSFET, 38 mOhm at VGS -4.5 V | marking observed [`u60-q50-j56`, `q50-u61-j57`]; part per the Diodes DMP2038USS datasheet (marking table: `P2038US` = product type code); load switch on VBAT inferred from position and the `VBAT`/`VBATA` split |
-| Q51 | `N20` (SOT-23), beside the push button and R584 | small N-channel switch or digital transistor | unresolved: the code `N20` is reused by unrelated parts (candidates from a marking-code database: pre-biased NPN transistor, 20 V N-channel MOSFET, 2.0 V voltage supervisor) |
-| U53 | `B55Q` (SOT-23-5), by the `AVDD` and `VBATA` test points | probably the analog supply LDO | marking observed [`ads1294-z51-u53`]; unresolved: no exact marking-code match (nearest codes `8550` LDO/PNP, `B550` voltage supervisor); LDO role inferred from position and the L50/C53x filter |
-| U56 | `B55Q` (SOT-23-5), by the `3.3V` test point | probably the 3.3 V LDO | as U53 [`wt12-j61`] |
-| U58 | `PKKP` (SOT-23-5), by SWD and `RESET` | unidentified | observed [`stm32-swd-buttons`]; unresolved, no marking-code match; candidates: reset supervisor, ESD or load switch |
-| U61 | `KE87` (SOT-23-5), by J57 | probably the Li-ion charger | observed [`q50-u61-j57`]; unresolved, no marking-code match; charger role inferred from J57 plus the battery path |
+| Q51 | `N20` (SOT-23), beside the push button and R584 | probably the gate driver for Q50 | unresolved between two Diodes Inc. parts marked `N20`: DDTC124ECA (NPN digital transistor, 22 kΩ/22 kΩ built in; the usual P-MOSFET gate driver, more likely) or BSN20 (50 V N-MOSFET). Unpowered pin 1 to pin 2 reads about 22 kΩ one way and 44 kΩ the other for the DDTC124, open both ways for the BSN20; pin 3 to Q50's gate is expected |
+| U53 | `B55Q` (SOT-23-5), by the `AVDD` and `VBATA` test points | analog supply LDO | inferred: Microchip TC1015-3.3 (100 mA LDO with reference bypass), from its datasheet marking table (DS20001335, Table 6-1: `B5` = TC1015 3.3 V; `5` date code, `Q` lot). Pins 1 VIN, 2 GND, 3 SHDN, 4 bypass, 5 VOUT; pin 5 at 3.3 V and pin 1 at VBAT confirm it and rule out the 24AA16 EEPROM that shares `B5` [`ads1294-z51-u53`] |
+| U56 | `B55Q` (SOT-23-5), by the `3.3V` test point | 3.3 V digital LDO | as U53 [`wt12-j61`] |
+| U58 | `PKKP` (SOT-23-5), by SWD and `RESET` | probably the STM32 reset supervisor | inferred: ABLIC S-1000C25 (2.5 V detector, push-pull active-low output), from its datasheet marking table (`PKK` code, `P` lot). Pins 1 OUT, 2 VDD, 3 VSS, 4 and 5 NC; pin 2 at 3.3 V and pin 1 tied to NRST (the J54 reset pin) confirm it. A three-lead package would instead make it a Microchip MCP130-300 (`PK` + lot) [`stm32-swd-buttons`] |
+| U61 | `KE87` (SOT-23-5), by J57 | Li-ion charger | inferred: Microchip MCP73831-2 (4.20 V linear charger, tri-state STAT), from its datasheet marking table (DS20001984, §7.1: `KE` code, `87` traceability). Pins 1 STAT, 2 VSS, 3 VBAT, 4 VDD, 5 PROG; charge current = 1000 V / R(PROG). Pin 4 at USB 5 V and pin 3 at VBAT confirm it [`q50-u61-j57`] |
 | S51, S52, S53 | `PB-1`, `PB-2`, `RESET` tactile-switch footprints, switches not seen fitted | user buttons and MCU reset | silkscreen observed [`top-closeup-right`, `stm32-swd-buttons`] |
 | DS51, DS52 and a side light pipe | `LED-1`, `LED-2` | status LEDs | observed [`stm32-y51-j52`, `q50-u61-j57`] |
 | (side) | black push button by `GND`, solder tabs | power or user button | observed [`u60-q50-j56`]; function inferred |
@@ -199,12 +199,12 @@ D1 = 2.4 V and D2 = 2^23 - 1.
   a PC, treat the board as non-isolated: do not connect a wearer's electrodes while a PC ground
   or a USB cable is attached to the board.
 - Measure rails with a meter before attaching a debugger; `AGND` (J51) and `DGND` (J60) are
-  separate taps whose link on the board is not traced.
+  joined on the board.
 
 ## Unresolved
 
 - J50's pin-to-net map (meter, see "Tracing").
 - U60's pin use and role; J56 and J61 pinout; J52's function; what each jumper selects.
-- The SMD codes `N20`, `B55Q`, `KE87`, `PKKP` (no exact marking-code match).
+- Q51 `N20` (DDTC124ECA or BSN20); the pin readings that confirm U53/U56, U58 and U61.
 - Whether `sensorGain` 10 is an analog stage on this board.
 - Which `CONFIG1`/`CONFIG3`/`CHnSET` values U57 programs (needs an SPI capture on the ADS pads).
