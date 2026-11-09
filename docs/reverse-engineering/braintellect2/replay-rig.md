@@ -23,8 +23,8 @@ the rig, the run steps and the result of replaying run 8.
 
 Changed only in the host quadlet `~/.config/containers/systemd/braintellect-offline.container`
 (on `neal@10.10.10.10`); the rig version is kept beside it as
-`braintellect-offline.container.rig-s48`. Neither passes the Bluetooth adapter through: the
-server's BlueZ is its only owner (`device-connection.md`, #38). Both publish noVNC on 8017
+`braintellect-offline.container.rig-s48`. Neither passes the Bluetooth adapter through
+(`device-connection.md`, #38). Both publish noVNC on 8017
 (8007 is bound by another service). The rig differs from the live quadlet only in:
 
 ```
@@ -265,6 +265,24 @@ next to the existing tag 30 (raw block and final spectrum): 388 calls over 97 bl
   NTFS disk (`C:\cap`), staged and read back with `ntfs-3g` after `ntfsfix -d` while the VM was
   off.
 
+## Result: worn captures and the overlay state (#61, 2026-11-08)
+
+Two worn-B-2 captures replayed (`hook` set `g/s61.js`: tag 12 consumed sample, tag 32 Head2D
+level update, tag 41 overlay state, tag 42 debounce tick `[42, n, ts, this, elapsed, delay]`
+from the overlay's `stateChangeDelay` check), reduced by `scripts/worn-sensor-extract.py`;
+findings in `sensor-status.md`, "Observed: worn replays".
+
+- Standard unattended step: a Startup-folder launch file starts the app under `frida-inject -f`
+  and the clicker, with the hook files and the log on the guest's NTFS disk, staged and read
+  back with `ntfs-3g` after `ntfsfix -d` while the VM is off. Use it for every run.
+- The emulator does not retry its socket connect: start it after the socket is forwarded and
+  before the app starts, or the run connects to nothing.
+- The `QWidget::setVisible` hook never fires, so the overlay state needs instruction-site
+  hooks: the overlay show sites `0x568f29` (red), `0x568f59` (green) and `0x569cc8`
+  (offline), and the debounce elapsed check at `0x568f21`.
+- The original's host skips some received frames; replays feed the clone only the consumed
+  frames (`audio-feedback.md`, #33 and #55).
+
 ## Host CPU clock: a replay runs at the stream rate only with turbo on (2026-11-07)
 
 The original fell to about 1.5 % of the stream rate in replays run between 22:00 and 07:00
@@ -294,3 +312,16 @@ host's clock, not the guest, the hooks or Defender.
 - Fix: run step 0 (turbo on for the run). 2.3 GHz also held the rate, so capping the night
   window with `max_perf_pct=60` instead of `no_turbo=1` would keep both night-time rigs and
   the schedule's "base clock" intent; that host change is not made.
+
+## Result: run 8's no-wearer stream and the overlay state (#57, 2026-11-08)
+
+Run 8's raw stream (`rx8.raw`: 24 bytes of partial read, then the handshake replies, then frames)
+replayed with the #61 rig and hook set (`g/s61.js`) for the 100 s the clicker streams, no Play:
+97 blocks logged. `scripts/worn-sensor-extract.py` reduces it (the handshake starts at the first
+reply marker; a no-wearer stream needs `--min-count 50`), `tests/replay_s61.rs`
+compares; findings in `sensor-status.md`, "Observed: run 8 no-wearer overlay state".
+
+- Run steps as #61. The rig needs the serial-chardev quadlet (`rig-s48`) in place of the live
+  one; keep the live one aside and restore it after the run.
+- The tick `Date.now()` stamps step by 15.6 ms (62.5 ms ticks); a debounce that reaches its delay
+  in the stamp of the next block's update is a thread race (`ties.txt`).

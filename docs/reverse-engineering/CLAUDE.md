@@ -34,3 +34,5 @@ and the target index live here.
 
 - `braintellect2/CLAUDE.md` — BRAINtellect2 / B-2 findings (wire protocol, device
   connection, audio feedback, session storage, sensor status) and the HIRREM literature corpus.
+- `roku-rc-el1/CLAUDE.md` — Roku RC-EL1 voice remote hardware (RTL8721DF board, P1 debug header,
+  measured nets) and the firmware-dump plan for remapping the Disney+ button.

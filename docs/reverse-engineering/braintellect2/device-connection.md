@@ -175,13 +175,13 @@ for ~2m41s with zero bytes written and no sleep. So once the app opens and holds
 the COM port, no separate keepalive/ping is needed; the sustained open prevents
 the idle-sleep drop that looks like a connection failure.
 
-## Inferred: one Bluetooth adapter must have one owner
+## Inferred: the last host to pair owns the bond
 
 Observed: every stack that uses the server's USB adapter (Broadcom BCM20702A0, `0a5c:21e8`)
 shows the B-2 the same Bluetooth address: the host's BlueZ and any Windows guest it is
 passed through to. Each stack keeps its own bond (link key). Inferred: the B-2 keeps only
 the key from the latest pairing, so pairing on one stack makes every other stack's key
-stale, and its connect fails until it re-pairs. Whether the B-2 can hold more than one bond
+stale, and its connect fails until it re-pairs: the last host to pair owns the bond. Whether the B-2 can hold more than one bond
 is not established.
 
 Evidence, none of it conclusive:
@@ -198,13 +198,20 @@ Evidence, none of it conclusive:
   the guest's. A guest connect on its old key was not tried: the guest no longer has the
   adapter, and re-pairing there would replace BlueZ's bond.
 
-## Observed: the server's BlueZ owns the adapter
+## Inferred: any host's BlueZ may own the bond
 
-The adapter's only owner is the server's BlueZ, for the clone (`apps/braintellect-linux`).
-No guest passes it through: neither the homelab `windows` quadlet (homelab#118) nor
-`braintellect-offline` (`replay-rig.md`). The original reads recorded B-2 streams through
-the replay rig, never the live B-2. Pair the B-2 only in BlueZ (`btmgmt bondable on` first,
-or the bond is not kept).
+Inferred (above): any host may own the bond, the server's BlueZ or a laptop running the clone
+(`apps/braintellect-linux`), and the last to pair wins; pairing on a laptop makes the server's
+bond stale, and re-pairing the server later takes it back. No guest passes the adapter through:
+neither the homelab `windows` quadlet (homelab#118) nor `braintellect-offline` (`replay-rig.md`).
+The original reads recorded B-2 streams through the replay rig, never the live B-2.
+
+The clone's window pairs from **Pair and connect** over BlueZ's D-Bus API: it discovers the
+device named `B-2`, sets `Adapter1.Pairable` for the pairing (the D-Bus equivalent of
+`btmgmt bondable on`, without root, or the bond is not kept) and restores it after, pairs
+through a NoInputNoOutput agent and trusts the device. A B-2 already paired in that BlueZ
+connects without re-pairing. Not yet run against a live B-2: the flow is tested only with a
+fake host.
 
 Observed 2026-11-06, with no re-pairing (btmon on the host): the B-2 connected on the stored
 BlueZ bond after a host reboot (paired 19:21 per btmon, booted 21:25, connected 22:34) and
@@ -246,6 +253,13 @@ With BlueZ as the owner, `0x17` has not been seen; the matching reset would be
 
 | Symptom | Cause | Fix |
 |---|---|---|
-| Connect fails after the B-2 was paired on another stack sharing the adapter (a guest, or the host's BlueZ) | Inferred: that pairing replaced the B-2's key, so this stack's bond is stale | Re-pair in the server's BlueZ (`btmgmt bondable on` first) and take the adapter away from any guest; expected, not tested |
+| Connect fails after the B-2 was paired on another stack or host (a guest, or another machine's BlueZ) | Inferred: that pairing replaced the B-2's key, so this stack's bond is stale | Pair again on the host you are using and take the adapter away from any guest; the clone re-pairs once by itself (below) |
 | Pairing refused within ~100 ms, `Disconnection_Complete` reason `0x17`, no `Link_Key_Request` | The adapter holds an authentication back-off | Reset the adapter (previous section) |
 | `Create_Connection` ends `PageTimeout` (`0x04`) | The B-2 is asleep or off (observed ~15 min after pairing with no open port) | Wake or switch on the B-2 |
+
+The clone re-pairs on its own when a connect is refused, reset, aborted or denied, or fails
+with HCI "PIN or Key Missing" (`EBADE`): it removes the local bond (`Adapter1.RemoveDevice`),
+rediscovers, pairs, trusts and connects once more, and reports a second failure instead of
+looping. If pairing again fails, the window forgets the address and offers **Pair and connect**.
+A refusal can also come from a B-2 whose link another host holds, which costs this host its
+bond until the next Pair and connect. Tested with a fake host only, not against a real stale bond.

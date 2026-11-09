@@ -39,8 +39,8 @@ those findings, it cites them.
   output, `tmp/s55/replay`, `S55_REPLAY_DIR`).
 - **Transport boundary.** Protocol logic runs over `Read + Write`; only
   `rfcomm::RfcommStream` touches Bluetooth, and CI never opens it. A live run
-  (`scripts/run braintellect-linux -- ui --mac <MAC>`, or `-- --mac <MAC>` for a raw frame dump) uses the server's BlueZ, the adapter's only
-  owner (`device-connection.md`, #38), and is manual.
+  (`scripts/run braintellect-linux -- ui`, or `-- --mac <MAC>` for a raw frame dump) uses the running host's BlueZ, which owns the
+  bond if it paired last (`device-connection.md`, #38), and is manual.
 - **Do not copy the original's bugs outside parity.** Reproduce intended behavior, not
   defects. Known defects to avoid: the `SoundManager` null-`"Wave"` dereference when no
   audio endpoint exists, and the validation-induced null cascades where the
@@ -196,27 +196,53 @@ those findings, it cites them.
 - **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
   `stateChangeDelay` debounce and the engine lifecycle, off while a session connects or runs
   (`ui::state::Event::Sensor` carries it). `sensor::SensorMonitor` is the pre-session feed
-  (512-sample FFT blocks per channel, five band levels, then the evaluator). `live::monitor`
-  runs it on an opened B-2 before a session (`ui::worker::Worker::spawn_check`, the "Check
-  sensors" button, `Command::CheckSensors`), needs no tone, and returns why it could not run or
-  broke off, which ends the check with that reason in the notice. The FFT stage is
+  (per channel 500 samples plus 12 zeros into the 512-point FFT, five band levels, ground
+  ceiling -10 dB; the evaluator runs on a `TICK_MS` (60 ms) display tick, not per block, so the
+  debounce and the pre-block "Adjust Fit" follow the clock). `live::monitor`
+  runs it on an opened B-2 before a session with the LOD Source (45 Hz low-pass off, 25 Hz
+  band-stop on, `SessionProperties::lod_source`), needs no tone, and returns why it could not
+  run or broke off, which ends the check with that reason in the notice.
+  `ui::worker::Worker::spawn_check` (the "Check sensors" button, `Command::CheckSensors`)
+  starts it. The FFT stage is
   `feedback::DspFft` (`DSPFFT::process`: f32 Bartlett, `RealFft512`, the `rsqrtps` magnitude of
   `ipp_magnitude.rs`, the x87 scale); the spectra, levels and evaluator fault flag are all
   replay-asserted bit exact against the original's sensors-off capture (`sensor-status.md`).
   The `rsqrtps` table is Intel's. Tests: `tests/parity_sensor_status.rs`
   (synthetic fault tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`),
   `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the
-  in-memory stream).
+  in-memory stream). The ignored `tests/replay_s61.rs` holds both worn captures (good fit, T4
+  lifted) and run 8's no-wearer stream (#57) to the original's per-block levels (bit exact) and
+  overlay states over the frames the original consumed (`S61_GOODFIT_CAPTURE`,
+  `S61_T4OFF_CAPTURE`, `S61_REPLAY_DIR`, `S57_RUN8_CAPTURE`, `S57_REPLAY_DIR` from
+  `scripts/worn-sensor-extract.py`; `sensor-status.md`, "Observed: worn replays" and "Observed:
+  run 8 no-wearer overlay state"). A fault that reaches the debounce delay in the clock reading
+  of the next block's update is a host-timing race and its state is not compared (`ties.txt`). The
+  original did not consume a few frames (cause inferred as host timing; no counter gap or
+  validation failure marks them), so the clone cannot match those.
 - **Session UI** (`src/ui/`). `ui::state::UiModel` is the pure model (actions and events in,
   `View` out), tested in `tests/ui_state.rs`; `ui::app` only draws it, and `ui::worker` is the
   device glue (RFCOMM with a 1 s read timeout, ALSA, the default store, the chosen tone);
   neither is unit-tested. The window offers the ADR 0004 import when the default tone
   (`DEFAULT_TONE`, found by key) is not imported. Entry point:
-  `scripts/run braintellect-linux -- ui --mac <MAC>`; the window needs a display and loads
+  `scripts/run braintellect-linux -- ui` (`--mac <MAC>` overrides the address); the window needs a display and loads
   X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages). On
-  Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`; the
-  B-2 must be paired, bonded and trusted in BlueZ first (`btmgmt bondable on` before pairing, or
-  the bond is not kept).
+  Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`. The
+  **Pair and connect** button
+  (`UiModel::pair_and_connect`, shown while no address is known) finds the B-2, pairs it unless BlueZ
+  already has, trusts it and then runs the sensor check. The flow runs over the `ui::bluetooth::BluetoothHost`
+  seam (tested in `tests/ui_state.rs` with a fake host: found, not found, refused, already
+  paired, stale bond). Every RFCOMM connect (Pair and connect, Check sensors, Start) goes through
+  `bluetooth::connect_b2`: a connect refused, reset, aborted, denied or missing its link key
+  (`OpenError::Authentication`) looks like a stale bond, so it calls `BluetoothHost::remove`
+  (`Adapter1.RemoveDevice`), finds, pairs and trusts the B-2 again and connects once more, never
+  a loop. Any other first failure is `PairFailure::ConnectFailed`; a failed retry is
+  `ConnectFailedAfterRepair`; a failed re-pair is `BondLost`, on which the window forgets the
+  address and offers Pair and connect again (`device-connection.md`, "Connect symptoms").
+  `ui::bluez::Bluez` is its only implementation, D-Bus via `zbus` (blocking): it sets
+  `Adapter1.Pairable` for the pairing and restores it, registers a NoInputNoOutput agent, and
+  finds a known device by address whatever its name. It is device code and
+  not unit-tested. Without `--mac` the window uses the B-2 BlueZ has paired, else offers the button. The
+  last host to pair owns the bond (inferred, `device-connection.md`).
 - **Live tests.** `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG
   framed by `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank. The
   ignored `tests/replay_live.rs` reads the #33 capture back through `live::run`
