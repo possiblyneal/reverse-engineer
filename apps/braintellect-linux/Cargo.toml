@@ -13,3 +13,4 @@ path = "src/lib.rs"
 eframe = { version = "0.37", default-features = false, features = ["glow", "x11", "wayland", "default_fonts"] }
 libc = "0.2"
 rusqlite = { version = "0.41.1", features = ["bundled"] }
+zbus = { version = "5", default-features = false, features = ["blocking-api", "async-io"] }
