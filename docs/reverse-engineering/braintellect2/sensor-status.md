@@ -294,6 +294,38 @@ inputs outside Git).
   "Ready" there. Only the tick-first outcome is detectable from the log (the tick logs the
   delay reached); block 31, the update-first outcome, is compared and matches.
 
+## Observed: fixed-mode fit features (2026-11-10, #77)
+
+The clone's fixed mode shows each sensor as good or not touching (`src/fit.rs`), set from the
+eight worn captures of #61 and #76 (90 s each, 89 one-second blocks, no counter gap or resync):
+good fit (2026-11-08 and 2026-11-10), T3-T4 shorted, and FP1, FP2, T3 and T4 each lifted (T4
+on both days). It does not use the overlay's fault tests above, which read "Ready" with T4
+lifted. Features were measured per block on the LOD Source output (`lod_source`, the same 500
+samples the overlay's blocks take), means removed.
+
+- Rule: per pair (FP1/FP2, T3/T4), when the two signals' correlation over the block is
+  negative, the sensor of the pair with the lower RMS is not touching; otherwise both are good.
+- Correlation, every block from block 0: a pair with a lifted sensor -0.99 to -0.25 (-0.25 is
+  one block of the 2026-11-10 T4 lift; the other captures stay at or below -0.55);
+  a pair with both sensors on, shorted included, 0.59 to 1.00. Zero is the threshold; its
+  margins are 0.25 and 0.59.
+- RMS, every block of the lifted captures: the lifted sensor's over its partner's 0.21 to
+  0.67. With both on, FP1 runs 2.5 to 4.0 times FP2 (0.87 to 1.80 shorted) and T3 0.89 to 1.89
+  times T4, so the RMS alone does not separate a lift; it only picks which sensor of a negatively correlated pair.
+- Signal level: the Source RMS of a worn sensor ranges from about 120 µV to 13 mV per block
+  across the captures and days, so no absolute level is used.
+- Result: every capture classifies correctly in every block (`tests/replay_s77.rs`, ignored,
+  captures outside Git): the lifted sensor not touching, the other three good; the good fits
+  and the T3-T4 short good on all four.
+- Inferred: a touching sensor and its partner carry the same mains pickup in phase; a lifted
+  one picks up mains of opposite phase at a lower level. Why the phase inverts was not
+  measured.
+- Not covered: a shorted pair reads good (both sensors touch; shorted is deferred until more
+  short recordings exist; the one short's T3-T4 difference, over the pair's mean RMS, reaches
+  0.023 against the good fits' lowest 0.025). Run 8's no-wearer stream, with no sensor on, reads good on all four
+  (correlation 0.69 to 1.00): the rule finds one lifted sensor of a worn pair, not an unworn
+  headset or both sensors of a pair off, which were not captured.
+
 ## Unresolved
 
 - Whether a ground item sets an `errorThreshold` in the design (the -10 dB ceiling is

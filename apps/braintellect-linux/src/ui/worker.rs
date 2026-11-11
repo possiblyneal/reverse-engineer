@@ -183,8 +183,10 @@ fn monitor(
     let session = Session::open(stream, live::stream_config()?).map_err(|e| e.to_string())?;
     let origin = Instant::now();
     let mut clock = move || i64::try_from(origin.elapsed().as_millis()).unwrap_or(i64::MAX);
-    live::monitor(session, properties, stop, &mut clock, &mut |status| {
-        send(Event::Sensor(status));
+    live::monitor(session, properties, stop, &mut clock, &mut |report| {
+        if let Some(fit) = report.fit {
+            send(Event::Sensor(fit));
+        }
     })
 }
 

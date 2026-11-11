@@ -195,7 +195,7 @@ those findings, it cites them.
   design, so the session window does not offer it.
 - **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
   `stateChangeDelay` debounce and the engine lifecycle, off while a session connects or runs
-  (`ui::state::Event::Sensor` carries it). `sensor::SensorMonitor` is the pre-session feed
+  (in `live::SensorReport::overlay`; the window no longer shows it). `sensor::SensorMonitor` is the pre-session feed
   (per channel 500 samples plus 12 zeros into the 512-point FFT, five band levels, ground
   ceiling -10 dB; the evaluator runs on a `TICK_MS` (60 ms) display tick, not per block, so the
   debounce and the pre-block "Adjust Fit" follow the clock). `live::monitor`
@@ -219,6 +219,14 @@ those findings, it cites them.
   of the next block's update is a host-timing race and its state is not compared (`ties.txt`). The
   original did not consume a few frames (cause inferred as host timing; no counter gap or
   validation failure marks them), so the clone cannot match those.
+- **Fixed-mode fit** (`src/fit.rs`, #77): `fit::FitMonitor` judges each sensor good or not
+  touching once per 500-sample block of the LOD Source output: per pair, a negative correlation
+  marks the lower-RMS sensor not touching. Set from the eight worn captures, not the overlay's
+  fault tests (`sensor-status.md`, "Observed: fixed-mode fit features"); it does not detect a
+  short or an unworn headset. `live::monitor` reports it as `SensorReport::fit` beside the
+  overlay, and the window's "Sensors:" line shows it (`ui::state::Event::Sensor`). Tests:
+  `tests/fit_status.rs` (synthetic good and lifted), the ignored `tests/replay_s77.rs` (every
+  report over the eight captures, `S77_CAPTURE_DIR`, default `tmp/s61/`).
 - **Session UI** (`src/ui/`). `ui::state::UiModel` is the pure model (actions and events in,
   `View` out), tested in `tests/ui_state.rs`; `ui::app` only draws it, and `ui::worker` is the
   device glue (RFCOMM with a 1 s read timeout, ALSA, the default store, the chosen tone);

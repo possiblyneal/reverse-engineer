@@ -3,8 +3,8 @@
 use std::path::PathBuf;
 
 use crate::audio::tone::{self, Availability, Tone, TONES};
+use crate::fit::SensorFit;
 use crate::live::{Health, Phase, SessionProperties, Snapshot};
-use crate::sensor::SensorStatus;
 
 use super::bluetooth::PairFailure;
 
@@ -16,8 +16,8 @@ const CHANNEL_LABELS: [&str; 4] = ["FP1", "FP2", "T3", "T4"];
 pub enum Event {
     /// The running session's state, including its final state.
     Update(Snapshot),
-    /// The sensor status the engine reports while no session runs.
-    Sensor(SensorStatus),
+    /// The fit of FP1, FP2, T3 and T4 the engine reports while no session runs.
+    Sensor([SensorFit; 4]),
     /// The sensor check ended: on a stop (`None`) or because it could not run.
     SensorCheckEnded(Option<String>),
     /// The session could not start, and why.
@@ -98,7 +98,7 @@ pub struct View {
     /// The latest outcome or problem; empty when there is none.
     pub notice: String,
     pub connection: String,
-    /// "Ready", "Adjust Fit" or "Not Available".
+    /// Each sensor's fit ("FP1 good, FP2 not touching, ..."), or "Not Available".
     pub sensor: String,
     pub channels: Vec<ChannelView>,
     pub frames: String,
@@ -119,7 +119,7 @@ pub struct UiModel {
     pub properties: SessionProperties,
     stage: Stage,
     snapshot: Option<Snapshot>,
-    sensor: SensorStatus,
+    sensor: Option<[SensorFit; 4]>,
     checking: bool,
     notice: String,
 }
@@ -151,7 +151,7 @@ impl UiModel {
             properties: SessionProperties::default(),
             stage: Stage::Setup,
             snapshot: None,
-            sensor: SensorStatus::NotAvailable,
+            sensor: None,
             checking: false,
             notice,
         }
@@ -258,10 +258,10 @@ impl UiModel {
                 }
                 self.snapshot = Some(snapshot);
             }
-            Event::Sensor(status) => self.sensor = status,
+            Event::Sensor(fit) => self.sensor = Some(fit),
             Event::SensorCheckEnded(why) => {
                 self.checking = false;
-                self.sensor = SensorStatus::NotAvailable;
+                self.sensor = None;
                 if let Some(why) = why {
                     self.notice = format!("Sensor check stopped: {why}");
                 }
@@ -319,7 +319,7 @@ impl UiModel {
                 .collect(),
             notice: self.notice.clone(),
             connection: self.connection(),
-            sensor: self.sensor_label().to_owned(),
+            sensor: self.sensor_label(),
             channels: CHANNEL_LABELS
                 .iter()
                 .enumerate()
@@ -353,12 +353,15 @@ impl UiModel {
     }
 
     /// The engine is off while a session connects or runs (`sensor-status.md`).
-    fn sensor_label(&self) -> &'static str {
-        match self.stage {
-            Stage::Setup | Stage::Done => self.sensor.label(),
-            Stage::Pairing | Stage::Connecting | Stage::Running => {
-                SensorStatus::NotAvailable.label()
-            }
+    fn sensor_label(&self) -> String {
+        match (&self.stage, self.sensor) {
+            (Stage::Setup | Stage::Done, Some(fit)) => CHANNEL_LABELS
+                .iter()
+                .zip(fit)
+                .map(|(label, fit)| format!("{label} {}", fit.label()))
+                .collect::<Vec<_>>()
+                .join(", "),
+            _ => "Not Available".to_owned(),
         }
     }
 
