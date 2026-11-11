@@ -98,6 +98,85 @@ fn the_monitor_ends_when_stopped() {
     assert_eq!(seen, 1);
 }
 
+/// The loss figure at each tick of a check over the fixture frames, keeping those `keep` takes.
+fn lost_percents(keep: fn(usize) -> bool) -> Vec<Option<u8>> {
+    let rows: Vec<[i32; 8]> = fixtures::run8_eeg().into_iter().take(FRAMES).collect();
+    let frames = frames_from_counts(&rows)
+        .into_iter()
+        .enumerate()
+        .filter_map(|(n, frame)| keep(n).then_some(frame))
+        .collect();
+    let transport = ReplayTransport::new(fixtures::wire(), frames);
+    let session =
+        Session::open(transport, live::stream_config().expect("config")).expect("handshake");
+    let mut now = 0;
+    let mut clock = || {
+        now += FRAME_MS;
+        now
+    };
+    let mut seen = Vec::new();
+    live::monitor(
+        session,
+        &SessionProperties::default(),
+        &AtomicBool::new(false),
+        &mut clock,
+        &mut |r| {
+            seen.push(r.lost_percent);
+        },
+    )
+    .expect("the stream ends cleanly");
+    seen
+}
+
+#[test]
+fn the_monitor_reports_no_loss_on_a_clean_link() {
+    let seen = lost_percents(|_| true);
+    let window_ticks = (live::LOSS_WINDOW_MS / braintellect_linux::sensor::TICK_MS) as usize;
+    assert!(
+        seen[..window_ticks - 1].iter().all(Option::is_none),
+        "no figure before a window ends"
+    );
+    assert!(
+        seen[window_ticks + 1..].iter().all(|p| *p == Some(0)),
+        "{seen:?}"
+    );
+}
+
+#[test]
+fn the_monitor_reports_the_share_of_frames_the_link_dropped() {
+    // Drop two frames of every five: 40%, as with a host running Bluetooth discovery.
+    let seen = lost_percents(|n| n % 5 < 3);
+    let last = seen.last().copied().flatten();
+    assert_eq!(last, Some(40), "{seen:?}");
+}
+
+#[test]
+fn a_link_that_goes_quiet_reports_all_frames_lost() {
+    let stop = AtomicBool::new(false);
+    let now = std::cell::Cell::new(0);
+    let mut clock = || {
+        now.set(now.get() + FRAME_MS);
+        now.get()
+    };
+    let mut last = None;
+    // The fixture's 30 s of frames, then a quiet link for two more loss windows.
+    let quiet_until = FRAMES as i64 * FRAME_MS + 2 * live::LOSS_WINDOW_MS;
+    live::monitor(
+        session_over(ReplayTransport::stalling),
+        &SessionProperties::default(),
+        &stop,
+        &mut clock,
+        &mut |r| {
+            last = r.lost_percent;
+            if now.get() >= quiet_until {
+                stop.store(true, Ordering::Relaxed);
+            }
+        },
+    )
+    .expect("a stop is not a failure");
+    assert_eq!(last, Some(100));
+}
+
 #[test]
 fn a_link_that_fails_mid_check_ends_it_with_the_reason() {
     let stop = AtomicBool::new(false);

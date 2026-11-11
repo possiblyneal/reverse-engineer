@@ -187,6 +187,9 @@ fn monitor(
         if let Some(fit) = report.fit {
             send(Event::Sensor(fit));
         }
+        if let Some(percent) = report.lost_percent {
+            send(Event::LinkLoss(percent));
+        }
     })
 }
 

@@ -136,9 +136,8 @@ impl eframe::App for App {
         let mut command = None;
         egui::CentralPanel::default().show(ui, |ui| {
             ui.heading("Neurofeedback session");
-            if view.address.is_empty() {
-                ui.label("B-2: not paired yet");
-            } else {
+            ui.label(egui::RichText::new(&view.connection).size(22.0).strong());
+            if !view.address.is_empty() {
                 ui.label(format!("B-2: {}", view.address));
             }
             ui.separator();
@@ -219,9 +218,11 @@ impl eframe::App for App {
             ui.separator();
 
             ui.horizontal(|ui| {
-                if ui
-                    .add_enabled(view.can_pair, egui::Button::new("Pair and connect"))
-                    .clicked()
+                // Once a B-2 is known the status line says so; the button is only for finding one.
+                if view.address.is_empty()
+                    && ui
+                        .add_enabled(view.can_pair, egui::Button::new("Pair and connect"))
+                        .clicked()
                 {
                     command = self.model.pair_and_connect();
                 }
@@ -252,7 +253,6 @@ impl eframe::App for App {
             });
             ui.separator();
 
-            ui.label(&view.connection);
             ui.label(format!("Sensors: {}", view.sensor));
             egui::Grid::new("channels").show(ui, |ui| {
                 for channel in &view.channels {

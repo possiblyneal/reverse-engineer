@@ -19,6 +19,8 @@ pub enum Event {
     Update(Snapshot),
     /// The fit of FP1, FP2, T3 and T4 the engine reports while no session runs.
     Sensor([SensorFit; CHANNELS]),
+    /// Percent of frames the link lost over the sensor check's last loss window.
+    LinkLoss(u8),
     /// The sensor check ended: on a stop (`None`) or because it could not run.
     SensorCheckEnded(Option<String>),
     /// The session could not start, and why.
@@ -122,6 +124,8 @@ pub struct UiModel {
     snapshot: Option<Snapshot>,
     sensor: Option<[SensorFit; CHANNELS]>,
     checking: bool,
+    /// The sensor check's latest frame loss, in percent.
+    lost_percent: Option<u8>,
     notice: String,
 }
 
@@ -154,6 +158,7 @@ impl UiModel {
             snapshot: None,
             sensor: None,
             checking: false,
+            lost_percent: None,
             notice,
         }
     }
@@ -260,9 +265,11 @@ impl UiModel {
                 self.snapshot = Some(snapshot);
             }
             Event::Sensor(fit) => self.sensor = Some(fit),
+            Event::LinkLoss(percent) => self.lost_percent = Some(percent),
             Event::SensorCheckEnded(why) => {
                 self.checking = false;
                 self.sensor = None;
+                self.lost_percent = None;
                 if let Some(why) = why {
                     self.notice = format!("Sensor check stopped: {why}");
                 }
@@ -396,6 +403,10 @@ impl UiModel {
     }
 
     fn connection(&self) -> String {
+        // A link dropping frames garbles the feedback; say so before a session starts.
+        if let Some(percent) = self.losing() {
+            return format!("Bluetooth link losing {percent}% of data");
+        }
         match (&self.stage, self.snapshot.as_ref().map(|s| s.health)) {
             (Stage::Pairing, _) => "Looking for the B-2 and pairing".to_owned(),
             (Stage::Connecting, _) => self.connecting(),
@@ -407,14 +418,28 @@ impl UiModel {
                 "Connected, checking sensors".to_owned()
             }
             (Stage::Setup | Stage::Done, _) if self.checking => self.connecting(),
-            (Stage::Setup | Stage::Done, _) => "Not connected".to_owned(),
+            (Stage::Setup | Stage::Done, _) if self.mac.is_some() => {
+                "B-2 paired, ready to connect".to_owned()
+            }
+            (Stage::Setup | Stage::Done, _) => "No B-2 paired".to_owned(),
         }
+    }
+
+    /// The sensor check's frame loss, when one is under way and losing enough to warn about.
+    fn losing(&self) -> Option<u8> {
+        let checking = self.checking && matches!(self.stage, Stage::Setup | Stage::Done);
+        self.lost_percent
+            .filter(|p| checking && *p >= LOSS_WARN_PERCENT)
     }
 
     fn connecting(&self) -> String {
         format!("Connecting to {}", self.mac.as_deref().unwrap_or_default())
     }
 }
+
+/// The frame loss, in percent, at which the sensor check warns. A clean link loses none
+/// (3222 of 3222 frames on the laptop); a host running Bluetooth discovery lost 39 to 46%.
+const LOSS_WARN_PERCENT: u8 = 1;
 
 fn plural(n: u64, noun: &str) -> String {
     format!("{n} {noun}{}", if n == 1 { "" } else { "s" })

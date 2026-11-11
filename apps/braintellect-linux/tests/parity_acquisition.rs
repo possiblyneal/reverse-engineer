@@ -102,6 +102,17 @@ fn dropped_frame_counts_a_packet_counter_error() {
     assert_eq!(frames.len(), fixtures::expected_microvolts().len() - 1);
     assert_eq!(stats.packet_counter_errors, 1);
     assert_eq!(stats.sample_validation_errors, 0);
+    assert_eq!(stats.lost_frames, 1);
+}
+
+#[test]
+fn a_run_of_dropped_frames_counts_one_counter_error_and_every_frame_lost() {
+    let mut bytes = stream_bytes();
+    bytes.drain(32 * 5..32 * 8); // lose the frames with counters 5, 6 and 7
+    let (frames, stats) = replay(vec![bytes]);
+    assert_eq!(frames.len(), fixtures::expected_microvolts().len() - 3);
+    assert_eq!(stats.packet_counter_errors, 1);
+    assert_eq!(stats.lost_frames, 3);
 }
 
 #[test]
@@ -119,6 +130,25 @@ fn bad_sample_marker_bits_count_a_validation_error_and_drop_the_frame() {
         "invalid frame dropped"
     );
     assert_eq!(frames.len(), fixtures::expected_microvolts().len() - 1);
+    assert_eq!(
+        stats.lost_frames, 1,
+        "a dropped frame is lost to the consumer"
+    );
+}
+
+#[test]
+fn a_backward_counter_step_is_a_resync_not_a_loss() {
+    let mut bytes = stream_bytes();
+    bytes[32 * 5 + 4..32 * 5 + 6].copy_from_slice(&2u16.to_be_bytes()); // 4 is followed by 2
+    let (_, stats) = replay(vec![bytes]);
+    assert_eq!(
+        stats.packet_counter_errors, 2,
+        "the step back and the jump after it"
+    );
+    assert_eq!(
+        stats.lost_frames, 3,
+        "only the jump from 2 to 6 skips frames"
+    );
 }
 
 #[test]

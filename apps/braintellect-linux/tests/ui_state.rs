@@ -19,6 +19,7 @@ fn snapshot(phase: Phase, health: Health) -> Snapshot {
         stats: StreamStats {
             packet_counter_errors: 2,
             sample_validation_errors: 1,
+            lost_frames: 3,
         },
         rms_uv: [1.5, 2.5, 3.5, 4.5],
         triggers: 7,
@@ -219,6 +220,31 @@ fn the_sensor_status_shows_before_a_session_and_is_not_available_while_one_runs(
 }
 
 #[test]
+fn the_sensor_check_warns_while_the_link_loses_frames() {
+    use braintellect_linux::fit::SensorFit::Good;
+
+    let mut model = ready();
+    model.check_sensors();
+    model.apply(Event::Sensor([Good; 4]));
+    model.apply(Event::LinkLoss(0));
+    assert_eq!(model.view().connection, "Connected, checking sensors");
+    model.apply(Event::LinkLoss(1));
+    assert_eq!(model.view().connection, "Bluetooth link losing 1% of data");
+    model.apply(Event::LinkLoss(42));
+    assert_eq!(model.view().connection, "Bluetooth link losing 42% of data");
+    model.apply(Event::LinkLoss(0));
+    assert_eq!(model.view().connection, "Connected, checking sensors");
+
+    // The figure belongs to that check; the next one starts clean.
+    model.apply(Event::LinkLoss(42));
+    model.apply(Event::SensorCheckEnded(None));
+    assert_eq!(model.view().connection, "B-2 paired, ready to connect");
+    model.check_sensors();
+    model.apply(Event::Sensor([Good; 4]));
+    assert_eq!(model.view().connection, "Connected, checking sensors");
+}
+
+#[test]
 fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
     use braintellect_linux::fit::SensorFit::Good;
 
@@ -238,7 +264,7 @@ fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
     assert_eq!(model.stop_check(), Some(Command::StopCheck));
     model.apply(Event::SensorCheckEnded(None));
     assert!(!model.view().checking);
-    assert_eq!(model.view().connection, "Not connected");
+    assert_eq!(model.view().connection, "B-2 paired, ready to connect");
     assert_eq!(model.view().sensor, "Not Available");
     assert_eq!(model.stop_check(), None);
 
@@ -347,10 +373,12 @@ fn without_an_address_the_window_offers_pair_and_connect_and_a_known_address_doe
     assert_eq!(model.view().address, "");
     assert!(!model.view().can_check, "nothing to check without a B-2");
     assert!(!model.view().can_start);
+    assert_eq!(model.view().connection, "No B-2 paired");
 
     let known = ready();
     assert!(!known.view().can_pair);
     assert_eq!(known.view().address, "00:11:22:33:44:55");
+    assert_eq!(known.view().connection, "B-2 paired, ready to connect");
 }
 
 #[test]

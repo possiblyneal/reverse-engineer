@@ -41,7 +41,7 @@ pub struct SampleFrame {
 }
 
 /// The error counters the original keeps (`DataBuffer.packetCounterErrors` and
-/// `sampleValidationErrors`).
+/// `sampleValidationErrors`), and the frames lost on the link, which it does not.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct StreamStats {
     /// Frames whose counter was not previous + 1 (mod 65536).
@@ -49,6 +49,10 @@ pub struct StreamStats {
     /// Frames failing `sampleValidation`: a header `03 03` byte wrong, or any
     /// sample's third byte without its low two bits set (`& 3 == 3`).
     pub sample_validation_errors: u32,
+    /// Frames the consumer never gets: each forward counter jump adds the counters it
+    /// skips, and each frame dropped by the sample-bits check adds one. A backward step
+    /// is a resync, not a loss.
+    pub lost_frames: u32,
 }
 
 /// Incremental frame parser: feed arbitrary byte runs, take frames out.
@@ -95,16 +99,20 @@ impl FrameParser {
                 continue;
             }
             let counter = u16::from_be_bytes([frame[4], frame[5]]);
-            if self
-                .last_counter
-                .is_some_and(|p| counter != p.wrapping_add(1))
-            {
-                self.stats.packet_counter_errors += 1;
+            if let Some(previous) = self.last_counter {
+                let skipped = counter.wrapping_sub(previous).wrapping_sub(1);
+                if skipped != 0 {
+                    self.stats.packet_counter_errors += 1;
+                }
+                if skipped < 0x8000 {
+                    self.stats.lost_frames += u32::from(skipped);
+                }
             }
             self.last_counter = Some(counter);
             let payload: [u8; 24] = frame[PAYLOAD_START..].try_into().expect("24-byte payload");
             if !payload.as_chunks::<3>().0.iter().all(|s| s[2] & 3 == 3) {
                 self.stats.sample_validation_errors += 1;
+                self.stats.lost_frames += 1;
                 self.buf.drain(..FRAME_LEN);
                 continue;
             }
