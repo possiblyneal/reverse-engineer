@@ -2,6 +2,7 @@
 
 use std::path::PathBuf;
 
+use crate::acquisition::stream::CHANNELS;
 use crate::audio::tone::{self, Availability, Tone, TONES};
 use crate::fit::SensorFit;
 use crate::live::{Health, Phase, SessionProperties, Snapshot};
@@ -17,7 +18,7 @@ pub enum Event {
     /// The running session's state, including its final state.
     Update(Snapshot),
     /// The fit of FP1, FP2, T3 and T4 the engine reports while no session runs.
-    Sensor([SensorFit; 4]),
+    Sensor([SensorFit; CHANNELS]),
     /// The sensor check ended: on a stop (`None`) or because it could not run.
     SensorCheckEnded(Option<String>),
     /// The session could not start, and why.
@@ -119,7 +120,7 @@ pub struct UiModel {
     pub properties: SessionProperties,
     stage: Stage,
     snapshot: Option<Snapshot>,
-    sensor: Option<[SensorFit; 4]>,
+    sensor: Option<[SensorFit; CHANNELS]>,
     checking: bool,
     notice: String,
 }

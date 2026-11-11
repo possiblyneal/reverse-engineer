@@ -311,7 +311,8 @@ samples the overlay's blocks take), means removed.
   margins are 0.25 and 0.59.
 - RMS, every block of the lifted captures: the lifted sensor's over its partner's 0.21 to
   0.67. With both on, FP1 runs 2.5 to 4.0 times FP2 (0.87 to 1.80 shorted) and T3 0.89 to 1.89
-  times T4, so the RMS alone does not separate a lift; it only picks which sensor of a negatively correlated pair.
+  times T4, so the RMS alone does not separate a lift; it only picks which sensor of a
+  negatively correlated pair.
 - Signal level: the Source RMS of a worn sensor ranges from about 120 µV to 13 mV per block
   across the captures and days, so no absolute level is used.
 - Result: every capture classifies correctly in every block (`tests/replay_s77.rs`, ignored,
@@ -320,11 +321,11 @@ samples the overlay's blocks take), means removed.
 - Inferred: a touching sensor and its partner carry the same mains pickup in phase; a lifted
   one picks up mains of opposite phase at a lower level. Why the phase inverts was not
   measured.
-- Not covered: a shorted pair reads good (both sensors touch; shorted is deferred until more
-  short recordings exist; the one short's T3-T4 difference, over the pair's mean RMS, reaches
-  0.023 against the good fits' lowest 0.025). Run 8's no-wearer stream, with no sensor on, reads good on all four
-  (correlation 0.69 to 1.00): the rule finds one lifted sensor of a worn pair, not an unworn
-  headset or both sensors of a pair off, which were not captured.
+- Not covered (#81): a shorted pair reads good (both sensors touch; shorted is deferred until
+  more short recordings exist; the one short's T3-T4 difference, over the pair's mean RMS,
+  reaches 0.023 against the good fits' lowest 0.025). Run 8's no-wearer stream, with no sensor
+  on, reads good on all four (correlation 0.69 to 1.00): the rule finds one lifted sensor of a
+  worn pair, not an unworn headset or both sensors of a pair off, which were not captured.
 
 ## Unresolved
 

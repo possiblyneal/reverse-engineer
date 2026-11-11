@@ -10,36 +10,21 @@
 mod harness;
 
 use std::cell::Cell;
-use std::io::{self, Cursor, Read, Write};
+use std::io::Cursor;
 use std::sync::atomic::AtomicBool;
 
 use braintellect_linux::acquisition::session::Session;
 use braintellect_linux::fit::SensorFit::{self, Good, NotTouching};
 use braintellect_linux::live::{self, SessionProperties};
 use harness::inputs;
-
-/// The capture read back in order; whatever the session writes is dropped.
-struct Replayed(Cursor<Vec<u8>>);
-
-impl Read for Replayed {
-    fn read(&mut self, buf: &mut [u8]) -> io::Result<usize> {
-        self.0.read(buf)
-    }
-}
-
-impl Write for Replayed {
-    fn write(&mut self, buf: &[u8]) -> io::Result<usize> {
-        Ok(buf.len())
-    }
-
-    fn flush(&mut self) -> io::Result<()> {
-        Ok(())
-    }
-}
+use harness::replayed::Replayed;
 
 const MARKER: [u8; 4] = [0xAC, 0xBC, 0xCC, 0x03];
 /// Stream time of one 32-byte frame: two samples at 500 Hz.
 const FRAME_MS: i64 = 4;
+/// Fewest fit reports a capture must yield: 80 of its 89 blocks, each reported on every
+/// 60 ms tick (about 16 per block).
+const MIN_REPORTS: usize = 80 * 16;
 
 /// Each capture and the channel lifted in it (FP1, FP2, T3, T4 = 0 to 3).
 const CAPTURES: [(&str, Option<usize>); 8] = [
@@ -95,8 +80,7 @@ fn every_capture_reads_its_lifted_sensor_as_not_touching_and_the_rest_good() {
             want[c] = NotTouching;
         }
         let fits = reported(name);
-        // 89 blocks of 60 ms ticks each.
-        assert!(fits.len() > 80 * 16, "{name}: {} reports", fits.len());
+        assert!(fits.len() > MIN_REPORTS, "{name}: {} reports", fits.len());
         let wrong = fits.iter().filter(|f| **f != want).count();
         assert_eq!(wrong, 0, "{name}: {wrong} of {} reports", fits.len());
         println!("{name}: {} reports, all {want:?}", fits.len());

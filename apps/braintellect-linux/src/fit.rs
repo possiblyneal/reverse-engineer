@@ -7,6 +7,7 @@
 //! correlated over the block, the one with the lower RMS is not touching; otherwise both are
 //! good. Evidence, margins and limits: `sensor-status.md`, "Observed: fixed-mode fit features".
 
+use crate::acquisition::stream::CHANNELS;
 use crate::sensor::SOURCE_SAMPLES;
 
 /// One sensor's fit.
@@ -26,7 +27,6 @@ impl SensorFit {
     }
 }
 
-const CHANNELS: usize = 4;
 /// The sensor pairs, as channel indices: FP1/FP2 and T3/T4.
 const PAIRS: [(usize, usize); 2] = [(0, 1), (2, 3)];
 
