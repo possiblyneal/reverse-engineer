@@ -265,9 +265,10 @@ next to the existing tag 30 (raw block and final spectrum): 388 calls over 97 bl
   NTFS disk (`C:\cap`), staged and read back with `ntfs-3g` after `ntfsfix -d` while the VM was
   off.
 
-## Result: worn captures and the overlay state (#61, 2026-11-08)
+## Result: worn captures and the overlay state (#61, 2026-11-08 and 2026-11-10)
 
-Two worn-B-2 captures replayed (`hook` set `g/s61.js`: tag 12 consumed sample, tag 32 Head2D
+Three worn-B-2 captures replayed (good fit and T4 lifted on 2026-11-08, T3-T4 shorted on
+2026-11-10; `hook` set `g/s61.js`: tag 12 consumed sample, tag 32 Head2D
 level update, tag 41 overlay state, tag 42 debounce tick `[42, n, ts, this, elapsed, delay]`
 from the overlay's `stateChangeDelay` check), reduced by `scripts/worn-sensor-extract.py`;
 findings in `sensor-status.md`, "Observed: worn replays".

@@ -1,13 +1,13 @@
-//! The two worn B-2 captures of ticket #61 through the sensor monitor, against the original's
+//! The three worn B-2 captures of ticket #61 through the sensor monitor, against the original's
 //! Optimize-tab sensor status on the same captures (`sensor-status.md`, "Worn replays").
 //!
-//! The captures are the RX bytes the clone read from a worn B-2 ("goodfit": a good fit;
-//! "t4off": T4 lifted), handshake included. The original consumed them served by
-//! `braintellect-linux emulate`; `scripts/worn-sensor-extract.py` reduces its hook log to
-//! `worn.tsv` (per block: the overlay state when the block's interval ended and every
-//! channel's line-noise and 12, 40 and 70 Hz levels) and `skipped.txt` (the stream frames its
-//! host never consumed; the stream has no counter gap or failed validation there, so the
-//! clone cannot find them itself and the replay leaves them out, as `replay_live` does).
+//! The captures are the RX bytes the clone read from a worn B-2 ("goodfit": a good fit; "t4off": T4
+//! lifted; "t3t4short": the T3 and T4 inputs shorted together), handshake included. The original
+//! consumed them served by `braintellect-linux emulate`; `scripts/worn-sensor-extract.py` reduces
+//! its hook log to `worn.tsv` (per block: the overlay state when the block's interval ended and
+//! every channel's line-noise and 12, 40 and 70 Hz levels) and `skipped.txt` (the stream frames its
+//! host never consumed; the stream has no counter gap or failed validation there, so the clone
+//! cannot find them itself and the replay leaves them out, as `replay_live` does).
 //!
 //! The no-wearer stream of run 8 (#57) is replayed the same way over the Optimize-tab period
 //! before its Play, with its own extract.
@@ -24,10 +24,10 @@
 //! clone's clock is the stream's: 4 ms a frame, block `b` complete at `(b + 1)` seconds.
 //!
 //! Ignored: the captures are session EEG and live outside Git. Run with
-//! `S61_GOODFIT_CAPTURE`, `S61_T4OFF_CAPTURE` and `S61_REPLAY_DIR` (a directory holding
-//! `goodfit/` and `t4off/` with the extract's files) set, else the defaults under the
-//! repository root's `tmp/s61/`; run 8 takes `S57_RUN8_CAPTURE` and `S57_REPLAY_DIR` (holding
-//! `run8/`, default `tmp/s57o/replay`):
+//! `S61_GOODFIT_CAPTURE`, `S61_T4OFF_CAPTURE`, `S61_SHORT_CAPTURE` and `S61_REPLAY_DIR` (a
+//! directory holding `goodfit/`, `t4off/` and `t3t4short/` with the extract's files) set, else
+//! the defaults under the repository root's `tmp/s61/`; run 8 takes `S57_RUN8_CAPTURE` and
+//! `S57_REPLAY_DIR` (holding `run8/`, default `tmp/s57o/replay`):
 //! `cargo test --release --test replay_s61 -- --ignored --nocapture`.
 
 mod harness;
@@ -257,6 +257,17 @@ fn the_t4_off_capture_matches_the_original_in_every_block() {
     check(&Case {
         label: "t4off",
         capture: ("S61_T4OFF_CAPTURE", "tmp/s61/t4off.rx"),
+        replay: WORN,
+        outlasts_log: false,
+    });
+}
+
+#[test]
+#[ignore = "needs the #61 captures and the original's extract, which stay outside Git"]
+fn the_t3_t4_shorted_capture_matches_the_original_in_every_block() {
+    check(&Case {
+        label: "t3t4short",
+        capture: ("S61_SHORT_CAPTURE", "tmp/s61/t3t4short.rx"),
         replay: WORN,
         outlasts_log: false,
     });
