@@ -398,14 +398,21 @@ impl UiModel {
     fn connection(&self) -> String {
         match (&self.stage, self.snapshot.as_ref().map(|s| s.health)) {
             (Stage::Pairing, _) => "Looking for the B-2 and pairing".to_owned(),
-            (Stage::Connecting, _) => {
-                format!("Connecting to {}", self.mac.as_deref().unwrap_or_default())
-            }
+            (Stage::Connecting, _) => self.connecting(),
             (Stage::Running, Some(Health::Streaming)) => "Streaming".to_owned(),
             (Stage::Running, Some(Health::NoData)) => "No data from the B-2".to_owned(),
             (Stage::Running, _) => "Connected, waiting for data".to_owned(),
+            // A sensor check holds the link without a session; its first reading shows it is up.
+            (Stage::Setup | Stage::Done, _) if self.checking && self.sensor.is_some() => {
+                "Connected, checking sensors".to_owned()
+            }
+            (Stage::Setup | Stage::Done, _) if self.checking => self.connecting(),
             (Stage::Setup | Stage::Done, _) => "Not connected".to_owned(),
         }
+    }
+
+    fn connecting(&self) -> String {
+        format!("Connecting to {}", self.mac.as_deref().unwrap_or_default())
     }
 }
 

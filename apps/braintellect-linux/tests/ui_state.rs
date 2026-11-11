@@ -230,12 +230,15 @@ fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
     assert!(model.view().checking);
     assert!(!model.view().can_check);
     assert_eq!(model.check_sensors(), None);
+    assert_eq!(model.view().connection, "Connecting to 00:11:22:33:44:55");
     model.apply(Event::Sensor([Good; 4]));
     assert_eq!(model.view().sensor, "FP1 good, FP2 good, T3 good, T4 good");
+    assert_eq!(model.view().connection, "Connected, checking sensors");
 
     assert_eq!(model.stop_check(), Some(Command::StopCheck));
     model.apply(Event::SensorCheckEnded(None));
     assert!(!model.view().checking);
+    assert_eq!(model.view().connection, "Not connected");
     assert_eq!(model.view().sensor, "Not Available");
     assert_eq!(model.stop_check(), None);
 
