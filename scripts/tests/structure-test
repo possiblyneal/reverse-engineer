@@ -5,8 +5,9 @@ set -uo pipefail
 # rules it reports not-applicable -- whether libs/ is shared, whether tests/
 # spans apps, whether a file sits at its own scope -- have no fixture here
 # because they have no mechanical answer to assert. What is covered: each
-# layout rule in both directions, .structure-allow at a path and at a prefix,
-# every declaration value, and jq absent.
+# layout rule in both directions, the opaque and toolchain folders,
+# .structure-allow at a path and at a prefix, every declaration value, and jq
+# absent.
 #
 # Each fixture is a real Git repository with the scripts tree copied into it,
 # rather than the script run against a directory from outside. scripts/structure
@@ -79,7 +80,7 @@ write NOTES.txt
 assert_fails root-files
 
 fixture "an unpermitted root folder fails"
-write vendor/thing/x.go
+write lib/thing/x.go
 assert_fails root-folders
 
 fixture "an addon root file is permitted"
@@ -274,6 +275,82 @@ fixture "the rules still apply to the tree around the source"
 declare_unit api
 write apps/api/docs/swagger.json
 assert_fails docs-content
+
+# examples/ and vendor/ are scoped folders whose contents are another program's
+# shape, so the depth rules stop at them as they stop at a src/.
+fixture "a root config, examples, and vendor are permitted"
+write config/defaults.toml
+write examples/echo/main.go
+write vendor/github.com/pion/dtls/conn.go
+assert_passes
+
+fixture "an example holds its own src and docs"
+declare_unit api
+write apps/api/src/main.rs
+write apps/api/examples/client/src/main.rs
+write apps/api/examples/client/docs/diagram.png
+assert_passes
+
+fixture "a vendored tree keeps its own shape"
+declare_unit api
+write apps/api/src/main.go
+write apps/api/vendor/github.com/x/y/src/z.go
+write apps/api/vendor/github.com/x/y/deploy/notes.txt
+assert_passes
+
+fixture "a config folder is still held to the depth rules"
+declare_unit api
+write apps/api/src/main.py
+write apps/api/config/src/x.py
+assert_fails src-placement
+
+fixture "a domain may hold examples, vendor, and config"
+declare_unit billing
+write apps/billing/invoices/src/main.py
+write apps/billing/invoices/examples/send.py
+write apps/billing/invoices/vendor/lib/x.py
+write apps/billing/invoices/config/defaults.toml
+assert_passes
+
+# A toolchain folder is permitted only beside the file whose toolchain fixes it.
+fixture "public beside a unit's package.json is a toolchain folder"
+declare_unit web
+write apps/web/package.json '{}'
+write apps/web/src/app/page.tsx
+write apps/web/public/docs/logo.svg
+assert_passes
+
+fixture "public without a package.json beside it is a misplaced folder"
+declare_unit web
+write apps/web/src/app/page.tsx
+write apps/web/public/logo.svg
+assert_fails apps-layout
+
+fixture "public beside a domain's package.json is a toolchain folder"
+declare_unit shop
+write apps/shop/storefront/package.json '{}'
+write apps/shop/storefront/src/index.ts
+write apps/shop/storefront/public/logo.svg
+assert_passes
+
+# A scoped folder is not a scope holder, so a manifest inside one earns no
+# toolchain folder, which would otherwise hide a src/ beneath it.
+fixture "a manifest inside a scoped folder earns no toolchain folder"
+declare_unit shop
+write apps/shop/src/main.ts
+write apps/shop/tests/package.json '{}'
+write apps/shop/tests/public/src/x.ts
+assert_fails src-placement
+
+fixture "gradle at the root needs gradlew beside it"
+write gradle/wrapper/gradle-wrapper.properties
+assert_fails root-folders
+
+fixture "gradle beside gradlew is a toolchain folder"
+write gradlew
+write settings.gradle.kts
+write gradle/wrapper/gradle-wrapper.properties
+assert_passes
 
 # apps/ is not a scope holder, so the segment under it is a unit name and can
 # never be a scoped folder however it is spelled.

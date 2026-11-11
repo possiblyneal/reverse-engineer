@@ -22,15 +22,4 @@ source "$repo_root/scripts/libs/detect.sh"
 # Takes no unit name. A repository whose tiers must run separately says so by
 # running this from inside the unit, and a flag for that is not owed until one
 # does.
-if ! language_capabilities has-any; then
-  echo "No project manifest found, so there is nothing to test yet."
-  exit 0
-fi
-
-args=()
-[[ -z "${CI_DRY_RUN:-}" ]] || args+=(--dry-run)
-language_capabilities run "${args[@]}" integration
-
-[[ -z "${CI_DRY_RUN:-}" ]] || exit 0
-
-tally
+capability_command test integration

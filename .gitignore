@@ -34,13 +34,6 @@ tmp/*
 *.tmp
 *.temp
 
-# The tasks CLI's tracker: the list, the temporary copy a write stages it
-# in, and the git repository holding its history. Personal to whoever runs
-# it, not part of the repo.
-/TASKS.md
-/.TASKS.md.*
-/.tasks.git
-
 # Logs
 *.log
 logs/

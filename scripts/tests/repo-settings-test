@@ -318,10 +318,10 @@ fi
 current="a run of optional settings exits 0"
 if (( status == 0 )); then pass; else fail "exit $status: $out"; fi
 
-fixture "every merge setting at the other value is optional with its remediation"
+fixture "every optional merge setting at the other value is optional with its remediation"
 remote
 repository true '"allow_merge_commit": false' '"allow_squash_merge": true' \
-  '"allow_rebase_merge": true' '"delete_branch_on_merge": false'
+  '"allow_rebase_merge": true'
 free_plan
 out="$(check)"
 status=$?
@@ -331,10 +331,19 @@ current="squash merging on is optional"
 assert_line '^squash-merging +not-applicable +allow_squash_merge is true on o/r; turn it off in Settings'
 current="rebase merging on is optional"
 assert_line '^rebase-merging +not-applicable +allow_rebase_merge is true on o/r; turn it off in Settings'
-current="head branch deletion off is optional"
-assert_line '^delete-branches +not-applicable +delete_branch_on_merge is false on o/r; turn it on in Settings'
 current="an optional setting off does not fail the run"
 if (( status == 0 )); then pass; else fail "exit $status: $out"; fi
+
+fixture "head branch deletion off fails with its remediation"
+remote
+repository true '"delete_branch_on_merge": false'
+free_plan
+out="$(check)"
+status=$?
+current="head branch deletion off is required"
+assert_line '^delete-branches +FAIL +delete_branch_on_merge is false on o/r; turn it on in Settings'
+current="head branch deletion off fails the run"
+if (( status != 0 )); then pass; else fail "exit 0 with head branch deletion off: $out"; fi
 
 # Push protection: enabled, disabled, and not offered are three answers.
 fixture "push protection enabled passes"

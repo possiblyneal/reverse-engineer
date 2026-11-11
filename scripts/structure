@@ -29,12 +29,11 @@ allow_file=".structure-allow"
 
 # Folders permitted at the repository root. Everything at root is repo-wide in
 # scope; anything scoped to a single app or domain belongs under that app.
-# .devcontainer and gradle are here because the payload's own additions require
-# them: .devcontainer is an addon, and gradle/ holds the wrapper Kotlin repos
-# must commit.
+# .devcontainer is here because the payload's own additions require it: it is
+# an addon. gradle/ is not: the toolchain table below permits it beside gradlew.
 root_folders=(
-  .claude .devcontainer .github apps assets deploy docs gradle
-  libs scripts tests tmp tools
+  .claude .devcontainer .github apps assets config deploy docs examples
+  libs scripts tests tmp tools vendor
 )
 
 # Files permitted at the repository root. The rule is that a root file needs
@@ -77,7 +76,32 @@ root_files=(
 # and what src-placement refuses a src/ under; nesting is unrestricted, so a
 # tests/ holding the tests for the tests under tests/ is not this audit's
 # business.
-scoped_folders=(assets deploy docs libs scripts tests tools)
+scoped_folders=(assets config deploy docs examples libs scripts tests tools vendor)
+
+# Scoped folders whose contents are not this repository's shape to judge, so
+# every rule that reads depth stops at them as it stops at a src/. An example is
+# a small program laid out the way its language lays one out, src/ included;
+# vendored code is someone else's tree, kept verbatim. This is what a
+# .structure-allow prefix did for a vendored tree, given a name an agent can
+# predict instead of an entry it has to find.
+opaque_folders=(examples vendor)
+
+# Folders a toolchain fixes beside one of its files, as file:folder. The folder
+# is permitted only in the directory holding that file, at a scope holder, and
+# is opaque like the folders above: the toolchain decides what is inside. Only
+# a name the tool cannot be told to move belongs here; one a config line can
+# relocate is relocated into the layout instead. A framework that needs a new
+# entry gets it here, in the template, so every repository carries the same
+# table rather than each writing its own .structure-allow line.
+toolchain_folders=(
+  # The Gradle wrapper loads its jar and properties from gradle/wrapper/ beside
+  # gradlew, and nothing configures that path.
+  gradlew:gradle
+
+  # Next.js serves static files from public/ beside package.json only; Vite and
+  # Create React App default to it.
+  package.json:public
+)
 
 # The deployment technologies deploy/ recognizes. Unlike the lists above this
 # one will go stale: deployment tooling turns over faster than anything else in
@@ -150,11 +174,13 @@ is_placeholder() {
 # path, and read would silently drop every segment after it rather than
 # misreporting one.
 #
-# It also sets `src_limit`, the index of the first src segment, or the segment
-# count when there is none. Everything below a src/ is the language's business
-# rather than this repository's layout -- a Go package named docs/, a Python
-# scripts/ module, a generated tree with a shape nobody chose -- so the rules
-# that apply at depth apply to the tree around the source and stop there.
+# It also sets `limit`, the index of the first segment whose contents are not
+# this repository's layout -- a src/, an opaque folder, or a toolchain folder --
+# or the segment count when there is none. Everything below a src/ is the
+# language's business -- a Go package named docs/, a Python scripts/ module, a
+# generated tree with a shape nobody chose -- and below the other two it is an
+# example's, a vendor's, or a toolchain's, so the rules that apply at depth
+# apply to the tree around them and stop there.
 split_path() {
   local rest="$1" i
   parts=()
@@ -163,14 +189,6 @@ split_path() {
     rest="${rest#*/}"
   done
   parts+=("$rest")
-
-  src_limit=${#parts[@]}
-  for (( i = 0; i < ${#parts[@]}; i++ )); do
-    if [[ "${parts[i]}" == src ]]; then
-      src_limit=$i
-      break
-    fi
-  done
 
   # And `scope_start`, the first segment a depth rule may judge. The scope
   # holders are the root, a unit, and a domain; `apps/` is none of them, so the
@@ -183,6 +201,18 @@ split_path() {
   if [[ "${parts[0]}" == apps ]]; then
     scope_start=2
   fi
+
+  # The file itself is never a limit: a file named src or vendor is a file.
+  local prefix=""
+  limit=${#parts[@]}
+  for (( i = 0; i < ${#parts[@]} - 1; i++ )); do
+    prefix="${prefix:+$prefix/}${parts[i]}"
+    if [[ "${parts[i]}" == src || -n "${toolchain_dirs[$prefix]+set}" ]] \
+      || { (( i >= scope_start )) && in_list "${parts[i]}" "${opaque_folders[@]}"; }; then
+      limit=$i
+      break
+    fi
+  done
 }
 
 # The path down to and including parts[$2], for naming the directory a finding
@@ -219,11 +249,30 @@ if (( ${#tracked[@]} == 0 )); then
   exit 0
 fi
 
+# Every toolchain folder the tracked files earn, keyed by its path. Read from
+# the tracked list rather than the pruned one, so a .structure-allow prefix
+# over a manifest cannot withdraw the folder beside it: permission never makes
+# a check stricter than its absence would.
+declare -A toolchain_dirs=()
+for path in "${tracked[@]}"; do
+  name="${path##*/}" dir=""
+  [[ "$path" == */* ]] && dir="${path%/*}"
+  # The scope holders: the root, a unit, a domain. A folder under a unit is a
+  # domain only when it is neither src/ nor a scoped folder.
+  [[ -z "$dir" || "$dir" =~ ^apps/[^/]+(/[^/]+)?$ ]] || continue
+  [[ "$dir" =~ ^apps/[^/]+/([^/]+)$ ]] &&
+    in_list "${BASH_REMATCH[1]}" src "${scoped_folders[@]}" && continue
+  for entry in "${toolchain_folders[@]}"; do
+    [[ "$name" == "${entry%%:*}" ]] || continue
+    toolchain_dirs["${dir:+$dir/}${entry#*:}"]=1
+  done
+done
+
 # .structure-allow records the permission the rules say a non-standard path
 # needs. A bare path allows exactly that file. A path ending in / names a
-# prefix the walk stops descending into, which is how a vendored dependency or
-# a tracked test fixture keeps its own shape without the rules growing an
-# "unless it is a fixture" clause that would hollow them out.
+# prefix the walk stops descending into, which is how a tracked test fixture
+# keeps its own shape without the rules growing an "unless it is a fixture"
+# clause that would hollow them out.
 allow_paths=()
 allow_prefixes=()
 if [[ -f "$allow_file" ]]; then
@@ -279,6 +328,7 @@ for path in "${paths[@]}"; do
   [[ " $seen_roots " == *" $top "* ]] && continue
   seen_roots="$seen_roots $top"
   in_list "$top" "${root_folders[@]}" && continue
+  [[ -n "${toolchain_dirs[$top]+set}" ]] && continue
   in_list "$top" ${allow_paths[@]+"${allow_paths[@]}"} && continue
   record "$top/: root folder needs permission; everything at root is repo-wide"
 done
@@ -327,7 +377,7 @@ for path in "${paths[@]}"; do
   # is the language's, so a declaration there is not this rule's to judge --
   # which is also what keeps the template's own payload from being audited as
   # if it were this repository.
-  if [[ "${parts[-1]}" == .unit.json ]] && (( src_limit == ${#parts[@]} )); then
+  if [[ "${parts[-1]}" == .unit.json ]] && (( limit == ${#parts[@]} )); then
     if (( ${#parts[@]} == 3 )); then
       declared+=("$unit")
     else
@@ -339,6 +389,8 @@ for path in "${paths[@]}"; do
 
   if [[ "$child" == src ]]; then
     in_list "$unit" ${unit_src[@]+"${unit_src[@]}"} || unit_src+=("$unit")
+  elif [[ -n "${toolchain_dirs[apps/$unit/$child]+set}" ]]; then
+    continue
   elif ! in_list "$child" "${scoped_folders[@]}"; then
     in_list "$unit/$child" ${domains[@]+"${domains[@]}"} || domains+=("$unit/$child")
 
@@ -351,7 +403,8 @@ for path in "${paths[@]}"; do
     grandchild="${parts[3]}"
     if [[ "$grandchild" == src ]]; then
       in_list "$unit/$child" ${domain_src[@]+"${domain_src[@]}"} || domain_src+=("$unit/$child")
-    elif ! in_list "$grandchild" "${scoped_folders[@]}"; then
+    elif [[ -z "${toolchain_dirs[apps/$unit/$child/$grandchild]+set}" ]] \
+      && ! in_list "$grandchild" "${scoped_folders[@]}"; then
       in_list "$unit/$child/$grandchild" ${domain_strays[@]+"${domain_strays[@]}"} \
         || domain_strays+=("$unit/$child/$grandchild")
     fi
@@ -402,9 +455,9 @@ for stray in ${domain_strays[@]+"${domain_strays[@]}"}; do
   # is already reported by apps-layout, and repeating it here would assert the
   # opposite of what that finding said -- that the parent is a domain.
   in_list "${stray%/*}" ${domain_src[@]+"${domain_src[@]}"} || continue
-  record "apps/$stray/: a domain holds src/ or a scoped folder (${scoped_folders[*]}), and domains do not nest"
+  record "apps/$stray/: a domain holds src/, a scoped folder (${scoped_folders[*]}), or a toolchain folder, and domains do not nest"
 done
-verdict domain-folders "every folder under a domain is src/ or a scoped folder"
+verdict domain-folders "every folder under a domain is src/, a scoped folder, or a toolchain folder"
 
 # --- unit declarations ------------------------------------------------------
 
@@ -456,10 +509,12 @@ for path in "${paths[@]}"; do
   split_path "$path"
   scope=""
   for (( i = scope_start; i < ${#parts[@]} - 1; i++ )); do
-    # The first src ends the walk either way: a src nested inside another src
-    # is the source tree's own arrangement, not a placement this rule judges.
-    if [[ "${parts[i]}" == src ]]; then
-      if [[ -n "$scope" ]]; then
+    # The limit ends the walk either way: a src nested inside another src is
+    # the source tree's own arrangement, and one inside an example, a vendored
+    # tree, or a toolchain folder is that tree's, not a placement this rule
+    # judges.
+    if (( i == limit )); then
+      if [[ "${parts[i]}" == src && -n "$scope" ]]; then
         finding="$(path_prefix parts "$i")/: src belongs to a scope holder, not under $scope/"
         record "$finding"
       fi
@@ -474,7 +529,7 @@ verdict src-placement "no src/ sits under a scoped folder"
 
 for path in "${paths[@]}"; do
   split_path "$path"
-  for (( i = scope_start; i < ${#parts[@]} - 1 && i < src_limit; i++ )); do
+  for (( i = scope_start; i < ${#parts[@]} - 1 && i < limit; i++ )); do
     [[ "${parts[i]}" == deploy ]] || continue
     child="${parts[i+1]}"
     # Whether the child is a folder at all is decided before its name is, so a
@@ -500,7 +555,7 @@ verdict deploy-folders "every deploy/ subfolder is a recognized technology"
 # placement, and the same rule deploy/ states in the same words.
 for path in "${paths[@]}"; do
   split_path "$path"
-  for (( i = scope_start; i < ${#parts[@]} - 1 && i < src_limit; i++ )); do
+  for (( i = scope_start; i < ${#parts[@]} - 1 && i < limit; i++ )); do
     [[ "${parts[i]}" == tools ]] || continue
     (( i + 1 == ${#parts[@]} - 1 )) || continue
     is_placeholder "$path" && continue
@@ -515,7 +570,7 @@ verdict tools-programs "every tools/ entry is a program directory"
 for path in "${paths[@]}"; do
   split_path "$path"
   under_docs=""
-  for (( i = scope_start; i < ${#parts[@]} - 1 && i < src_limit; i++ )); do
+  for (( i = scope_start; i < ${#parts[@]} - 1 && i < limit; i++ )); do
     [[ "${parts[i]}" == docs ]] && { under_docs=1; break; }
   done
   [[ -n "$under_docs" ]] || continue

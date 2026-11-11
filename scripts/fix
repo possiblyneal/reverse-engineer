@@ -27,14 +27,7 @@ source "$repo_root/scripts/libs/detect.sh"
 # ruff, eslint and clippy each exit non-zero for those, and translating that
 # away would mean telling a real tool error from a leftover finding by exit
 # code alone.
-if ! language_capabilities has-any; then
-  echo "No project manifest found, so there is nothing to format yet."
-  exit 0
-fi
-
-language_capabilities run lint-fix format-write
-
-if tally; then
+if capability_command format lint-fix format-write; then
   echo "Review the diff before committing."
 else
   exit 1
