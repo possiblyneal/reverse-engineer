@@ -404,6 +404,13 @@ impl UiModel {
             (Stage::Running, Some(Health::Streaming)) => "Streaming".to_owned(),
             (Stage::Running, Some(Health::NoData)) => "No data from the B-2".to_owned(),
             (Stage::Running, _) => "Connected, waiting for data".to_owned(),
+            // A sensor check holds the link without a session; its first reading shows it is up.
+            (Stage::Setup | Stage::Done, _) if self.checking && self.sensor.is_some() => {
+                "Connected, checking sensors".to_owned()
+            }
+            (Stage::Setup | Stage::Done, _) if self.checking => {
+                format!("Connecting to {}", self.mac.as_deref().unwrap_or_default())
+            }
             (Stage::Setup | Stage::Done, _) => "Not connected".to_owned(),
         }
     }
