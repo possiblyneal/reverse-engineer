@@ -403,21 +403,16 @@ impl UiModel {
     }
 
     fn connection(&self) -> String {
+        // A link dropping frames garbles the feedback; say so before a session starts.
+        if let Some(percent) = self.losing() {
+            return format!("Bluetooth link losing {percent}% of data");
+        }
         match (&self.stage, self.snapshot.as_ref().map(|s| s.health)) {
             (Stage::Pairing, _) => "Looking for the B-2 and pairing".to_owned(),
             (Stage::Connecting, _) => self.connecting(),
             (Stage::Running, Some(Health::Streaming)) => "Streaming".to_owned(),
             (Stage::Running, Some(Health::NoData)) => "No data from the B-2".to_owned(),
             (Stage::Running, _) => "Connected, waiting for data".to_owned(),
-            // A link dropping frames garbles the feedback; say so before a session starts.
-            (Stage::Setup | Stage::Done, _)
-                if self.checking && self.lost_percent.is_some_and(|p| p >= LOSS_WARN_PERCENT) =>
-            {
-                format!(
-                    "Bluetooth link losing {}% of data",
-                    self.lost_percent.unwrap_or_default()
-                )
-            }
             // A sensor check holds the link without a session; its first reading shows it is up.
             (Stage::Setup | Stage::Done, _) if self.checking && self.sensor.is_some() => {
                 "Connected, checking sensors".to_owned()
@@ -428,6 +423,13 @@ impl UiModel {
             }
             (Stage::Setup | Stage::Done, _) => "No B-2 paired".to_owned(),
         }
+    }
+
+    /// The sensor check's frame loss, when one is under way and losing enough to warn about.
+    fn losing(&self) -> Option<u8> {
+        let checking = self.checking && matches!(self.stage, Stage::Setup | Stage::Done);
+        self.lost_percent
+            .filter(|p| checking && *p >= LOSS_WARN_PERCENT)
     }
 
     fn connecting(&self) -> String {

@@ -228,6 +228,8 @@ fn the_sensor_check_warns_while_the_link_loses_frames() {
     model.apply(Event::Sensor([Good; 4]));
     model.apply(Event::LinkLoss(0));
     assert_eq!(model.view().connection, "Connected, checking sensors");
+    model.apply(Event::LinkLoss(1));
+    assert_eq!(model.view().connection, "Bluetooth link losing 1% of data");
     model.apply(Event::LinkLoss(42));
     assert_eq!(model.view().connection, "Bluetooth link losing 42% of data");
     model.apply(Event::LinkLoss(0));

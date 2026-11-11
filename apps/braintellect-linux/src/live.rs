@@ -319,18 +319,22 @@ pub struct SensorReport {
     pub overlay: SensorStatus,
     /// FP1, FP2, T3 and T4 after the last completed block; `None` before the first.
     pub fit: Option<[SensorFit; CHANNELS]>,
-    /// Percent of frames the link lost over the last [`LOSS_WINDOW_MS`]; `None` before the
-    /// first window ends, or when nothing arrived in it.
+    /// Percent of frames the link lost over the last [`LOSS_WINDOW_MS`], rounded down; 100
+    /// when nothing arrived in it. `None` before the first window ends.
     pub lost_percent: Option<u8>,
 }
 
 /// How long the sensor check measures frame loss over before it reports a figure.
 pub const LOSS_WINDOW_MS: i64 = 3_000;
 
-/// Percent of the frames due that were lost, rounded; `None` when none were due.
-fn lost_percent(received: u32, lost: u32) -> Option<u8> {
+/// Percent of the frames due that were lost, rounded down; a window with nothing
+/// received is a stalled link, all lost.
+fn lost_percent(received: u32, lost: u32) -> u8 {
+    if received == 0 {
+        return 100;
+    }
     let due = u64::from(received) + u64::from(lost);
-    (due > 0).then(|| u8::try_from((u64::from(lost) * 100 + due / 2) / due).unwrap_or(100))
+    u8::try_from(u64::from(lost) * 100 / due).unwrap_or(100)
 }
 
 /// The sensor status before a session (`sensor-status.md`): the Source output of an
@@ -401,7 +405,7 @@ fn sensor_loop<T: Read + Write>(
         let now_ms = clock();
         if now_ms >= window_end {
             let lost_total = session.stats().lost_frames;
-            lost = lost_percent(received, lost_total - lost_before);
+            lost = Some(lost_percent(received, lost_total - lost_before));
             (window_end, received, lost_before) = (now_ms + LOSS_WINDOW_MS, 0, lost_total);
         }
         if now_ms >= next_tick {

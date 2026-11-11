@@ -131,7 +131,7 @@ fn lost_percents(keep: fn(usize) -> bool) -> Vec<Option<u8>> {
 #[test]
 fn the_monitor_reports_no_loss_on_a_clean_link() {
     let seen = lost_percents(|_| true);
-    let window_ticks = (live::LOSS_WINDOW_MS / 60) as usize;
+    let window_ticks = (live::LOSS_WINDOW_MS / braintellect_linux::sensor::TICK_MS) as usize;
     assert!(
         seen[..window_ticks - 1].iter().all(Option::is_none),
         "no figure before a window ends"
@@ -148,6 +148,33 @@ fn the_monitor_reports_the_share_of_frames_the_link_dropped() {
     let seen = lost_percents(|n| n % 5 < 3);
     let last = seen.last().copied().flatten();
     assert_eq!(last, Some(40), "{seen:?}");
+}
+
+#[test]
+fn a_link_that_goes_quiet_reports_all_frames_lost() {
+    let stop = AtomicBool::new(false);
+    let now = std::cell::Cell::new(0);
+    let mut clock = || {
+        now.set(now.get() + FRAME_MS);
+        now.get()
+    };
+    let mut last = None;
+    // The fixture's 30 s of frames, then a quiet link for two more loss windows.
+    let quiet_until = FRAMES as i64 * FRAME_MS + 2 * live::LOSS_WINDOW_MS;
+    live::monitor(
+        session_over(ReplayTransport::stalling),
+        &SessionProperties::default(),
+        &stop,
+        &mut clock,
+        &mut |r| {
+            last = r.lost_percent;
+            if now.get() >= quiet_until {
+                stop.store(true, Ordering::Relaxed);
+            }
+        },
+    )
+    .expect("a stop is not a failure");
+    assert_eq!(last, Some(100));
 }
 
 #[test]

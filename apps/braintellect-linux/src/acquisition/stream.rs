@@ -49,8 +49,9 @@ pub struct StreamStats {
     /// Frames failing `sampleValidation`: a header `03 03` byte wrong, or any
     /// sample's third byte without its low two bits set (`& 3 == 3`).
     pub sample_validation_errors: u32,
-    /// Frames missing between counters: each forward jump adds the counters it skips.
-    /// A backward step is a resync, not a loss.
+    /// Frames the consumer never gets: each forward counter jump adds the counters it
+    /// skips, and each frame dropped by the sample-bits check adds one. A backward step
+    /// is a resync, not a loss.
     pub lost_frames: u32,
 }
 
@@ -111,6 +112,7 @@ impl FrameParser {
             let payload: [u8; 24] = frame[PAYLOAD_START..].try_into().expect("24-byte payload");
             if !payload.as_chunks::<3>().0.iter().all(|s| s[2] & 3 == 3) {
                 self.stats.sample_validation_errors += 1;
+                self.stats.lost_frames += 1;
                 self.buf.drain(..FRAME_LEN);
                 continue;
             }

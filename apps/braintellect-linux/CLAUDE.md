@@ -75,7 +75,9 @@ those findings, it cites them.
 - **Acquisition behavior** (`src/acquisition/`): the frame parser checks the header,
   then the counter, then the sample bits, in the original's order; `Session` skips
   stream frames still arriving before a handshake reply; a clean end of stream sends
-  no Stop.
+  no Stop. `StreamStats::lost_frames` (not in the original) counts frames the consumer never
+  gets: the counters each forward jump skips, plus each frame the sample-bits check drops; a
+  backward step (a skip of `0x8000` or more) is a resync, not a loss.
 - **Feedback graph** (`src/feedback/`). The caller runs `SourceFilters` (`source.rs`),
   built from `Smart2Design::source`; `Smart2Graph` (`graph.rs`) runs from the Source
   output (`process_evaluated_block`, or `process_filtered_block` with a logged code):
@@ -202,7 +204,9 @@ those findings, it cites them.
   follow the clock). `live::monitor` runs it on an opened B-2 before a session with the LOD
   Source (45 Hz low-pass off, 25 Hz band-stop on, `SessionProperties::lod_source`), needs no
   tone, and returns why it could not run or broke off, which ends the check with that reason in
-  the notice.
+  the notice. Each report also carries `SensorReport::lost_percent`: the frames lost over the
+  last `live::LOSS_WINDOW_MS` (3 s), rounded down, 100 for a window with nothing received,
+  `None` before the first window ends.
   `ui::worker::Worker::spawn_check` (the "Check sensors" button, `Command::CheckSensors`)
   starts it. The FFT stage is
   `feedback::DspFft` (`DSPFFT::process`: f32 Bartlett, `RealFft512`, the `rsqrtps` magnitude of
@@ -241,11 +245,11 @@ those findings, it cites them.
   already has, trusts it and then runs the sensor check. The window's top line is
   `View::connection` in large type; while idle it reads "B-2 paired, ready to connect" once an
   address is known (the button is then hidden) and "No B-2 paired" before. During a sensor check
-  it reads "Bluetooth link losing N% of data" while the last `live::LOSS_WINDOW_MS` lost at least
-  1% of frames (`StreamStats::lost_frames`, summed from counter jumps); a host running Bluetooth
-  discovery causes it (`#85` covers the session). The flow runs over the
+  it reads "Bluetooth link losing N% of data" while `lost_percent` is 1 or more (a host running
+  Bluetooth discovery causes it; #85 covers the session). The flow runs over the
   `ui::bluetooth::BluetoothHost` seam (tested in `tests/ui_state.rs` with a fake host: found, not
-  found, refused, already paired, stale bond). Every RFCOMM connect (Pair and connect, Check sensors, Start) goes through
+  found, refused, already paired, stale bond). Every RFCOMM connect (Pair and connect, Check
+  sensors, Start) goes through
   `bluetooth::connect_b2`: a connect refused, reset, aborted, denied or missing its link key
   (`OpenError::Authentication`) looks like a stale bond, so it calls `BluetoothHost::remove`
   (`Adapter1.RemoveDevice`), finds, pairs and trusts the B-2 again and connects once more, never
