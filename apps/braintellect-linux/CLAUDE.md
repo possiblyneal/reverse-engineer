@@ -238,9 +238,14 @@ those findings, it cites them.
   Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`. The
   **Pair and connect** button
   (`UiModel::pair_and_connect`, shown while no address is known) finds the B-2, pairs it unless BlueZ
-  already has, trusts it and then runs the sensor check. The flow runs over the `ui::bluetooth::BluetoothHost`
-  seam (tested in `tests/ui_state.rs` with a fake host: found, not found, refused, already
-  paired, stale bond). Every RFCOMM connect (Pair and connect, Check sensors, Start) goes through
+  already has, trusts it and then runs the sensor check. The window's top line is
+  `View::connection` in large type; while idle it reads "B-2 paired, ready to connect" once an
+  address is known (the button is then hidden) and "No B-2 paired" before. During a sensor check
+  it reads "Bluetooth link losing N% of data" while the last `live::LOSS_WINDOW_MS` lost at least
+  1% of frames (`StreamStats::lost_frames`, summed from counter jumps); a host running Bluetooth
+  discovery causes it (`#85` covers the session). The flow runs over the
+  `ui::bluetooth::BluetoothHost` seam (tested in `tests/ui_state.rs` with a fake host: found, not
+  found, refused, already paired, stale bond). Every RFCOMM connect (Pair and connect, Check sensors, Start) goes through
   `bluetooth::connect_b2`: a connect refused, reset, aborted, denied or missing its link key
   (`OpenError::Authentication`) looks like a stale bond, so it calls `BluetoothHost::remove`
   (`Adapter1.RemoveDevice`), finds, pairs and trusts the B-2 again and connects once more, never

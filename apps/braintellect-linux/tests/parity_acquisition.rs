@@ -102,6 +102,17 @@ fn dropped_frame_counts_a_packet_counter_error() {
     assert_eq!(frames.len(), fixtures::expected_microvolts().len() - 1);
     assert_eq!(stats.packet_counter_errors, 1);
     assert_eq!(stats.sample_validation_errors, 0);
+    assert_eq!(stats.lost_frames, 1);
+}
+
+#[test]
+fn a_run_of_dropped_frames_counts_one_counter_error_and_every_frame_lost() {
+    let mut bytes = stream_bytes();
+    bytes.drain(32 * 5..32 * 8); // lose the frames with counters 5, 6 and 7
+    let (frames, stats) = replay(vec![bytes]);
+    assert_eq!(frames.len(), fixtures::expected_microvolts().len() - 3);
+    assert_eq!(stats.packet_counter_errors, 1);
+    assert_eq!(stats.lost_frames, 3);
 }
 
 #[test]

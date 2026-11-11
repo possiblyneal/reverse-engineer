@@ -319,14 +319,27 @@ pub struct SensorReport {
     pub overlay: SensorStatus,
     /// FP1, FP2, T3 and T4 after the last completed block; `None` before the first.
     pub fit: Option<[SensorFit; CHANNELS]>,
+    /// Percent of frames the link lost over the last [`LOSS_WINDOW_MS`]; `None` before the
+    /// first window ends, or when nothing arrived in it.
+    pub lost_percent: Option<u8>,
+}
+
+/// How long the sensor check measures frame loss over before it reports a figure.
+pub const LOSS_WINDOW_MS: i64 = 3_000;
+
+/// Percent of the frames due that were lost, rounded; `None` when none were due.
+fn lost_percent(received: u32, lost: u32) -> Option<u8> {
+    let due = u64::from(received) + u64::from(lost);
+    (due > 0).then(|| u8::try_from((u64::from(lost) * 100 + due / 2) / due).unwrap_or(100))
 }
 
 /// The sensor status before a session (`sensor-status.md`): the Source output of an
 /// opened B-2 runs through the BT-LOD design and the fixed-mode fit ([`FitMonitor`]), with no
 /// SMART-2 graph and no audio. The display timer ticks every [`TICK_MS`] (from `clock`, in
 /// milliseconds) and `report` gets a [`SensorReport`] at each tick: the overlay state, as the
-/// original's display re-evaluates it between blocks, and the fit after the last completed
-/// block. Ends when `stop` is raised or the link closes; the stream is stopped on the way out.
+/// original's display re-evaluates it between blocks, the fit after the last completed block,
+/// and the frame loss over the last [`LOSS_WINDOW_MS`]. Ends when `stop` is raised or the link
+/// closes; the stream is stopped on the way out.
 /// `clock` is read once at the start, then after every frame and quiet read.
 ///
 /// # Errors
@@ -364,10 +377,15 @@ fn sensor_loop<T: Read + Write>(
     sensors.set_engine_running(true);
     let mut fits = FitMonitor::new();
     let mut fit = None;
-    let mut next_tick = clock() + TICK_MS;
+    let start_ms = clock();
+    let mut next_tick = start_ms + TICK_MS;
+    let mut window_end = start_ms + LOSS_WINDOW_MS;
+    let (mut received, mut lost_before) = (0, session.stats().lost_frames);
+    let mut lost = None;
     while !stop.load(Ordering::Relaxed) {
         match session.next_frame() {
             Ok(Some(frame)) => {
+                received += 1;
                 for n in 0..frame.channels[0].len() {
                     let volts: [f64; CHANNELS] =
                         std::array::from_fn(|c| source[c].push(frame.channels[c][n] * 1e-6));
@@ -381,11 +399,17 @@ fn sensor_loop<T: Read + Write>(
             Err(e) => return Err(e.to_string()),
         }
         let now_ms = clock();
+        if now_ms >= window_end {
+            let lost_total = session.stats().lost_frames;
+            lost = lost_percent(received, lost_total - lost_before);
+            (window_end, received, lost_before) = (now_ms + LOSS_WINDOW_MS, 0, lost_total);
+        }
         if now_ms >= next_tick {
             next_tick = now_ms + TICK_MS;
             report(SensorReport {
                 overlay: sensors.tick(now_ms),
                 fit,
+                lost_percent: lost,
             });
         }
     }
