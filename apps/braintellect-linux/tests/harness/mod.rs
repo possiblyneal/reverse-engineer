@@ -11,6 +11,7 @@ pub mod channels;
 pub mod fixtures;
 pub mod inputs;
 pub mod peer;
+pub mod replayed;
 pub mod run8;
 pub mod sensor;
 pub mod session;

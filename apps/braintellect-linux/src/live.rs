@@ -41,6 +41,7 @@ use crate::feedback::{
     CounterClock, Interference1, Interference2, Mode, Smart2Design, Smart2Graph, SourceDesign,
     SourceFilters, StoredSeries, BLOCK_LEN, CHANNELS, DEFAULT_CODE, RATE_HZ, TRIGGER_EPOCH_MS,
 };
+use crate::fit::{FitMonitor, SensorFit};
 use crate::sensor::{SensorDesign, SensorMonitor, SensorStatus, TICK_MS};
 use crate::storage::{Channel, Header, SessionRecord, Store};
 
@@ -311,12 +312,22 @@ pub fn run<T: Read + Write>(
     finish(&mut env, snapshot, phase)
 }
 
+/// What [`monitor`] reports at each display tick.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct SensorReport {
+    /// The original's BT-LOD overlay state.
+    pub overlay: SensorStatus,
+    /// FP1, FP2, T3 and T4 after the last completed block; `None` before the first.
+    pub fit: Option<[SensorFit; CHANNELS]>,
+}
+
 /// The sensor status before a session (`sensor-status.md`): the Source output of an
-/// opened B-2 runs through the BT-LOD design alone, with no SMART-2 graph and no audio.
-/// The display timer ticks every [`TICK_MS`] (from `clock`, in milliseconds) and `report`
-/// gets the overlay state at each tick, as the original's display re-evaluates it between
-/// blocks. Ends when `stop` is raised or the link closes; the stream is stopped on the way
-/// out. `clock` is read once at the start, then after every frame and quiet read.
+/// opened B-2 runs through the BT-LOD design and the fixed-mode fit ([`FitMonitor`]), with no
+/// SMART-2 graph and no audio. The display timer ticks every [`TICK_MS`] (from `clock`, in
+/// milliseconds) and `report` gets a [`SensorReport`] at each tick: the overlay state, as the
+/// original's display re-evaluates it between blocks, and the fit after the last completed
+/// block. Ends when `stop` is raised or the link closes; the stream is stopped on the way out.
+/// `clock` is read once at the start, then after every frame and quiet read.
 ///
 /// # Errors
 /// Why the check could not run or broke off: the Source filters cannot be built, the
@@ -326,7 +337,7 @@ pub fn monitor<T: Read + Write>(
     properties: &SessionProperties,
     stop: &AtomicBool,
     clock: &mut dyn FnMut() -> i64,
-    report: &mut dyn FnMut(SensorStatus),
+    report: &mut dyn FnMut(SensorReport),
 ) -> Result<(), String> {
     let mut source = (0..CHANNELS)
         .map(|_| SourceFilters::new(&properties.lod_source(), RATE_HZ))
@@ -347,10 +358,12 @@ fn sensor_loop<T: Read + Write>(
     source: &mut [SourceFilters],
     stop: &AtomicBool,
     clock: &mut dyn FnMut() -> i64,
-    report: &mut dyn FnMut(SensorStatus),
+    report: &mut dyn FnMut(SensorReport),
 ) -> Result<(), String> {
     let mut sensors = SensorMonitor::new(SensorDesign::bt_lod());
     sensors.set_engine_running(true);
+    let mut fits = FitMonitor::new();
+    let mut fit = None;
     let mut next_tick = clock() + TICK_MS;
     while !stop.load(Ordering::Relaxed) {
         match session.next_frame() {
@@ -359,6 +372,7 @@ fn sensor_loop<T: Read + Write>(
                     let volts: [f64; CHANNELS] =
                         std::array::from_fn(|c| source[c].push(frame.channels[c][n] * 1e-6));
                     sensors.push(&volts);
+                    fit = fits.push(&volts).or(fit);
                 }
             }
             Ok(None) => return Ok(()),
@@ -369,7 +383,10 @@ fn sensor_loop<T: Read + Write>(
         let now_ms = clock();
         if now_ms >= next_tick {
             next_tick = now_ms + TICK_MS;
-            report(sensors.tick(now_ms));
+            report(SensorReport {
+                overlay: sensors.tick(now_ms),
+                fit,
+            });
         }
     }
     Ok(())

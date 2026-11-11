@@ -71,8 +71,8 @@ fn the_monitor_reports_the_status_of_the_filtered_stream_at_each_timer_tick() {
         now
     };
     let mut seen = Vec::new();
-    live::monitor(session(), &properties, &stop, &mut clock, &mut |s| {
-        seen.push(s);
+    live::monitor(session(), &properties, &stop, &mut clock, &mut |r| {
+        seen.push(r.overlay);
     })
     .expect("the stream ends cleanly");
     sensor::expect(&seen, &reference(&properties)).unwrap();

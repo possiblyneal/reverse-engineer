@@ -190,15 +190,18 @@ fn settings_that_cannot_run_are_refused_with_a_reason() {
 
 #[test]
 fn the_sensor_status_shows_before_a_session_and_is_not_available_while_one_runs() {
-    use braintellect_linux::sensor::SensorStatus;
+    use braintellect_linux::fit::SensorFit::{Good, NotTouching};
 
     let mut model = ready();
     assert_eq!(model.view().sensor, "Not Available");
 
-    model.apply(Event::Sensor(SensorStatus::AdjustFit));
-    assert_eq!(model.view().sensor, "Adjust Fit");
-    model.apply(Event::Sensor(SensorStatus::Ready));
-    assert_eq!(model.view().sensor, "Ready");
+    model.apply(Event::Sensor([Good, Good, Good, NotTouching]));
+    assert_eq!(
+        model.view().sensor,
+        "FP1 good, FP2 good, T3 good, T4 not touching"
+    );
+    model.apply(Event::Sensor([Good; 4]));
+    assert_eq!(model.view().sensor, "FP1 good, FP2 good, T3 good, T4 good");
 
     model.start().expect("starts");
     assert_eq!(model.view().sensor, "Not Available");
@@ -206,18 +209,18 @@ fn the_sensor_status_shows_before_a_session_and_is_not_available_while_one_runs(
     assert_eq!(model.view().sensor, "Not Available");
 
     // A status that arrives during the run does not show until the run ends.
-    model.apply(Event::Sensor(SensorStatus::Ready));
+    model.apply(Event::Sensor([Good; 4]));
     assert_eq!(model.view().sensor, "Not Available");
     model.apply(Event::Update(snapshot(
         Phase::Saved { id: 1 },
         Health::Streaming,
     )));
-    assert_eq!(model.view().sensor, "Ready");
+    assert_eq!(model.view().sensor, "FP1 good, FP2 good, T3 good, T4 good");
 }
 
 #[test]
 fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
-    use braintellect_linux::sensor::SensorStatus;
+    use braintellect_linux::fit::SensorFit::Good;
 
     let mut model = ready();
     assert!(model.view().can_check);
@@ -227,8 +230,8 @@ fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
     assert!(model.view().checking);
     assert!(!model.view().can_check);
     assert_eq!(model.check_sensors(), None);
-    model.apply(Event::Sensor(SensorStatus::Ready));
-    assert_eq!(model.view().sensor, "Ready");
+    model.apply(Event::Sensor([Good; 4]));
+    assert_eq!(model.view().sensor, "FP1 good, FP2 good, T3 good, T4 good");
 
     assert_eq!(model.stop_check(), Some(Command::StopCheck));
     model.apply(Event::SensorCheckEnded(None));

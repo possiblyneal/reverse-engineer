@@ -23,6 +23,8 @@ pub mod audio;
 
 pub mod live;
 
+pub mod fit;
+
 pub mod sensor;
 
 pub mod ui;

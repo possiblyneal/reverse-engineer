@@ -186,7 +186,8 @@ fn clone_states(session: Session<Replayed>) -> Vec<SensorStatus> {
         &SessionProperties::default(),
         &AtomicBool::new(false),
         &mut clock,
-        &mut |status| {
+        &mut |report| {
+            let status = report.overlay;
             // Block `b` completes at `(b + 1)` seconds and is shown until the next block.
             let Ok(block) = usize::try_from(now.get() / BLOCK_MS - 1) else {
                 return;
