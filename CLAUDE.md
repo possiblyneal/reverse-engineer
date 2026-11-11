@@ -17,22 +17,24 @@ Use these instead of per-language tools. `check` and `fix` run for every languag
 
 `scripts/check` fails on any of these; pre-commit runs `scripts/structure` over the placement rules on every commit.
 
-- Root holds only `apps/`, `docs/`, `libs/`, `scripts/`, `tests/`, `tools/`, `deploy/`, `assets/`, `gradle/`, `tmp/`, and the dot-folders `.claude/`, `.github/`, `.devcontainer/`.
+- Root holds only `apps/`, `docs/`, `libs/`, `scripts/`, `tests/`, `tools/`, `deploy/`, `assets/`, `config/`, `examples/`, `vendor/`, `tmp/`, the toolchain folders below, and the dot-folders `.claude/`, `.github/`, `.devcontainer/`.
 - Root files are permitted by name: the shipped dotfiles, `CLAUDE.md`, `GLOSSARY.md`, `GLOSSARY-MAP.md`, `.gitmodules`, `.structure-allow`, `.repo-template.json`, adopted addons, and each language's root manifests and lockfiles. Any other root file or folder needs an entry in `.structure-allow`.
 - `apps/<unit>/` is one unit: the smallest piece delivered on its own. Its code goes in `apps/<unit>/src/`. Nothing sits directly in `apps/`.
 - Split a unit into domains only for distinct business areas: `apps/<unit>/<domain>/src/`. A unit has `src/` or domains, never both. Domains do not nest.
-- A root, unit, or domain may hold its own `libs/`, `tests/`, `scripts/`, `tools/`, `assets/`, `docs/`, or `deploy/`, scoped to it. These never contain `src/`.
+- A root, unit, or domain may hold its own `libs/`, `tests/`, `scripts/`, `tools/`, `assets/`, `config/`, `docs/`, `deploy/`, `examples/`, or `vendor/`, scoped to it. Outside `examples/` and `vendor/`, these never contain `src/`.
+- `examples/` holds runnable programs that show how the code is used and assert nothing. `vendor/` holds third-party code kept verbatim; no lint, formatter, or test run touches it, and of the pre-commit hooks only the secret, key, large-file, and merge-conflict checks read it. A copy you patch is a fork you own, and goes in `libs/`.
+- A toolchain folder is permitted only beside the file whose toolchain fixes its name, at the root, a unit, or a domain: `gradle/` beside `gradlew`, `public/` beside `package.json`. A new one is added to the template's table, never as a per-repository permission.
 - `tools/` holds one directory per program, never loose files.
 - `deploy/` holds only `quadlet/`, `containerfile/`, `compose/`, `systemd/`, and `env/`.
 - `docs/` takes Markdown; anything else there needs `.structure-allow`.
-- Below a `src/`, the language decides the layout.
-- A path ending in `/` in `.structure-allow` exempts that whole prefix, for vendored or fixture trees.
+- Below a `src/`, an `examples/`, a `vendor/`, or a toolchain folder, that tree's own language or tool decides the layout.
+- A path ending in `/` in `.structure-allow` exempts that whole prefix, for a tracked fixture tree.
 - A package whose language has no root manifest fails the gate; add the root workspace manifest (`go.work`, `settings.gradle.kts`, and so on) that lists it. Swift is excepted: it has no root manifest.
 
 These are conventions `scripts/structure` does not check:
 
-- Root-level `libs/`, `tests/`, `scripts/`, `tools/`, `deploy/`, and `assets/` hold only what spans several units.
-- Files a program reads go in `assets/`. Files it writes while running go in `apps/<unit>/state/`, which is gitignored.
+- Root-level `libs/`, `tests/`, `scripts/`, `tools/`, `deploy/`, `assets/`, `config/`, `examples/`, and `vendor/` hold only what spans several units.
+- Settings a program reads go in `config/`, with per-environment values in `deploy/env/`. Other files it reads go in `assets/`. Files it writes while running go in `apps/<unit>/state/`, which is gitignored.
 - `tests/integration/` is the integration tier, run by `scripts/integration` and left out of the gate.
 
 Every unit has a `.unit.json` at its root, never at a domain's:

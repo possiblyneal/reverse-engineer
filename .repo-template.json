@@ -3,7 +3,7 @@
   "template": {
     "repository": "https://github.com/possiblyneal/template",
     "subtree": "apps/github-repository-template/src/base-repo",
-    "commit": "489130ef2246f4e991a85a9bbb8489be6b080bbe"
+    "commit": "26fe258a6b051273b387e02a024895d0f5bdf5ff"
   },
   "destination": {
     "repository": "possiblyneal/reverse-engineer",

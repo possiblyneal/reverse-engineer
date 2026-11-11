@@ -195,6 +195,11 @@ swift_each() {
   return "$status"
 }
 
+# Every Go file gofmt should read, NUL-separated, with DETECT_PRUNE_DIRS left
+# out. gofmt walks a directory without telling a vendored package from the
+# module's own, so it is handed files instead of a root.
+go_sources() { detect_find '*.go' -print0; }
+
 # Runs a command once per Go module. This is not a single run from the
 # repository root because `./...` matches only packages inside a module, and the
 # root of a workspace is not itself in one: `go build ./...` there refuses the
@@ -207,7 +212,7 @@ swift_each() {
 # it means the module graph could not be read at all.
 #
 # Of the gate's Go checks, gofmt alone skips this: it reads files
-# rather than packages, so it runs once at the root.
+# rather than packages, so it runs once, over go_sources.
 #
 # Read on fd 3, not stdin, for the same reason as swift_each: go test and go run
 # can read stdin, which would otherwise consume the remaining module list.
@@ -330,8 +335,8 @@ detect_orphan_manifests() {
 }
 
 # The orphans as a check: each one recorded as a finding, then the detection
-# verdict. Every command that runs the capabilities calls this first, since an
-# orphan is a package none of them can see.
+# verdict. A command that runs the capabilities across the repository gets this
+# through capability_command; an orphan is a package none of them can see.
 judge_orphan_manifests() {
   local orphan
   while IFS= read -r orphan; do
@@ -345,7 +350,12 @@ judge_orphan_manifests() {
 # capability; they do not know which command, manifest, or tool provides it.
 
 _capability_lint_node() { has_npm_script lint || return "$NO_RUNNER"; npm run lint; }
-_capability_lint_python() { uv_run ruff check .; }
+# vendor/ holds third-party code kept verbatim, so no check judges it and no
+# fix rewrites it: a reformatted vendored tree turns the next re-vendor into a
+# diff to review. ruff and ty walk the tree and are told here; gofmt is handed
+# go_sources; the other runners build only what their manifests declare, which
+# a vendored tree is not.
+_capability_lint_python() { uv_run ruff check --extend-exclude vendor .; }
 _capability_lint_go() { go_each go vet ./...; }
 _capability_lint_rust() { cargo clippy -- -D warnings; }
 _capability_lint_swift() { command -v swift >/dev/null 2>&1 || return "$NO_RUNNER"; swift_each swift format lint --recursive --strict .; }
@@ -356,10 +366,12 @@ _capability_lint_kotlin() {
 }
 
 _capability_format_check_node() { has_npm_script format:check || return "$NO_RUNNER"; npm run format:check; }
-_capability_format_check_python() { uv_run ruff format --check .; }
+_capability_format_check_python() { uv_run ruff format --check --extend-exclude vendor .; }
+# stdin is closed explicitly: with no file to read, gofmt reads stdin instead.
 _capability_format_check_go() {
-  local unformatted status=0
-  unformatted="$(gofmt -l .)" || status=$?
+  local unformatted status=0 files=()
+  mapfile -d '' files < <(go_sources)
+  unformatted="$(gofmt -l "${files[@]}" </dev/null)" || status=$?
   (( status == 0 )) || { echo "gofmt failed (exit $status)"; return "$status"; }
   [[ -z "$unformatted" ]] || { echo "gofmt needed: $unformatted"; return 1; }
 }
@@ -368,7 +380,7 @@ _capability_format_check_swift() { command -v swift >/dev/null 2>&1 || return "$
 _capability_format_check_kotlin() { gradle_has_task ktlintCheck || return "$NO_RUNNER"; ./gradlew ktlintCheck; }
 
 _capability_typecheck_node() { has_npm_script typecheck || return "$NO_RUNNER"; npm run typecheck; }
-_capability_typecheck_python() { uv_run ty check .; }
+_capability_typecheck_python() { uv_run ty check --exclude '**/vendor/' .; }
 
 _capability_test_node() { has_npm_script test || return "$NO_RUNNER"; npm run test; }
 # The two runners that discover tests by walking the tree are the two that have
@@ -389,7 +401,9 @@ _capability_test_python() {
     ignore+=(--ignore="$dir")
   done < <(integration_dirs)
 
-  uv_run pytest ${ignore[@]+"${ignore[@]}"} || status=$?
+  # A relative --ignore-glob is anchored at the working directory, so
+  # '*/vendor/*' alone misses the root's vendor/.
+  uv_run pytest --ignore-glob='vendor/*' --ignore-glob='*/vendor/*' ${ignore[@]+"${ignore[@]}"} || status=$?
   if (( status == 5 )); then
     echo "pytest collected no tests."
     return 0
@@ -525,8 +539,12 @@ _capability_toolchain_kotlin() {
 }
 
 _capability_format_write_node() { has_npm_script format || return "$NO_RUNNER"; npm run format; }
-_capability_format_write_python() { uv_run ruff format .; }
-_capability_format_write_go() { gofmt -w .; }
+_capability_format_write_python() { uv_run ruff format --extend-exclude vendor .; }
+_capability_format_write_go() {
+  local files=()
+  mapfile -d '' files < <(go_sources)
+  (( ${#files[@]} == 0 )) || gofmt -w "${files[@]}"
+}
 _capability_format_write_rust() { cargo fmt; }
 _capability_format_write_swift() { command -v swift >/dev/null 2>&1 || return "$NO_RUNNER"; swift_each swift format --in-place --recursive .; }
 _capability_format_write_kotlin() { gradle_has_task ktlintFormat || return "$NO_RUNNER"; ./gradlew ktlintFormat; }
@@ -633,7 +651,7 @@ for (const n of Object.keys(s)) if (n.startsWith("dev:")) console.log(n.slice(4)
 # those, and translating that away would mean telling a real tool error apart
 # from a leftover finding by exit code alone.
 _capability_lint_fix_node() { has_npm_script lint:fix || return "$NO_RUNNER"; npm run lint:fix; }
-_capability_lint_fix_python() { uv_run ruff check --fix .; }
+_capability_lint_fix_python() { uv_run ruff check --fix --extend-exclude vendor .; }
 # --allow-dirty and --allow-staged because cargo fix refuses an unclean tree,
 # and this command is only ever run on one: rewriting the working tree is what
 # it is for, and the diff is what the operator reviews before committing.
@@ -1178,4 +1196,41 @@ language_capabilities() {
       ;;
     *) echo "Unknown language capabilities command: $command" >&2; return 2 ;;
   esac
+}
+
+# The policy every repository-wide capability command shares, so scripts/ci,
+# scripts/integration and scripts/fix cannot drift from each other: the orphan
+# search first, since a capability run would go green over a package it cannot
+# see; then the early-out when no manifest exists yet; then CI_DRY_RUN, which
+# reports what would run and runs nothing.
+#
+# `capability_command <verb> <capability...>`; the verb finishes the sentence
+# "nothing to <verb> yet". It exits rather than returns on the early-out paths
+# because its callers are top-level scripts whose last act it is; on the real
+# run it returns tally's status, so a caller can act on it. A usage error
+# from the run is passed on by hand: a caller's `if` switches off set -e here.
+#
+# Not for scripts/security (its no-manifest case is a not-applicable audit row
+# and then the secret scan), nor scripts/run and scripts/package, which act
+# inside one unit, where an orphan search is the wrong scope.
+capability_command() {
+  local verb="$1"
+  shift
+
+  judge_orphan_manifests
+  tally || exit 1
+
+  if ! has_any_manifest; then
+    echo "No project manifest found, so there is nothing to $verb yet."
+    echo "Every check becomes required as soon as a manifest is added."
+    exit 0
+  fi
+
+  if [[ -n "${CI_DRY_RUN:-}" ]]; then
+    language_capabilities run --dry-run "$@" || exit
+    exit 0
+  fi
+
+  language_capabilities run "$@" || return
+  tally
 }

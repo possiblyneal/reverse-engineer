@@ -39,6 +39,13 @@ default_install_hook_types: [pre-commit, prepare-commit-msg, commit-msg, pre-pus
 # message that does not exist at pre-commit time.
 default_stages: [pre-commit]
 
+# vendor/ holds third-party code kept verbatim, at any scope. A fixer
+# rewriting its whitespace would make the next re-vendor a diff to review, and
+# a lint over it judges code this repository does not own, so each fixer and
+# lint below excludes it by name. The safety nets -- gitleaks,
+# detect-private-key, check-added-large-files, check-merge-conflict -- still
+# read it: a secret or a stray dump is no less committed for being vendored.
+
 repos:
   # Catches a secret while it is still only in the working tree, which is the
   # one point where the fix is editing a file rather than rotating a credential.
@@ -169,6 +176,7 @@ repos:
     hooks:
       - id: shellcheck
         args: [-x]
+        exclude: (^|/)vendor/
 
   # Workflow errors otherwise surface as a failed run after the push, since
   # nothing validates workflow syntax, action inputs, or shell snippets locally.
@@ -209,18 +217,20 @@ repos:
       # mixed-line-ending below excludes it too, since a patch against a CRLF
       # file carries LF headers and CRLF content.
       - id: end-of-file-fixer
-        exclude: \.(patch|diff)$
+        exclude: \.(patch|diff)$|(^|/)vendor/
       - id: trailing-whitespace
-        exclude: \.(patch|diff)$
+        exclude: \.(patch|diff)$|(^|/)vendor/
       - id: check-yaml
+        exclude: (^|/)vendor/
       # devcontainer.json is JSON with comments by specification -- the dev
       # container schema sets allowComments -- and the file ships with its
       # guidance in them. check-json parses strict JSON and fails on the first
       # `//`, so it would reject a valid devcontainer.json. Excluded whether or
       # not this repository has one; the pattern matches nothing until it does.
       - id: check-json
-        exclude: ^\.devcontainer/devcontainer\.json$
+        exclude: ^\.devcontainer/devcontainer\.json$|(^|/)vendor/
       - id: check-toml
+        exclude: (^|/)vendor/
 
       # Guards against a file committed by accident, not against a large
       # repository: only newly added files are weighed, so anything already
@@ -239,7 +249,9 @@ repos:
       # scripts/check exits early when a script it calls is not executable,
       # and shell detection depends on the same bit.
       - id: check-executables-have-shebangs
+        exclude: (^|/)vendor/
       - id: check-shebang-scripts-are-executable
+        exclude: (^|/)vendor/
 
       # Catches a key committed under a name the ignore rules do not cover.
       - id: detect-private-key
@@ -255,7 +267,7 @@ repos:
       # Enforces the LF rule in .gitattributes at commit time. Defaults to
       # rewriting to the majority ending in the file.
       - id: mixed-line-ending
-        exclude: \.(patch|diff)$
+        exclude: \.(patch|diff)$|(^|/)vendor/
 
       # Keeps main reviewable: work lands through a pull request, where the
       # template and CODEOWNERS apply, rather than as a direct commit.

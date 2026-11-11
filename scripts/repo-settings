@@ -144,26 +144,29 @@ judge_owner_review() {
 # Merge commits are read before the other two merge methods: with both of those
 # off, a repository that also has this off has no way left to merge a pull
 # request, and GitHub refuses to write that state rather than reporting it.
+# Head branch deletion is required in every repository rather than optional:
+# it is free on every plan and has no exception to wait for.
 judge_merge_settings() {
-  boolean_setting allow_merge_commit true merge-commits \
+  boolean_setting allow_merge_commit true merge-commits not-applicable \
     "turn it on in Settings, under Pull Requests; with squash and rebase off there is no way left to merge a pull request"
-  boolean_setting allow_squash_merge false squash-merging \
+  boolean_setting allow_squash_merge false squash-merging not-applicable \
     "turn it off in Settings, under Pull Requests; a squash takes its message from the pull request title, which the commit-msg hook never sees"
-  boolean_setting allow_rebase_merge false rebase-merging \
+  boolean_setting allow_rebase_merge false rebase-merging not-applicable \
     "turn it off in Settings, under Pull Requests; a rebase replays the branch as new commits, so what lands is not what CI ran against"
-  boolean_setting delete_branch_on_merge true delete-branches \
+  boolean_setting delete_branch_on_merge true delete-branches FAIL \
     "turn it on in Settings, under Pull Requests; merged branches otherwise accumulate on the remote"
 }
 
-# boolean_setting <field> <want> <check> <remediation>: a setting off is
-# optional and reported not-applicable with what turning it on costs.
+# boolean_setting <field> <want> <check> <off-state> <remediation>: a setting
+# at the other value is reported <off-state>, not-applicable when it is
+# optional and FAIL when it is required, with what changing it costs.
 boolean_setting() {
-  local field="$1" want="$2" check="$3" remediation="$4" value
+  local field="$1" want="$2" check="$3" off_state="$4" remediation="$5" value
   value="$(setting ".repo.$field // false")"
   if [[ "$value" == "$want" ]]; then
     result "$check" pass "$field is $value on $repo"
   else
-    result "$check" not-applicable "$field is $value on $repo; $remediation"
+    result "$check" "$off_state" "$field is $value on $repo; $remediation"
   fi
 }
 
