@@ -26,8 +26,8 @@
 //! Ignored: the captures are session EEG and live outside Git. Run with
 //! `S61_GOODFIT_CAPTURE`, `S61_T4OFF_CAPTURE`, `S61_SHORT_CAPTURE` and `S61_REPLAY_DIR` (a
 //! directory holding `goodfit/`, `t4off/` and `t3t4short/` with the extract's files) set, else
-//! the defaults under the repository root's `tmp/s61/`; run 8 takes `S57_RUN8_CAPTURE` and `S57_REPLAY_DIR` (holding
-//! `run8/`, default `tmp/s57o/replay`):
+//! the defaults under the repository root's `tmp/s61/`; run 8 takes `S57_RUN8_CAPTURE` and
+//! `S57_REPLAY_DIR` (holding `run8/`, default `tmp/s57o/replay`):
 //! `cargo test --release --test replay_s61 -- --ignored --nocapture`.
 
 mod harness;

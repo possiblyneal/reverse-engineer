@@ -153,9 +153,9 @@ it at `0x444a8a`.
   look identical. Floating inputs pick up similar, low, uncorrelated noise. Every
   channel then sits near the minimum, below the ceiling, and the pairs differ, so no
   fault is raised and the overlay goes green (sensors-off replay, and "Observed: worn
-  replays" below for a wearer). A pair's inputs shorted together read "Adjust Fit" in
-  every block ("Observed: worn replays", T3-T4 shorted). Identical default levels (all zero) raise the pair test, which is the pre-block
-  "Adjust Fit" below.
+  replays" below for a wearer). The T3 and T4 inputs shorted together read "Adjust Fit"
+  in every block ("Observed: worn replays"; an FP1-FP2 short was not captured). Identical
+  default levels (all zero) raise the pair test, which is the pre-block "Adjust Fit" below.
 - `Engine::State` values `3` and `4` are read as paused/stopped and running from their
   callers. The enum names were not recovered.
 
@@ -234,16 +234,15 @@ spectrum and levels):
   The clone's `DspFft` (`src/feedback/dsp_fft.rs`) is this chain, and its window is the IPP
   recipe above; `FftSpectrum` uses it too.
 
-## Observed: worn replays (2026-11-08, #61)
+## Observed: worn replays (2026-11-08 and 2026-11-10, #61)
 
 Three captures from a worn B-2 ("good fit" and "T4 lifted" on 2026-11-08, "T3-T4 shorted" on
-2026-11-10; 89 blocks each) were replayed
-into the original through the emulator (`replay-rig.md`) with hooks on the consumed samples,
-the Head2D level update and the overlay sites. The state is the overlay shown when each
-block's interval ended; levels are the Head2D line-noise, 12, 40 and 70 Hz levels. The
-clone matches the original in every block, levels bit exact and state equal, on all three
-captures over the frames the original consumed (`tests/replay_s61.rs`, ignored, inputs
-outside Git).
+2026-11-10; 89 blocks each) were replayed into the original through the emulator
+(`replay-rig.md`) with hooks on the consumed samples, the Head2D level update and the overlay
+sites. The state is the overlay shown when each block's interval ended; levels are the Head2D
+line-noise, 12, 40 and 70 Hz levels. The clone matches the original in every block, levels bit
+exact and state equal, on all three captures over the frames the original consumed
+(`tests/replay_s61.rs`, ignored, inputs outside Git).
 
 - Good fit: "Adjust Fit" appears 14 times, with the fault first seen at blocks 9, 24, 28, 31,
   34, 40, 44, 50, 55, 63, 67, 74, 79 and 87. Every one is the T3/T4 pair test (2 of 3 bands
@@ -251,12 +250,14 @@ outside Git).
   red overlay into the following blocks. Otherwise "Ready".
 - T4 lifted: "Ready" throughout. T4 sits about 1.5 dB above the minimum, inside the 15.5 dB
   outlier limit, and no pair test fires. A lifted sensor does not raise "Adjust Fit" here.
-- T3-T4 shorted: "Adjust Fit" in all 89 blocks. Only the pair test can fault there: the four
-  line-noise levels sit within 5.1 dB of each other (-33.9 to -27.8 dB), inside the 15.5 dB
-  outlier limit and below the -10 dB ceiling. The T3 and T4 12, 40 and 70 Hz levels are within 0.2 dB of each other
-  in every block (median 0.1 dB; good fit median 0.43 dB). The FP1 and FP2 levels also come
-  closer than in the good fit (median 0.29 dB against 9.1 dB, second-closest band); which pair
-  raised each fault was not logged. Every channel's median 12 Hz level is 13 to 27 dB above the
+- T3-T4 shorted: "Adjust Fit" in all 89 blocks. Only the pair test can fault there: in every
+  block the four line-noise levels sit within 5.1 dB of each other (from block 2 all between
+  -33.9 and -27.8 dB; blocks 0 and 1 are at the -120 dB floor), inside the 15.5 dB outlier
+  limit and below the -10 dB ceiling. T3/T4 meets the pair test in all 89 blocks (at least 2
+  of its 12, 40 and 70 Hz levels within 0.5 dB). FP1/FP2 also meets it in 58 of the 89 blocks
+  and in none of the good fit's; which pair raised each fault was not logged. Median
+  difference over the three bands and all 89 blocks: T3/T4 0.10 dB (good fit 0.45 dB), FP1/FP2
+  0.39 dB (good fit 9.07 dB). Every channel's median 12 Hz level is 13.6 to 27.6 dB above the
   good fit's.
 - Block: the FFT input is 500 consecutive samples plus 12 zeros, not 512 samples.
 - Source filters: the LOD Source runs with the 45 Hz low-pass off and the 25 Hz band-stop on.
@@ -265,9 +266,9 @@ outside Git).
   block 0 the default (all zero) levels fail the pair test, "Adjust Fit" shows at about
   1031 ms, and "Ready" shows at block 0.
 - The original did not consume a few received frames (3 in good fit, 4 in T4 lifted, 24 in
-  T3-T4 shorted; observed). The cause is inferred as host timing: the streams show no counter gap or failed
-  validation there, so they cannot be found from the bytes; the first level difference of a
-  naive replay is exactly the first skipped frame.
+  T3-T4 shorted; observed). The cause is inferred as host timing: the streams show no counter
+  gap or failed validation there, so they cannot be found from the bytes; the first level
+  difference of a naive replay is exactly the first skipped frame.
   The replay leaves them out, as `replay_live` does. Not reproducible by the clone.
 
 ## Observed: run 8 no-wearer overlay state (2026-11-08, #57)
