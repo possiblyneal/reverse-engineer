@@ -7,7 +7,8 @@
 //! decoded EEG; [`Smart2Graph`] runs the rest from its output: band-pass
 //! `OutAmplitude`, Aggregator and `PeakFrequency`, then the two paths, which also
 //! take those stages' logged values directly. [`StoredSeries`] is the separate design
-//! that writes the stored Band 10 and Band 80 series from the same Source output.
+//! that writes the stored BAGSD series (bands, LMH, line noise, FFT) from the same Source
+//! output.
 //! Not implemented: `OutAmplitude` of the sound element and the `SoundElement` note
 //! playback.
 
@@ -33,7 +34,7 @@ mod source;
 mod threshold;
 mod trigger_all;
 
-pub use assess::{StoredSeries, FFT_NORMAL_ORDER};
+pub use assess::{Response, StoredSeries, BANDS_00_90, FFT_NORMAL_ORDER};
 pub use band_pass::{BandPass, BandPassDesign};
 pub use counter::{BlockClock, Counter, CounterClock, TRIGGER_EPOCH_MS};
 pub use dsp_fft::{DspFft, BLOCK as FFT_BLOCK};

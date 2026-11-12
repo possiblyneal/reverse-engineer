@@ -172,6 +172,7 @@ fn the_live_engine_on_the_33_capture_against_the_original() {
             clock: &mut clock,
             graph: ORIGINAL_START,
             report: &mut |s: &Snapshot| reports.push(s.clone()),
+            capture: None,
         },
     );
     assert!(

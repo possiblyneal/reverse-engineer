@@ -10,7 +10,7 @@ use crate::live::{Health, Phase, SessionProperties, Snapshot};
 use super::bluetooth::PairFailure;
 
 /// The channel names of the montage `FP1FP2T3T4`, in the engine's channel order.
-const CHANNEL_LABELS: [&str; 4] = ["FP1", "FP2", "T3", "T4"];
+pub(crate) const CHANNEL_LABELS: [&str; 4] = ["FP1", "FP2", "T3", "T4"];
 
 /// What the engine side tells the model.
 #[derive(Debug, Clone, PartialEq)]
@@ -29,6 +29,10 @@ pub enum Event {
     Cancelled,
     Imported,
     ImportFailed(String),
+    /// A tone preview could not play, and why.
+    PreviewFailed(String),
+    /// Whether the B-2 answered the idle presence probe.
+    Presence(bool),
     /// The B-2 at this address is paired and trusted; the worker goes on to the
     /// sensor check, whose events end with [`Event::SensorCheckEnded`].
     Paired(String),
@@ -126,6 +130,8 @@ pub struct UiModel {
     checking: bool,
     /// The sensor check's latest frame loss, in percent.
     lost_percent: Option<u8>,
+    /// Whether the B-2 answered the last presence probe; `None` before one ends.
+    present: Option<bool>,
     notice: String,
 }
 
@@ -159,6 +165,7 @@ impl UiModel {
             sensor: None,
             checking: false,
             lost_percent: None,
+            present: None,
             notice,
         }
     }
@@ -284,6 +291,8 @@ impl UiModel {
                 self.notice = "Instrument imported.".to_owned();
             }
             Event::ImportFailed(why) => self.notice = format!("Import failed: {why}"),
+            Event::PreviewFailed(why) => self.notice = format!("Preview failed: {why}"),
+            Event::Presence(on) => self.present = Some(on),
             Event::Paired(address) => {
                 self.mac = Some(address);
                 self.stage = Stage::Setup;
@@ -292,6 +301,7 @@ impl UiModel {
             Event::PairFailed(failure) => {
                 if matches!(failure, PairFailure::BondLost(_)) {
                     self.mac = None;
+                    self.present = None;
                 }
                 self.stage = Stage::Setup;
                 self.notice = failure.message();
@@ -418,9 +428,11 @@ impl UiModel {
                 "Connected, checking sensors".to_owned()
             }
             (Stage::Setup | Stage::Done, _) if self.checking => self.connecting(),
-            (Stage::Setup | Stage::Done, _) if self.mac.is_some() => {
-                "B-2 paired, ready to connect".to_owned()
-            }
+            (Stage::Setup | Stage::Done, _) if self.mac.is_some() => match self.present {
+                Some(true) => "B-2 on, ready to connect".to_owned(),
+                Some(false) => "B-2 off or out of range".to_owned(),
+                None => "Checking whether the B-2 is on".to_owned(),
+            },
             (Stage::Setup | Stage::Done, _) => "No B-2 paired".to_owned(),
         }
     }
@@ -446,6 +458,6 @@ fn plural(n: u64, noun: &str) -> String {
 }
 
 /// `m:ss`.
-fn clock(seconds: u32) -> String {
+pub(crate) fn clock(seconds: u32) -> String {
     format!("{}:{:02}", seconds / 60, seconds % 60)
 }

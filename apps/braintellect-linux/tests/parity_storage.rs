@@ -94,3 +94,131 @@ fn location_follows_xdg_with_home_fallback() {
         ))
     );
 }
+
+/// A baseline-header session started at `started_at` whose two channels carry
+/// `Band-10` and `Band-80` series, and an `LMH` series and an FFT the summary leaves out.
+fn banded(started_at: i64) -> braintellect_linux::storage::SessionRecord {
+    use braintellect_linux::storage::{Channel, Point, Series};
+    let series = |name: &str, ys: &[f64]| Series {
+        name: name.to_owned(),
+        points: ys
+            .iter()
+            .enumerate()
+            .map(|(i, &y)| Point { x: i as f64, y })
+            .collect(),
+    };
+    let mut record = session::from_baseline(&fixtures::stored_record());
+    record.started_at = started_at;
+    record.channels = (1..=2)
+        .map(|n| Channel {
+            name: format!("Channel{n}"),
+            series: vec![
+                series("Band-10", &[n as f64, 3.0 * n as f64]),
+                series("Band-80", &[10.0, 20.0]),
+                series("High 1&2", &[7.0]),
+                series("FFT-Normal-Order", &[99.0]),
+            ],
+        })
+        .collect();
+    record
+}
+
+#[test]
+fn summaries_list_newest_first_with_band_means() {
+    use braintellect_linux::storage::BandMean;
+    let store = Store::open(&db_path("summaries")).expect("open");
+    let older = store.save(&banded(1_000)).expect("save");
+    let newer = store.save(&banded(2_000)).expect("save");
+    assert_eq!(store.load(newer).expect("load").started_at, 2_000);
+
+    let summaries = store.summaries().expect("summaries");
+    let ids: Vec<i64> = summaries.iter().map(|s| s.id).collect();
+    assert_eq!(ids, vec![newer, older]);
+    let mean = |channel: &str, series: &str, mean: f64| BandMean {
+        channel: channel.to_owned(),
+        series: series.to_owned(),
+        mean,
+    };
+    assert_eq!(
+        summaries[0].bands,
+        vec![
+            mean("Channel1", "Band-10", 2.0),
+            mean("Channel1", "Band-80", 15.0),
+            mean("Channel2", "Band-10", 4.0),
+            mean("Channel2", "Band-80", 15.0),
+        ]
+    );
+    assert!(!summaries[0].test);
+}
+
+#[test]
+fn a_session_marked_as_a_test_can_be_unmarked() {
+    let store = Store::open(&db_path("test-mark")).expect("open");
+    let id = store.save(&banded(1_000)).expect("save");
+    store.set_test(id, true).expect("mark");
+    assert!(store.summaries().expect("summaries")[0].test);
+    store.set_test(id, false).expect("unmark");
+    assert!(!store.summaries().expect("summaries")[0].test);
+    assert!(matches!(store.set_test(99, true), Err(Error::NotFound(99))));
+}
+
+#[test]
+fn a_session_keeps_its_capture_file() {
+    let store = Store::open(&db_path("capture")).expect("open");
+    let mut record = banded(1_000);
+    record.capture = Some("captures/b2-1000.rx".to_owned());
+    let id = store.save(&record).expect("save");
+    assert_eq!(store.load(id).expect("load"), record);
+}
+
+/// The Balance Meter of a summary comes from the stored `High` and `Low` series of
+/// channels 1 to 4, each pair's `A` the odd channel and `B` the even one.
+#[test]
+fn summaries_carry_the_balance_meter_of_the_lmh_series() {
+    use braintellect_linux::feedback::circle_balance::balance_meter;
+    use braintellect_linux::storage::{Channel, Point, Series};
+    let flat = |name: String, y: f64| Series {
+        name,
+        points: (1..=48)
+            .map(|i| Point {
+                x: f64::from(i) * 5000.0,
+                y,
+            })
+            .collect(),
+    };
+    let mut record = banded(1_000);
+    record.duration_s = 240;
+    record.channels = (1..=4)
+        .map(|n| {
+            let pair = if n <= 2 { "1&2" } else { "3&4" };
+            Channel {
+                name: format!("Channel{n}"),
+                series: vec![
+                    flat(format!("High {pair}"), f64::from(n)),
+                    flat(format!("Mid {pair}"), 100.0),
+                    flat(format!("Low {pair}"), 10.0 * f64::from(n)),
+                ],
+            }
+        })
+        .collect();
+    let store = Store::open(&db_path("balance")).expect("open");
+    store.save(&record).expect("save");
+
+    let (high, low) = (balance_meter(3.0, 4.0), balance_meter(30.0, 40.0));
+    let (emotional_high, emotional_low) = (balance_meter(1.0, 2.0), balance_meter(10.0, 20.0));
+    assert_eq!(
+        store.summaries().expect("summaries")[0].balance,
+        [
+            low,
+            high,
+            low,
+            high,
+            emotional_low,
+            emotional_high,
+            emotional_low,
+            emotional_high
+        ]
+        .map(Some)
+        .to_vec()
+    );
+}

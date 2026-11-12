@@ -3,7 +3,7 @@
 //! user's data directory); CI never runs it, and the engine it drives is tested
 //! in `tests/live_session.rs`.
 
-use std::io::ErrorKind;
+use std::io::{ErrorKind, Read};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc::{channel, Receiver};
 use std::sync::Arc;
@@ -19,7 +19,7 @@ use crate::capture::{self, Recording};
 use crate::live::{self, Environment, GraphStart, SessionProperties, OUTPUT_RATE_HZ};
 use crate::storage::{self, Store};
 
-use super::bluetooth::{connect_b2, OpenError, PairFailure};
+use super::bluetooth::{answered, connect_b2, OpenError, PairFailure};
 use super::bluez::Bluez;
 use super::state::Event;
 
@@ -81,6 +81,35 @@ impl Worker {
         })
     }
 
+    /// Play a short preview of `tone` on the audio output; a failure arrives as
+    /// [`Event::PreviewFailed`].
+    pub fn spawn_preview(tone: &'static Tone, wake: impl Fn() + Send + 'static) -> Self {
+        Self::spawn_job(wake, move |_, send| {
+            if let Err(why) = preview(tone) {
+                send(Event::PreviewFailed(why));
+            }
+            Ok(())
+        })
+    }
+
+    /// Try to reach the B-2 at `mac` and report [`Event::Presence`]. A B-2 that
+    /// answers keeps the link until it drops, which reports it off at once, or until
+    /// [`Self::stop`] frees it for a session. A page blocks up to its timeout.
+    pub fn spawn_probe(mac: String, wake: impl Fn() + Send + 'static) -> Self {
+        Self::spawn_job(wake, move |stop, send| {
+            match RfcommStream::connect(&mac, DEFAULT_CHANNEL) {
+                Ok(stream) => {
+                    send(Event::Presence(true));
+                    if !hold(stream, stop) {
+                        send(Event::Presence(false));
+                    }
+                }
+                Err(e) => send(Event::Presence(answered(&e))),
+            }
+            Ok(())
+        })
+    }
+
     fn spawn_job(
         wake: impl Fn() + Send + 'static,
         job: impl FnOnce(&AtomicBool, &dyn Fn(Event)) -> Result<(), String> + Send + 'static,
@@ -103,6 +132,11 @@ impl Worker {
             events,
             thread: Some(thread),
         }
+    }
+
+    /// Whether the job's thread has ended.
+    pub fn is_finished(&self) -> bool {
+        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
     }
 
     /// Ask the session to end; it is stored like any other end.
@@ -193,6 +227,31 @@ fn monitor(
     })
 }
 
+/// Keep an idle link open until `stop` is set (`true`) or the link drops (`false`).
+/// The B-2 sends nothing before Start, so any read that does not time out ends it.
+fn hold(mut stream: RfcommStream, stop: &AtomicBool) -> bool {
+    if stream.set_read_timeout(READ_TIMEOUT).is_err() {
+        return false;
+    }
+    let mut byte = [0u8; 1];
+    while !stop.load(Ordering::Relaxed) {
+        match stream.read(&mut byte) {
+            Err(e) if matches!(e.kind(), ErrorKind::WouldBlock | ErrorKind::TimedOut) => {}
+            Ok(n) if n > 0 => {}
+            _ => return false,
+        }
+    }
+    true
+}
+
+fn preview(tone: &Tone) -> Result<(), String> {
+    let dir = import::default_dir().ok_or(storage::NO_DATA_DIR)?;
+    let bank = tone::load_tone(&dir, tone).map_err(|e| e.to_string())?;
+    let pcm = tone::preview(&bank).map_err(|e| e.to_string())?;
+    let mut sink = AlsaSink::open(OUTPUT_RATE_HZ).map_err(|e| format!("no audio output: {e}"))?;
+    sink.write(&pcm).map_err(|e| e.to_string())
+}
+
 fn session(
     mac: &str,
     properties: &SessionProperties,
@@ -213,6 +272,11 @@ fn session(
     let data_dir = storage::default_data_dir().ok_or(storage::NO_DATA_DIR)?;
     let (file, path) = capture::create(&data_dir).map_err(|e| format!("no capture file: {e}"))?;
     eprintln!("recording the raw stream to {}", path.display());
+    let capture = path
+        .strip_prefix(&data_dir)
+        .unwrap_or(&path)
+        .to_string_lossy()
+        .into_owned();
     let session = Session::open(Recording::new(stream, file), live::stream_config()?)
         .map_err(|e| e.to_string())?;
     if stop.load(Ordering::Relaxed) {
@@ -233,6 +297,7 @@ fn session(
             clock: &mut clock,
             graph: GraphStart::LIVE,
             report: &mut report,
+            capture: Some(capture),
         },
     );
     Ok(())

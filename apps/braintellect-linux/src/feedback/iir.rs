@@ -73,6 +73,31 @@ impl Biquad {
         }
     }
 
+    /// The order-1 Butterworth low-pass of a `LowPassFilter` (`infinite`): the bilinear
+    /// transform with the edge prewarped by `tan`, as [`Biquad::band_pass`]. Inferred from
+    /// that design kind; held to the stored `Band-00` series (`session-storage.md`,
+    /// "Stored series (#56)").
+    pub(super) fn low_pass(high_hz: f64, rate_hz: f64) -> Self {
+        let w = (PI * high_hz / rate_hz).tan();
+        let d = 1.0 + w;
+        Self::first_order([w / d, w / d], (w - 1.0) / d)
+    }
+
+    /// The order-1 Butterworth high-pass of a `HighPassFilter` (`infinite`), as
+    /// [`Biquad::low_pass`]; held to the stored `Band-VHF` series.
+    pub(super) fn high_pass(low_hz: f64, rate_hz: f64) -> Self {
+        let w = (PI * low_hz / rate_hz).tan();
+        let d = 1.0 + w;
+        Self::first_order([1.0 / d, -1.0 / d], (w - 1.0) / d)
+    }
+
+    fn first_order([b0, b1]: [f64; 2], a1: f64) -> Self {
+        Self {
+            taps: [b0, b1, 0.0, 1.0, a1, 0.0],
+            delay: [0.0; 2],
+        }
+    }
+
     pub(super) fn push(&mut self, x: f64) -> f64 {
         let [b0, b1, b2, _, a1, a2] = self.taps;
         let y = b0 * x + self.delay[0];

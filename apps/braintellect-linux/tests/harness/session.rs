@@ -69,6 +69,8 @@ pub fn from_baseline(r: &StoredRecord) -> SessionRecord {
     SessionRecord {
         header,
         duration_s: r.number("exercise.duration") as u32,
+        started_at: 0,
+        capture: None,
         channels,
     }
 }

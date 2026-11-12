@@ -16,8 +16,10 @@ use std::path::{Path, PathBuf};
 
 use rusqlite::{params, Connection, OptionalExtension};
 
+use crate::feedback::circle_balance::{CircleBalanceDesign, Lmh, LmhBand, LmhPoint};
+
 /// Version of the table layout below, stored as `PRAGMA user_version`.
-pub const SCHEMA_VERSION: i64 = 1;
+pub const SCHEMA_VERSION: i64 = 2;
 
 const SCHEMA: &str = "
 CREATE TABLE session (
@@ -37,7 +39,10 @@ CREATE TABLE session (
     device_high_pass_cutoff REAL NOT NULL,
     device_low_pass_cutoff REAL NOT NULL,
     data_storage_style TEXT NOT NULL,
-    duration_s INTEGER NOT NULL
+    duration_s INTEGER NOT NULL,
+    started_at INTEGER NOT NULL,
+    capture TEXT,
+    test INTEGER NOT NULL DEFAULT 0 CHECK (test IN (0, 1))
 );
 CREATE TABLE channel (
     id INTEGER PRIMARY KEY,
@@ -106,6 +111,11 @@ pub struct Channel {
 pub struct SessionRecord {
     pub header: Header,
     pub duration_s: u32,
+    /// When the session started, in seconds since the Unix epoch.
+    pub started_at: i64,
+    /// The session's raw capture file, relative to the data directory
+    /// (`captures/b2-<secs>.rx`, [`crate::capture`]); `None` when none was written.
+    pub capture: Option<String>,
     pub channels: Vec<Channel>,
 }
 
@@ -119,6 +129,29 @@ pub enum Error {
         expected: i64,
     },
     NotFound(i64),
+}
+
+/// One stored session as the history lists it: when, how long, whether it was
+/// marked as a test, the mean of each channel's band series, and its Balance Meter.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Summary {
+    pub id: i64,
+    pub started_at: i64,
+    pub duration_s: u32,
+    /// Marked as a test run, to keep it out of research data.
+    pub test: bool,
+    /// Channel and series names (`Band-00` to `Band-VHF`) and the mean of the series' points.
+    pub bands: Vec<BandMean>,
+    /// The Circle-Balance report over the stored `LMH` series, in
+    /// [`CircleBalanceDesign`] input order; `None` where a window keeps no point.
+    pub balance: Vec<Option<f32>>,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct BandMean {
+    pub channel: String,
+    pub series: String,
+    pub mean: f64,
 }
 
 impl fmt::Display for Error {
@@ -225,8 +258,8 @@ impl Store {
             "INSERT INTO session (version, design, montage, device, samples_per_second,
                 samples_per_packet, number_channels, device_gain, sensor_gain, device_family,
                 device_model, interference_filter, device_high_pass_cutoff,
-                device_low_pass_cutoff, data_storage_style, duration_s)
-             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16)",
+                device_low_pass_cutoff, data_storage_style, duration_s, started_at, capture)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14,?15,?16,?17,?18)",
             params![
                 h.version,
                 h.design,
@@ -244,6 +277,8 @@ impl Store {
                 h.device_low_pass_cutoff,
                 h.data_storage_style,
                 s.duration_s,
+                s.started_at,
+                s.capture,
             ],
         )?;
         let session_id = tx.last_insert_rowid();
@@ -278,16 +313,90 @@ impl Store {
         Ok(ids.collect::<Result<_, _>>()?)
     }
 
+    /// Every stored session, newest first, with its band means and Balance Meter.
+    pub fn summaries(&self) -> Result<Vec<Summary>, Error> {
+        let mut stmt = self.conn.prepare(
+            "SELECT id, started_at, duration_s, test FROM session ORDER BY started_at DESC, id DESC",
+        )?;
+        let mut sessions: Vec<Summary> = stmt
+            .query_map([], |r| {
+                Ok(Summary {
+                    id: r.get(0)?,
+                    started_at: r.get(1)?,
+                    duration_s: r.get(2)?,
+                    test: r.get(3)?,
+                    bands: Vec::new(),
+                    balance: Vec::new(),
+                })
+            })?
+            .collect::<Result<_, _>>()?;
+        let mut bands = self.conn.prepare(
+            "SELECT c.name, se.name, AVG(p.y) FROM channel c
+             JOIN series se ON se.channel_id = c.id
+             JOIN point p ON p.series_id = se.id
+             WHERE c.session_id = ?1 AND se.name LIKE 'Band-%'
+             GROUP BY se.id ORDER BY c.position, se.position",
+        )?;
+        let mut lmh_points = self.conn.prepare(
+            "SELECT c.position, se.name, p.x, p.y FROM channel c
+             JOIN series se ON se.channel_id = c.id
+             JOIN point p ON p.series_id = se.id
+             WHERE c.session_id = ?1 AND c.position < 4
+               AND (se.name LIKE 'High %' OR se.name LIKE 'Low %')
+             ORDER BY c.position, se.position, p.position",
+        )?;
+        let design = CircleBalanceDesign::circle_balance();
+        for s in &mut sessions {
+            s.bands = bands
+                .query_map([s.id], |r| {
+                    Ok(BandMean {
+                        channel: r.get(0)?,
+                        series: r.get(1)?,
+                        mean: r.get(2)?,
+                    })
+                })?
+                .collect::<Result<_, _>>()?;
+            let mut lmh = Lmh::default();
+            let mut rows = lmh_points.query([s.id])?;
+            while let Some(r) = rows.next()? {
+                let (position, name, x, y): (i64, String, f64, f64) =
+                    (r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?);
+                let band = if name.starts_with("High") {
+                    LmhBand::High
+                } else {
+                    LmhBand::Low
+                };
+                lmh.series_mut(position as usize + 1, band).push(LmhPoint {
+                    x_ms: x as i64,
+                    y: y as f32,
+                });
+            }
+            s.balance = design.report(&lmh, s.duration_s);
+        }
+        Ok(sessions)
+    }
+
+    /// Mark a stored session as a test run, or clear the mark.
+    pub fn set_test(&self, id: i64, test: bool) -> Result<(), Error> {
+        match self.conn.execute(
+            "UPDATE session SET test = ?1 WHERE id = ?2",
+            params![test, id],
+        )? {
+            0 => Err(Error::NotFound(id)),
+            _ => Ok(()),
+        }
+    }
+
     /// Read a stored session back.
     pub fn load(&self, id: i64) -> Result<SessionRecord, Error> {
-        let (header, duration_s) = self
+        let (header, duration_s, started_at, capture) = self
             .conn
             .query_row(
                 "SELECT version, design, montage, device, samples_per_second,
                     samples_per_packet, number_channels, device_gain, sensor_gain,
                     device_family, device_model, interference_filter,
                     device_high_pass_cutoff, device_low_pass_cutoff, data_storage_style,
-                    duration_s
+                    duration_s, started_at, capture
                  FROM session WHERE id = ?1",
                 [id],
                 |r| {
@@ -310,6 +419,8 @@ impl Store {
                             data_storage_style: r.get(14)?,
                         },
                         r.get(15)?,
+                        r.get(16)?,
+                        r.get(17)?,
                     ))
                 },
             )
@@ -350,6 +461,8 @@ impl Store {
         Ok(SessionRecord {
             header,
             duration_s,
+            started_at,
+            capture,
             channels,
         })
     }

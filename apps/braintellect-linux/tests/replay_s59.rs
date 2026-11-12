@@ -1,4 +1,5 @@
-//! Holds the clone's BAGSD report (Band 10, Band 80 and `FFT-Normal-Order` per channel) to the
+//! Holds the clone's BAGSD report (every `00-90`, `LMH` and `LineNoise` series and
+//! `FFT-Normal-Order` per channel) to the
 //! original's stored type-9 record of the ticket-59 capture (exercise 147), within the record
 //! epsilon, and each logged `DSPFFT` block to the original's output bit for bit.
 //!
@@ -15,84 +16,17 @@ mod harness;
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::feedback::{
     DspFft, Interference1, Interference2, SourceDesign, SourceFilters, StoredSeries, CHANNELS,
-    FFT_NORMAL_ORDER, RATE_HZ,
+    RATE_HZ,
 };
-use braintellect_linux::storage::{Channel, Point, Series};
-use harness::{assertions, inputs};
+use braintellect_linux::storage::Channel;
+use harness::{assertions, inputs, record};
 
 /// Consumed sample the exercise's graph starts at, and its length: 240 040 ms. The 45 Hz
 /// low-pass is switched in at the same sample on every channel.
 const GRAPH_START: usize = 107_196;
 const SAMPLES: usize = 120_020;
-/// The original's band names for the clone's.
-const BANDS: [(&str, &str); 2] = [("Band 10", "Band-10"), ("Band 80", "Band-80")];
-
 fn read(name: &str) -> String {
     inputs::read("S59_REPLAY_DIR", "tmp/s59/replay", name)
-}
-
-/// The text of `text` after the first `open` and before the next `close`.
-fn between<'a>(text: &'a str, open: &str, close: &str) -> &'a str {
-    let rest = text.split_once(open).expect(open).1;
-    rest.split_once(close).expect(close).0
-}
-
-/// The numbers of every `<base:tag>` element in `text`, in order.
-fn values(text: &str, tag: &str) -> Vec<f64> {
-    let open = format!("<base:{tag}>");
-    text.split(&open)
-        .skip(1)
-        .map(|t| t.split('<').next().expect("value").parse().expect("number"))
-        .collect()
-}
-
-/// The original's record under the clone's names: per channel its Band-10 and Band-80 series
-/// and its `FFT-Normal-Order` vector (`x` the bin index).
-fn expected() -> Vec<Channel> {
-    let xml = read("ed_9.xml");
-    let channels: Vec<&str> = xml.split("<base:exerciseDataChannel ").skip(1).collect();
-    let section = |name: &str, data_type: &str| {
-        *channels
-            .iter()
-            .find(|c| c.contains(&format!("channelName=\"{name}\" dataType=\"{data_type}\"")))
-            .unwrap_or_else(|| panic!("{name} {data_type}"))
-    };
-    (1..=CHANNELS)
-        .map(|c| {
-            let name = format!("Channel{c}");
-            let bands = section(&name, "00-90");
-            let mut series: Vec<Series> = BANDS
-                .iter()
-                .map(|&(clone, original)| {
-                    let marker = format!("seriesName=\"{original}\"");
-                    let body = between(
-                        bands.split_once(&marker).expect(&marker).1,
-                        ">",
-                        "</base:exerciseDataSeries>",
-                    );
-                    let (xs, ys) = (values(body, "xValue"), values(body, "yValue"));
-                    Series {
-                        name: clone.into(),
-                        points: xs
-                            .into_iter()
-                            .zip(ys)
-                            .map(|(x, y)| Point { x, y })
-                            .collect(),
-                    }
-                })
-                .collect();
-            let fft = values(section(&name, "FFT"), "yValue");
-            series.push(Series {
-                name: FFT_NORMAL_ORDER.into(),
-                points: fft
-                    .into_iter()
-                    .enumerate()
-                    .map(|(bin, y)| Point { x: bin as f64, y })
-                    .collect(),
-            });
-            Channel { name, series }
-        })
-        .collect()
 }
 
 #[test]
@@ -138,15 +72,11 @@ fn the_bagsd_report_matches_the_stored_record() {
             series,
         })
         .collect();
-    let expected = expected();
-    let worst = expected
-        .iter()
-        .zip(&actual)
-        .flat_map(|(e, a)| e.series.iter().zip(&a.series))
-        .flat_map(|(e, a)| e.points.iter().zip(&a.points))
-        .map(|(e, a)| (e.y - a.y).abs())
-        .fold(0.0, f64::max);
-    println!("{SAMPLES} samples, largest |dy| {worst:e} uV");
+    let expected = record::as_stored(&read("ed_9.xml"), &actual);
+    for (channel, series, worst) in record::worst_by_series(&expected, &actual) {
+        println!("{channel}\t{series}\t{worst:e}");
+    }
+    println!("{SAMPLES} samples");
     assertions::stored_series(&expected, &actual).expect("BAGSD report parity");
 }
 

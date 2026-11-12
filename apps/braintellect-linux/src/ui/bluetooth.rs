@@ -146,3 +146,14 @@ fn try_pair(host: &mut impl BluetoothHost) -> Result<String, PairFailure> {
     host.trust(&address).map_err(PairFailure::Unavailable)?;
     Ok(address)
 }
+
+/// Whether a connect that failed with `e` still reached the B-2. Only a page that
+/// went unanswered (`EHOSTDOWN` after about 5 s, measured with the B-2 off) means it
+/// is off or out of range; a refusal or a key error comes from the device.
+#[must_use]
+pub fn answered(e: &std::io::Error) -> bool {
+    !matches!(
+        e.raw_os_error(),
+        Some(libc::EHOSTDOWN | libc::EHOSTUNREACH | libc::ETIMEDOUT)
+    )
+}

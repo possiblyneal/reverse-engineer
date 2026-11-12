@@ -1,11 +1,12 @@
-//! The clone's stored Band 10 and Band 80 series against the original's (ticket #56).
+//! The clone's stored BAGSD series against the original's (ticket #56).
 //!
 //! The original stored exercise 146 from run 8's no-wearer stream served by
 //! `braintellect-linux emulate`, with its consumed volts of channels 0 to 3 logged from the
 //! first streamed sample. `vol146.txt` holds those volts (one consumed sample per line, four
-//! channels) and `b146/series.tsv` the decoded type-9 record (channel, data type, band, x, y).
-//! This test runs the volts through the Source chain and [`StoredSeries`] and holds all eight
-//! Band-10 and Band-80 series, 49 points each, to the original's within the record tolerance.
+//! channels) and `b146/ed_9.xml` the decoded type-9 record. This test runs the volts through
+//! the Source chain and [`StoredSeries`] and holds every series it stores (per channel the
+//! eleven `00-90` bands, the three `LMH` bands and the two `LineNoise` bands, 49 points each,
+//! and the `FFT-Normal-Order` vector) to the original's within the record tolerance.
 //!
 //! Inputs the clone does not derive are the logged ones (`session-storage.md`, "Stored series
 //! (#56)"): the graph start, the per-channel 45 Hz low-pass switch sample and the stop (the
@@ -19,58 +20,27 @@ mod harness;
 
 use braintellect_linux::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use braintellect_linux::feedback::{
-    Interference1, Interference2, SourceDesign, SourceFilters, StoredSeries, CHANNELS,
-    FFT_NORMAL_ORDER, RATE_HZ,
+    Interference1, Interference2, SourceDesign, SourceFilters, StoredSeries, CHANNELS, RATE_HZ,
 };
-use braintellect_linux::storage::{Channel, Point, Series};
+use braintellect_linux::storage::Channel;
 
-use harness::{assertions, inputs};
+use harness::{assertions, inputs, record};
 
 /// Consumed sample the exercise's graph, and the stored series, start at.
 const GRAPH_START: usize = 107_504;
 /// Consumed sample the 45 Hz low-pass is switched in at, per channel (the BAGSD inputs
 /// logged by the #56 capture).
 const INTERFERENCE_SWITCH: [usize; CHANNELS] = [107_508, 107_507, 107_507, 107_507];
-/// The original's band names for the clone's.
-const BANDS: [(&str, &str); 2] = [("Band 10", "Band-10"), ("Band 80", "Band-80")];
 
 fn read(name: &str) -> String {
     inputs::read("S56_REPLAY_DIR", "tmp/s56", name)
 }
 
-/// The original's Band-10 and Band-80 series, under the clone's names.
-fn expected() -> Vec<Channel> {
-    let rows: Vec<Vec<String>> = read("b146/series.tsv")
-        .lines()
-        .map(|l| l.split('\t').map(String::from).collect())
-        .collect();
-    (1..=CHANNELS)
-        .map(|c| {
-            let name = format!("Channel{c}");
-            let series = BANDS
-                .iter()
-                .map(|&(clone, original)| Series {
-                    name: clone.into(),
-                    points: rows
-                        .iter()
-                        .filter(|r| r[0] == name && r[1] == "00-90" && r[2] == original)
-                        .map(|r| Point {
-                            x: r[3].parse().expect("x"),
-                            y: r[4].parse().expect("y"),
-                        })
-                        .collect(),
-                })
-                .collect();
-            Channel { name, series }
-        })
-        .collect()
-}
-
 #[test]
 #[ignore = "inputs live outside Git (tmp/s56)"]
 fn stored_band_series_match_the_original() {
-    let expected = expected();
-    let stop_ms = expected[0].series[0].points.last().expect("points").x;
+    // The record's last 00-90 point is at the stop (240 016 ms).
+    let stop_ms = 240_016.0;
     let samples = (stop_ms * RATE_HZ as f64 / 1000.0) as usize;
     let volts: Vec<[f64; CHANNELS]> = read("vol146.txt")
         .lines()
@@ -111,20 +81,13 @@ fn stored_band_series_match_the_original() {
         .enumerate()
         .map(|(c, series)| Channel {
             name: format!("Channel{}", c + 1),
-            // This capture's record has no spectrum to compare (`replay_s59` holds it).
-            series: series
-                .into_iter()
-                .filter(|s| s.name != FFT_NORMAL_ORDER)
-                .collect(),
+            series,
         })
         .collect();
-    let worst = expected
-        .iter()
-        .zip(&actual)
-        .flat_map(|(e, a)| e.series.iter().zip(&a.series))
-        .flat_map(|(e, a)| e.points.iter().zip(&a.points))
-        .map(|(e, a)| (e.y - a.y).abs())
-        .fold(0.0, f64::max);
-    println!("{samples} samples, largest |dy| {worst:e} uV");
+    let expected = record::as_stored(&read("b146/ed_9.xml"), &actual);
+    for (channel, series, worst) in record::worst_by_series(&expected, &actual) {
+        println!("{channel}\t{series}\t{worst:e}");
+    }
+    println!("{samples} samples");
     assertions::stored_series(&expected, &actual).expect("stored series parity");
 }
