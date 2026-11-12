@@ -202,7 +202,7 @@ repos:
   # The remaining low findings are artipacked, which wants persist-credentials:
   # false on every checkout. Dropping to low means setting that on each one.
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.31.1
+    rev: v1.32.0
     hooks:
       - id: zizmor
         args: ["--no-progress", "--config", ".github/zizmor.yml", "--min-severity", "medium"]
