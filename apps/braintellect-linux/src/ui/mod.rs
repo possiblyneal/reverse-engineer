@@ -6,5 +6,6 @@
 pub mod app;
 pub mod bluetooth;
 pub mod bluez;
+pub mod history;
 pub mod state;
 pub mod worker;

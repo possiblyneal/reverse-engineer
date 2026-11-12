@@ -146,22 +146,43 @@ read with a throwaway `mysql:5.7` container, blobs decoded as above.
 
 ## Stored series (#56)
 
-The type-9 `00-90` series are not the SMART-2 graph's band amplitudes. They come from a second
-flow design, BAGSD "Session Assess 3.4-v3.3" (`flowDesign` blob; run `0x44b700`), that the
-original runs over the session's stored filtered data after the exercise. The clone reproduces
-the Band-10 and Band-80 series of exercise 146 within `RECORD_EPSILON` (largest difference
-4.3e-7 µV over 8 series x 49 points): `feedback::StoredSeries`, asserted by the ignored
-`tests/replay_s56.rs`. Decoded records and the capture stay under `tmp/s56/`, never committed.
+The type-9 series are not the SMART-2 graph's band amplitudes. They come from a second
+flow design, BAGSD (`BAGSD-4-chnl-wDiscreteFFT-v5.1.0`, `flowDesign` blob; run `0x44b700`), that
+the original runs over the session's stored filtered data after the exercise. The clone stores
+all 17 series per channel (`feedback::StoredSeries`) and reproduces every one of exercise 146
+within `RECORD_EPSILON`, asserted by the ignored `tests/replay_s56.rs` against the decoded
+`ed_9.xml`; `tests/replay_s59.rs` does the same for exercise 147. Decoded records and the capture
+stay under `tmp/s56/`, never committed.
+
+Largest difference per series over the four channels, in µV (49 points per filter series):
+
+| Series | #146 | #147 |
+|---|---|---|
+| Band-00 | 7.75e-7 | 2.55e-7 |
+| Band-10..Band-90 | 4.47e-7 (Band-70) | 4.30e-7 (Band-20) |
+| Band-VHF | 1.57e-7 | 3.24e-7 |
+| High / Mid / Low | 4.67e-7 (Low) | 4.65e-7 (High) |
+| 50Hz / 60Hz | 4.93e-8 | 8.96e-8 |
+| FFT-Normal-Order | 9.19e-8 | 9.55e-8 |
 
 Field map (clone -> original type 9):
 
 | Clone field | Original |
 |---|---|
 | `Channel<n>` | `exerciseDataChannel channelName="Channel1..4"` |
-| series `Band 10`, `Band 80` | `dataType="00-90"` series `Band-10`, `Band-80` |
+| series `Band-00`, `Band-10`..`Band-90`, `Band-VHF` | `dataType="00-90"`, same names |
+| series `High 1&2`, `Mid 1&2`, `Low 1&2` (`3&4` on Channel3..4) | `dataType="LMH"`, same names |
+| series `50Hz`, `60Hz` | `dataType="LineNoise"`; Channel4's `60hz` is stored as `60Hz` |
+| series `FFT-Normal-Order` | `dataType="FFT"` (see "Stored FFT (#59)") |
 | point `x` (ms) | `xValue`: every 5000 ms, then a closing point at the stop |
 | point `y` (µV) | `yValue`, 1e-6 volt units |
 | `duration_s` | `properties` / header duration, 240 s |
+| `capture` | none: the clone's raw RX capture, relative to the data directory |
+| `started_at` | none: the clone's session start, Unix seconds |
+| `test` | none: the clone's Mark as test flag; test sessions are hidden from Past sessions |
+
+The `dataType` and side attributes are not stored: the series name gives the type, the channel
+the side.
 
 ### Observed (exercise 146, 2026-11-07)
 
@@ -188,11 +209,17 @@ BandPassFilter process `0x66ea7c` (tag 9).
 Per channel and band, from the graph start:
 
 1. The stored Source output above (whole ADC counts, read back as `f32` volts).
-2. An order-1 Butterworth band-pass (`infinite`; Band-10 1..3 Hz, Band-80 23..36 Hz): the
-   bilinear transform with both edges prewarped by `tan`, one section in transposed direct
-   form II, `f64` (design kind 2 at `0x653220`, prototype `0x652ac0`).
-3. `OutAmplitude`: sliding maximum of `|y|` over `W = max(rate / (2 * high), 4)` samples (83 and
-   6), then the 16-tap mean times 2/16, in `f64`.
+2. An order-1 Butterworth filter (`infinite`), one section in transposed direct form II, `f64`.
+   Band-pass (Band-10..90 1-3, 3-5.5, 5.5-7.5, 7.5-10, 10-12, 12-15, 15-23, 23-36, 36-48 Hz;
+   LMH High 15.8-34, Mid 6.8-15.8, Low 1.5-6.8 Hz; 50Hz 49-51, Channel2 49-51.1; 60Hz 59-61):
+   the bilinear transform with both edges prewarped by `tan` (design kind 2 at `0x653220`,
+   prototype `0x652ac0`). Band-00 is a low-pass at 1 Hz and Band-VHF a high-pass at 62 Hz, the
+   same prewarped bilinear order-1 design (inferred from the band-pass kind; the replays hold
+   it).
+3. `OutAmplitude`: sliding maximum of `|y|` over `W = max(rate / (2 * edge), 4)` samples, then
+   the 16-tap mean times 2/16, in `f64`. The edge is the upper one of a band-pass, the low-pass's
+   1 Hz (`W` 250; 125 fails) and the high-pass's 62 Hz (`W` 4, which the data cannot tell from the
+   block minimum; 10 fails).
 4. The `discrete` Aggregator (averageEpoch 5 s): every 2500 samples, the `f64` mean of the last
    2500 amplitudes times 1e6, at x = samples x 2 ms. At the stop it emits once more: the mean of
    the last 2500 amplitudes (relative samples 117508..120008 for the 240016 ms point), not of
@@ -222,16 +249,13 @@ from every sample's magnitude).
 Each channel's `FFT` data type holds one `FFT-Normal-Order` series: a single `fftDataList`
 (`xValue` the stop in ms, 240040 for exercise 147) of 256 `yValue`s in microvolts. It is the mean
 of the discrete `DSPFFT` outputs over 500-sample blocks of the stored Source output, the final
-partial block zero padded and included (`bagsd-design.md`). The clone stores it as the third
+partial block zero padded and included (`bagsd-design.md`). The clone stores it as the last
 series of each channel in `StoredSeries::series()`: `FFT-Normal-Order`, 256 points, `x` the bin
 index (the original keeps no per-bin x; bin `k` is `k * 500 / 512` Hz) and `y` microvolts. A live
-clone session stores it with the bands; `tests/replay_s59.rs` holds the whole report (bands and
-spectrum, four channels) to exercise 147's record within `RECORD_EPSILON`.
+clone session stores it with the other series; `tests/replay_s59.rs` holds the whole report (17
+series, four channels) to exercise 147's record within `RECORD_EPSILON`.
 
-Kept out of the clone: the other nine `00-90` bands per channel (Band-00, 20..70, 90, VHF), the
-`LMH` (Low/Mid/High) and `LineNoise` (50Hz/60Hz) series, and the `flowDesign` (type 1) and
-`flowControlMessage` (type 5) blobs. Follow-up: the other bands use the same element types, so
-their design edges are the only new input.
+Kept out of the clone: the `flowDesign` (type 1) and `flowControlMessage` (type 5) blobs.
 
 Code located: BAGSD run 0x44b700; GeneralDataCollector 0x5c1300, 0x5c1c80, 0x5c2070; IIR design
 0x66dc00, 0x6536a0, 0x653220, 0x652e90, 0x652ac0, 0x652020, 0x650a20; BandPassFilter process

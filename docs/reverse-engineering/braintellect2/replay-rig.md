@@ -214,7 +214,7 @@ clicker and a 310 s wait so the exercise stored (exercise 146). The clicker wait
 
 - Logged: 262,516 consumed samples per channel from the stream start (tag 12 and 13, none
   dropped), and 49 emits for each of 64 aggregators. The push and reset hooks never fired.
-- The stored Band-10 and Band-80 series are reproduced within `RECORD_EPSILON` from the consumed
+- The two series the clone stored at the time, Band-10 and Band-80, are reproduced within `RECORD_EPSILON` from the consumed
   volts once the Source output is truncated to whole counts, as stored; see `session-storage.md`,
   "Stored series (#56)".
 - The datadir was copied off the stopped guest's NTFS disk after `ntfsfix -d`; a throwaway

@@ -146,3 +146,20 @@ fn try_pair(host: &mut impl BluetoothHost) -> Result<String, PairFailure> {
     host.trust(&address).map_err(PairFailure::Unavailable)?;
     Ok(address)
 }
+
+/// Whether a connect that failed with `e` was answered by the B-2: refused, reset,
+/// aborted, denied, or missing its link key (the kernel reports HCI "PIN or Key Missing"
+/// as `EBADE`). Every other failure, an unanswered page (`EHOSTDOWN` after about 5 s,
+/// measured with the B-2 off) or a local one such as an adapter that is down, did not
+/// reach it.
+#[must_use]
+pub fn answered(e: &std::io::Error) -> bool {
+    use std::io::ErrorKind;
+    matches!(
+        e.kind(),
+        ErrorKind::ConnectionRefused
+            | ErrorKind::ConnectionReset
+            | ErrorKind::ConnectionAborted
+            | ErrorKind::PermissionDenied
+    ) || e.raw_os_error() == Some(libc::EBADE)
+}

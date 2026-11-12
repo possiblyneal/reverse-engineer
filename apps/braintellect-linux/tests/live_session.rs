@@ -24,6 +24,8 @@ use harness::transport::{frames_from_counts, ReplayTransport};
 
 /// Frames of the run-8 EEG in 30 s (250 frames a second).
 const THIRTY_SECONDS: usize = 30 * 250;
+/// The capture name each test run stores with its session.
+const CAPTURE: &str = "captures/b2-0.rx";
 /// Frames that warm the Source filters before the graph's first block (two samples a frame).
 const WARMUP_FRAMES: usize = GraphStart::LIVE.warmup_samples / 2;
 
@@ -115,6 +117,7 @@ fn exercise_stepping(
             clock: &mut clock,
             graph: GraphStart::LIVE,
             report: &mut report,
+            capture: Some(CAPTURE.to_owned()),
         },
     );
     Outcome {
@@ -145,6 +148,11 @@ fn a_run_to_the_end_of_the_stream_is_stored_and_readable() {
 
     let record = run.store.load(saved_id(&run)).expect("stored record");
     assert_eq!(record.duration_s, 30);
+    assert!(
+        record.started_at > 1_700_000_000,
+        "the wall-clock start is stored"
+    );
+    assert_eq!(record.capture.as_deref(), Some(CAPTURE));
     assert_eq!(record.header.design, "BT-SMART-2-v5.1.2");
     assert_eq!(record.header.number_channels, 4);
     assert_eq!(record.header.device_low_pass_cutoff, 150.0);
@@ -152,13 +160,27 @@ fn a_run_to_the_end_of_the_stream_is_stored_and_readable() {
     // One point per channel and band every 5 s, as the baseline record keeps.
     let series = &record.channels[0].series;
     let names: Vec<&str> = series.iter().map(|s| s.name.as_str()).collect();
-    assert_eq!(names, ["Band 10", "Band 80", "FFT-Normal-Order"]);
+    assert_eq!(names[1], "Band-10");
+    assert_eq!(names.len(), 17);
+    // `Store::summaries` finds the Balance Meter inputs by these names.
+    for name in ["High 1&2", "Low 1&2"] {
+        assert!(names.contains(&name), "{name}");
+    }
+    let third: Vec<&str> = record.channels[2]
+        .series
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    for name in ["High 3&4", "Low 3&4"] {
+        assert!(third.contains(&name), "{name}");
+    }
     let xs: Vec<f64> = series[0].points.iter().map(|p| p.x).collect();
     assert_eq!(xs, [5000.0, 10000.0, 15000.0, 20000.0, 25000.0, 30000.0]);
     assert!(series[0].points.iter().all(|p| p.y > 0.0));
     // The BAGSD report's spectrum is stored with the bands: 256 bins per channel.
     for channel in &record.channels {
-        let fft = &channel.series[2];
+        let fft = channel.series.last().expect("series");
+        assert_eq!(fft.name, "FFT-Normal-Order");
         assert_eq!(fft.points.len(), 256, "{}", channel.name);
         assert!(fft.points.iter().any(|p| p.y > 0.0), "{}", channel.name);
     }
@@ -397,4 +419,12 @@ fn a_capture_file_is_new_and_under_the_data_directory() {
 
     assert_eq!(path.parent(), Some(data.join("captures").as_path()));
     assert_eq!(std::fs::read(&path).expect("read back"), b"raw");
+}
+
+#[test]
+fn the_default_length_is_the_originals_first_choice() {
+    assert_eq!(
+        SessionProperties::default().duration_s,
+        braintellect_linux::live::SESSION_MINUTES[0] * 60
+    );
 }

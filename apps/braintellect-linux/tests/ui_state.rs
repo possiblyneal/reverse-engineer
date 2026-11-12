@@ -238,7 +238,7 @@ fn the_sensor_check_warns_while_the_link_loses_frames() {
     // The figure belongs to that check; the next one starts clean.
     model.apply(Event::LinkLoss(42));
     model.apply(Event::SensorCheckEnded(None));
-    assert_eq!(model.view().connection, "B-2 paired, ready to connect");
+    assert_eq!(model.view().connection, "Checking whether the B-2 is on");
     model.check_sensors();
     model.apply(Event::Sensor([Good; 4]));
     assert_eq!(model.view().connection, "Connected, checking sensors");
@@ -264,7 +264,7 @@ fn the_sensor_check_runs_before_a_session_and_ends_on_request_or_failure() {
     assert_eq!(model.stop_check(), Some(Command::StopCheck));
     model.apply(Event::SensorCheckEnded(None));
     assert!(!model.view().checking);
-    assert_eq!(model.view().connection, "B-2 paired, ready to connect");
+    assert_eq!(model.view().connection, "Checking whether the B-2 is on");
     assert_eq!(model.view().sensor, "Not Available");
     assert_eq!(model.stop_check(), None);
 
@@ -378,7 +378,7 @@ fn without_an_address_the_window_offers_pair_and_connect_and_a_known_address_doe
     let known = ready();
     assert!(!known.view().can_pair);
     assert_eq!(known.view().address, "00:11:22:33:44:55");
-    assert_eq!(known.view().connection, "B-2 paired, ready to connect");
+    assert_eq!(known.view().connection, "Checking whether the B-2 is on");
 }
 
 #[test]
@@ -718,4 +718,33 @@ fn a_bluetooth_host_that_cannot_be_reached_is_reported_as_unavailable() {
         pair(&mut host),
         Err(PairFailure::Unavailable("no adapter".to_owned()))
     );
+}
+
+#[test]
+fn a_failed_preview_says_why() {
+    let mut model = ready();
+    model.apply(Event::PreviewFailed("no audio output".to_owned()));
+
+    assert!(model.view().notice.contains("no audio output"));
+}
+
+#[test]
+fn the_idle_status_says_whether_the_b2_answered_the_probe() {
+    let mut model = ready();
+    assert_eq!(model.view().connection, "Checking whether the B-2 is on");
+    model.apply(Event::Presence(false));
+    assert_eq!(model.view().connection, "B-2 off or out of range");
+    model.apply(Event::Presence(true));
+    assert_eq!(model.view().connection, "B-2 on, ready to connect");
+}
+
+#[test]
+fn only_an_answer_from_the_device_means_the_b2_is_on() {
+    use braintellect_linux::ui::bluetooth::answered;
+    use std::io::Error;
+
+    assert!(!answered(&Error::from_raw_os_error(libc::EHOSTDOWN)));
+    assert!(!answered(&Error::from_raw_os_error(libc::ENETDOWN)));
+    assert!(answered(&Error::from_raw_os_error(libc::ECONNREFUSED)));
+    assert!(answered(&Error::from_raw_os_error(libc::EBADE)));
 }

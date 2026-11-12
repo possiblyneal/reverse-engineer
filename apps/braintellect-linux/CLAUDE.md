@@ -105,7 +105,7 @@ those findings, it cites them.
   the evaluated code with `harness::run8::Codes`.
 - **Circle-Balance report** (`src/feedback/circle_balance.rs`). `B-2-Circle-Balance-fromBAGSD-v5.1.1`
   is a post-session report (`BAGSD.report`) over a stored exercise's `High`/`Low` LMH series, not a
-  live design, so it is not in the session window. `CircleBalanceDesign::circle_balance` is its
+  live design. `CircleBalanceDesign::circle_balance` is its
   wiring, asserted against `tests/fixtures/circle_balance_design.tsv` (`make-fixtures.py --src64`,
   `tests/parity_circle_balance.rs`); `report` runs the `TimeFilter` window, the `absolute` mean (double sum, `float32` result) and the
   Balance Meter expression. Its eight values equal the original's chart inputs bit for bit over
@@ -114,7 +114,8 @@ those findings, it cites them.
   the original's call order, see `fixtures::circle_balance_report_in_call_order`). The ignored
   `tests/replay_s62.rs` holds it to the raw hook log under `tmp/s62/` (`S62_CAPTURE`, and `S62_LMH`, the
   `scripts/lmh-extract.py` output of the exercise's type-9 XML).
-  The clone stores no LMH series of its own and the live B-2 selection is not exercised.
+  `Store::summaries` runs `report` over each stored session's own `High`/`Low` series
+  (`Summary::balance`); the live B-2 selection is not exercised.
   Evidence: `audio-feedback.md`, "Circle-Balance design".
 - **Session storage** (`src/storage.rs`): all sessions live in ONE local SQLite
   database (`rusqlite`, bundled SQLite), at `$XDG_DATA_HOME/braintellect-linux/sessions.db`,
@@ -124,8 +125,14 @@ those findings, it cites them.
   duration, `channel`, `series`, `point`) and keeps the fields and meaning the original
   recorded (`docs/reverse-engineering/braintellect2/session-storage.md`), not its MySQL
   or Java-serialized, encrypted blobs. `PRAGMA user_version` is the schema version
-  (`SCHEMA_VERSION`); another version is refused, never migrated. Offline: no network,
-  and the original's records are never read or migrated.
+  (`SCHEMA_VERSION`, 2); another version is refused, never migrated. Offline: no network,
+  and the original's records are never read or migrated. Each `session` row also keeps
+  `started_at` (Unix seconds, the wall clock at stream start), `capture` (the raw capture
+  file relative to the data directory, `captures/b2-<secs>.rx`; NULL when none was written,
+  part of version 2) and `test`, the clinician's
+  mark that keeps a test run out of research data; marked sessions are kept, never deleted.
+  `Store::summaries` lists sessions newest first with each channel's `Band-%` series means
+  and the Circle-Balance report, and `Store::set_test` sets or clears the mark.
 - **Audio output** (`src/audio/`): `bank` parses an original `dll<id>.BT.dll` Qt resource into
   note to PCM (note = trailing decimal of the resource name; shape-based, so it needs no
   fixed offsets); `player` is deterministic (trigger decisions in, events and mixed PCM
@@ -180,21 +187,24 @@ those findings, it cites them.
   run-8 baseline) and the length; the design is `Smart2Design::smart2`, checked against the
   design fixture in `tests/parity_feedback.rs`.
 - **Stored series and BAGSD** (`feedback::StoredSeries`, `assess.rs`): the original's BAGSD
-  design fed the Source output from the graph's first sample, after the warm-up: per channel
-  `Band 10` and `Band 80`, one microvolt point every 5 s of stream time and a closing point at
-  the stop (`session-storage.md`, "Stored series (#56)"). The ignored `tests/replay_s56.rs`
-  holds them to the original's exercise 146 record within `RECORD_EPSILON`
-  (`assertions::stored_series`; inputs `vol146.txt` and `b146/series.tsv` in `tmp/s56`,
-  `S56_REPLAY_DIR`). The design's discrete FFT is `feedback::FftSpectrum` (500-sample blocks,
-  the partial block at the stop included); `StoredSeries` stores its mean as each channel's
-  third series, `FFT-Normal-Order` (256 points, `x` the bin index, microvolts;
-  `session-storage.md`, "Stored FFT (#59)"). The ignored `tests/replay_s59.rs` holds the whole
-  report (bands and spectrum) to exercise 147's record within `RECORD_EPSILON` (inputs
+  design fed the Source output from the graph's first sample, after the warm-up. Per channel it
+  stores the original's 17 type-9 series under the original's names, in its order: `Band-00`
+  (low-pass 1 Hz), `Band-10` to `Band-90`, `Band-VHF` (high-pass 62 Hz), the LMH `High`, `Mid`,
+  `Low` named per pair (`High 1&2`, `High 3&4`), `50Hz`, `60Hz` (Channel4's `60hz` is stored
+  as `60Hz`), then `FFT-Normal-Order`; data type and side are not stored, as name and channel
+  give them. Each filter series is one microvolt point every 5 s of stream time and a closing
+  point at the stop (`session-storage.md`, "Stored series (#56)"). The ignored
+  `tests/replay_s56.rs` holds every series of every channel to the original's exercise 146
+  record within `RECORD_EPSILON` (`assertions::stored_series` over `harness::record::as_stored`;
+  inputs `vol146.txt` and `b146/ed_9.xml` in `tmp/s56`, `S56_REPLAY_DIR`). The design's discrete
+  FFT is `feedback::FftSpectrum` (500-sample blocks, the partial block at the stop included),
+  stored as `FFT-Normal-Order` (256 points, `x` the bin index, microvolts; `session-storage.md`,
+  "Stored FFT (#59)"). The ignored `tests/replay_s59.rs` holds the whole report to exercise
+  147's record within `RECORD_EPSILON` (inputs
   `volts.tsv` from `scripts/fft-extract.py` and `ed_9.xml` in `tmp/s59/replay`,
   `S59_REPLAY_DIR`; `bagsd-design.md`, "Clone and parity") and every logged `DSPFFT` block bit
   for bit (`fft_in_<c>.txt`, `fft_out_<c>.txt`); the FFT stage is `feedback::DspFft`, shared
-  with sensor status. BAGSD is a post-session
-  design, so the session window does not offer it.
+  with sensor status.
 - **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
   `stateChangeDelay` debounce and the engine lifecycle, off while a session connects or runs
   (in `live::SensorReport::overlay`; the window no longer shows it).
@@ -236,15 +246,43 @@ those findings, it cites them.
   `View` out), tested in `tests/ui_state.rs`; `ui::app` only draws it, and `ui::worker` is the
   device glue (RFCOMM with a 1 s read timeout, ALSA, the default store, the chosen tone);
   neither is unit-tested. The window offers the ADR 0004 import when the default tone
-  (`DEFAULT_TONE`, found by key) is not imported. Entry point:
+  (`DEFAULT_TONE`, found by key) is not imported. Window order, top down: the heading, the
+  `View::connection` line, the B-2 address, the button row (Pair and connect, Start session,
+  Check sensors, Stop check, Stop), the sensor and frame lines, then the tone list, the session
+  length and a collapsed **Options** section holding the interference, band-stop, low-pass and
+  high-pass settings, then the feedback and notice lines and a collapsed **Past sessions**
+  section; the whole window scrolls. Past sessions (`ui::history::rows`, pure, tested in
+  `tests/ui_history.rs`) lists each stored session by local start time and length, expands to
+  a table of every `Band-00` to `Band-VHF` mean (one row per pass band, one column per sensor)
+  and its Balance Meter, hides test-marked sessions unless shown, and offers Mark as test /
+  Not a test; the list rereads the store at start, after a saved session and after a mark.
+  The Balance Meter (`ui::history::balance`) is a plain table, Emotional State (FP1/FP2) and
+  Activation State (T3/T4) by Before/After High/Low, each value a whole percentage of the
+  chart's full scale (`circle_balance::GRAPH_MAX_RANGE`, 4; clipped at 100% as the chart clips)
+  with the stronger side (right when positive, from `sign(1.08*B - A)`), `—` for a window the session was too
+  short for, and absent when no value exists; the original's SELF/OTHERS and BRAKE/GAS
+  labels are not shown (their orientation is unverified). The same table shows under the
+  notice once a session is saved, until the next run starts. Each tone has a ▶ preview (`Worker::spawn_preview` plays `tone::preview`:
+  `PREVIEW_NOTES` started `PREVIEW_GAP_MS` apart; one at a time, failure in the notice). The
+  session length offers only the original's `live::SESSION_MINUTES` (4 to 60 minutes). Entry point:
   `scripts/run braintellect-linux -- ui` (`--mac <MAC>` overrides the address); the window needs a display and loads
   X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages). On
   Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`. The
   **Pair and connect** button
   (`UiModel::pair_and_connect`, shown while no address is known) finds the B-2, pairs it unless BlueZ
   already has, trusts it and then runs the sensor check. The window's top line is
-  `View::connection` in large type; while idle it reads "B-2 paired, ready to connect" once an
-  address is known (the button is then hidden) and "No B-2 paired" before. During a sensor check
+  `View::connection` in large type; while idle with a known address (the button is then hidden)
+  it reads "Checking whether the B-2 is on", then "B-2 on, ready to connect" or "B-2 off or out
+  of range" from the presence probe, and "No B-2 paired" with no address. The B-2
+  never announces itself (a 2-minute `btmon` capture of a power-on showed no connect from it),
+  so the probe (`Worker::spawn_probe`, `Event::Presence`) connects one RFCOMM link and, when the
+  B-2 answers, holds it idle (the B-2 sends nothing before Start; held 60 s with 0 bytes) until
+  it drops, which reports off at once. While the B-2 is off it pages again `PROBE_EVERY` (5 s)
+  after each failure; it runs only while idle with no worker running. A B-2 that is off fails
+  with `EHOSTDOWN` after about 5 s. Only an answer from the device counts as on: a refused,
+  reset or aborted connect, a permission (link key) error or `EBADE`; any other failure, a
+  local adapter error included, counts as off (`bluetooth::answered`). Any command stops the probe and is held until it has let go of the
+  link, so two links never meet. During a sensor check
   it reads "Bluetooth link losing N% of data" while `lost_percent` is 1 or more (a host running
   Bluetooth discovery causes it; #85 covers the session). The flow runs over the
   `ui::bluetooth::BluetoothHost` seam (tested in `tests/ui_state.rs` with a fake host: found, not

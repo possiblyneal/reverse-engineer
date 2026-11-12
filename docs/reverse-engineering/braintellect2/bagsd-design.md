@@ -28,7 +28,8 @@ sensitive-free but large, so it is not committed.
 stored Source data after every SMART-2 exercise (#56 captured that run), so the session window
 cannot select it and a live session cannot run it. Same finding as Circle-Balance (#62); the
 clone has no selector for it and none is invented. Its outputs are the stored series of
-`session-storage.md`: the aggregator bands (#56) and one `FFT-Normal-Order` vector per channel.
+`session-storage.md`: the aggregator series (#56: `00-90`, `LMH`, `LineNoise`) and one
+`FFT-Normal-Order` vector per channel.
 
 ## Discrete-FFT element (observed, static)
 
@@ -54,13 +55,13 @@ clone has no selector for it and none is invented. Its outputs are the stored se
 
 `feedback::FftSpectrum` implements the above over the stored Source output, through `DspFft`, and
 `StoredSeries` (`assess.rs`) stores its mean as each channel's `FFT-Normal-Order` series (`x` the
-bin index, `y` microvolts) next to the Band 10 and Band 80 series: the clone's BAGSD report.
+bin index, `y` microvolts) after the 16 aggregator series (`session-storage.md`, "Stored
+series (#56)"): the clone's BAGSD report.
 
 `tests/replay_s59.rs` (ignored; `S59_REPLAY_DIR`, default `tmp/s59/replay`) runs the #59 capture
 (exercise 147, `replay-rig.md`) through the Source chain and `StoredSeries` and holds every
-channel's Band 10, Band 80 and `FFT-Normal-Order` to the stored record with
-`assertions::stored_series`. Observed: green, largest |dy| 3.8e-7 uV against `RECORD_EPSILON`
-1e-6. The graph start (consumed sample 107196) and the 45 Hz low-pass switch (the same sample, on
+channel's 17 series to the stored record with `assertions::stored_series`. Observed: green,
+largest |dy| 4.65e-7 uV (Channel1 `High 1&2`) against `RECORD_EPSILON` 1e-6. The graph start (consumed sample 107196) and the 45 Hz low-pass switch (the same sample, on
 every channel) are the logged inputs the clone does not derive; both were located by matching
 the first logged `DSPFFT` input block against the clone's Source output, which it equals for all
 500 samples on every channel.

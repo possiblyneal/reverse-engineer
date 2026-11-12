@@ -17,6 +17,7 @@ use crate::feedback::{NOTE_HIGH, NOTE_LOW};
 use crate::live::OUTPUT_RATE_HZ;
 
 use super::bank::{Bank, BankError, Sample};
+use super::player::{PlayError, Player};
 use super::soundfont::{render_note, SoundFont, SoundFontError};
 use super::{import, load_instrument, InstrumentError};
 
@@ -147,6 +148,29 @@ pub fn load_tone(dir: &Path, tone: &Tone) -> Result<Bank, InstrumentError> {
             }
         }
     }
+}
+
+/// The notes a tone preview plays, in order: a rising phrase inside the session's
+/// note range.
+pub const PREVIEW_NOTES: [i32; 3] = [52, 59, 64];
+/// Time between the preview's note starts.
+pub const PREVIEW_GAP_MS: i64 = 300;
+
+/// The PCM of a short preview of `bank` at the output rate: [`PREVIEW_NOTES`]
+/// started [`PREVIEW_GAP_MS`] apart, each played whole.
+///
+/// # Errors
+/// [`PlayError::UnknownNote`] when the bank lacks a preview note.
+pub fn preview(bank: &Bank) -> Result<Vec<i16>, PlayError> {
+    let mut player = Player::new(bank, OUTPUT_RATE_HZ, 0);
+    let mut end = 0;
+    for (i, note) in PREVIEW_NOTES.into_iter().enumerate() {
+        let at_ms = PREVIEW_GAP_MS * i64::try_from(i).expect("three notes");
+        if let Some(event) = player.feed(i, at_ms, Some(note))? {
+            end = end.max(event.sample_index + event.len as u64);
+        }
+    }
+    Ok(player.mix(0, usize::try_from(end).expect("frames")))
 }
 
 /// Why a SoundFont could not be imported.

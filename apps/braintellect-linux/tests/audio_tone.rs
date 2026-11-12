@@ -271,3 +271,42 @@ fn the_tone_list_is_the_original_banks_by_their_resource_names_then_the_recorded
     );
     assert_eq!(DEFAULT_TONE.key, "strings");
 }
+
+#[test]
+fn a_preview_plays_its_notes_apart_and_each_whole() {
+    use braintellect_linux::audio::bank::Bank;
+    use braintellect_linux::audio::player::PlayError;
+    use braintellect_linux::audio::tone::{preview, PREVIEW_GAP_MS, PREVIEW_NOTES};
+    use std::collections::BTreeMap;
+
+    let len = 1000;
+    let samples: BTreeMap<i32, Sample> = PREVIEW_NOTES
+        .iter()
+        .map(|&n| {
+            let pcm = vec![i16::try_from(n).expect("note"); len];
+            (
+                n,
+                Sample {
+                    rate_hz: OUTPUT_RATE_HZ,
+                    pcm,
+                },
+            )
+        })
+        .collect();
+    let pcm = preview(&Bank::from_samples(samples.clone())).expect("preview");
+
+    let gap = usize::try_from(PREVIEW_GAP_MS).expect("gap") * OUTPUT_RATE_HZ as usize / 1000;
+    assert_eq!(pcm.len(), 2 * gap + len);
+    assert_eq!(pcm[0], i16::try_from(PREVIEW_NOTES[0]).expect("note"));
+    assert_eq!(
+        pcm[2 * gap + len - 1],
+        i16::try_from(PREVIEW_NOTES[2]).expect("note")
+    );
+
+    let mut missing = samples;
+    missing.remove(&PREVIEW_NOTES[1]);
+    assert_eq!(
+        preview(&Bank::from_samples(missing)),
+        Err(PlayError::UnknownNote(PREVIEW_NOTES[1]))
+    );
+}

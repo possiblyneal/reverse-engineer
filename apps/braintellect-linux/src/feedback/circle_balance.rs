@@ -100,6 +100,10 @@ pub struct CircleBalanceDesign {
     pub inputs: Vec<MeterInput>,
 }
 
+/// `graphMaxRangeValue` of every `CircleGraphChart` graph: the chart's full scale, the value it
+/// clips its drawing to (`audio-feedback.md`, "Circle-Balance design").
+pub const GRAPH_MAX_RANGE: f32 = 4.0;
+
 /// The text of all eight `ExpressionTransform`s.
 pub const BALANCE_EXPRESSION: &str =
     "ln(1+abs((((1.08*B)-A)*10)/(A min (B*1.08))))*sign((1.08*B)-A)";

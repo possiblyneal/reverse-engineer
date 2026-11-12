@@ -28,6 +28,7 @@
 use std::collections::VecDeque;
 use std::io::{ErrorKind, Read, Write};
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::acquisition::decode::{ChannelCalibration, DeviceFamily};
 use crate::acquisition::session::{Error as SessionError, Session};
@@ -88,6 +89,10 @@ impl AudioSink for AlsaSink {
         AlsaSink::write(self, frames)
     }
 }
+
+/// The session lengths the original offers, in minutes (its "N minutes" strings,
+/// file offset 17770132 of `braintellect.exe`). The default 240 s is the first.
+pub const SESSION_MINUTES: [u32; 7] = [4, 6, 8, 10, 20, 40, 60];
 
 /// What the clinician sets for a session: the Source device settings the SMART-2
 /// run uses and the session length. The defaults are the run-8 baseline.
@@ -220,6 +225,8 @@ pub struct Environment<'a> {
     pub graph: GraphStart,
     /// Called with the state on every change worth drawing.
     pub report: &'a mut dyn FnMut(&Snapshot),
+    /// The raw capture file, relative to the data directory, stored with the session.
+    pub capture: Option<String>,
 }
 
 /// Run one session to its end and return the final state, which has also been
@@ -244,6 +251,9 @@ pub fn run<T: Read + Write>(
         elapsed_s: 0,
     };
     let (family, model) = (session.family(), session.info().system1.model);
+    let started_at = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .map_or(0, |d| d.as_secs() as i64);
     let start_ms = (env.clock)();
     let built = ChannelCalibration::new(CHANNEL_GAIN, SENSOR_GAIN)
         .map_err(|e| format!("{e:?}"))
@@ -304,7 +314,13 @@ pub fn run<T: Read + Write>(
         Ok(()) if snapshot.frames == 0 => {
             Phase::Failed("no data was received from the B-2".to_owned())
         }
-        Ok(()) => match env.store.save(&engine.record(properties, family, model)) {
+        Ok(()) => match env.store.save(&engine.record(
+            properties,
+            family,
+            model,
+            started_at,
+            env.capture.clone(),
+        )) {
             Ok(id) => Phase::Saved { id },
             Err(e) => Phase::Failed(format!("the session could not be stored: {e}")),
         },
@@ -600,6 +616,8 @@ impl<'a> Engine<'a> {
         properties: &SessionProperties,
         family: DeviceFamily,
         model: [u16; 2],
+        started_at: i64,
+        capture: Option<String>,
     ) -> SessionRecord {
         let header = Header {
             version: "5.1.57".to_owned(),
@@ -635,6 +653,8 @@ impl<'a> Engine<'a> {
         SessionRecord {
             header,
             duration_s: self.elapsed_s(),
+            started_at,
+            capture,
             channels,
         }
     }
