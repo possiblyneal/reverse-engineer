@@ -178,6 +178,8 @@ Field map (clone -> original type 9):
 | point `y` (µV) | `yValue`, 1e-6 volt units |
 | `duration_s` | `properties` / header duration, 240 s |
 | `capture` | none: the clone's raw RX capture, relative to the data directory |
+| `started_at` | none: the clone's session start, Unix seconds |
+| `test` | none: the clone's Mark as test flag; test sessions are hidden from Past sessions |
 
 The `dataType` and side attributes are not stored: the series name gives the type, the channel
 the side.

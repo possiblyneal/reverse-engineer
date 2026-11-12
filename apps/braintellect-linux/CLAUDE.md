@@ -279,8 +279,9 @@ those findings, it cites them.
   B-2 answers, holds it idle (the B-2 sends nothing before Start; held 60 s with 0 bytes) until
   it drops, which reports off at once. While the B-2 is off it pages again `PROBE_EVERY` (5 s)
   after each failure; it runs only while idle with no worker running. A B-2 that is off fails
-  with `EHOSTDOWN` after about 5 s, and only that, `EHOSTUNREACH` or `ETIMEDOUT` count as off
-  (`bluetooth::answered`). Any command stops the probe and is held until it has let go of the
+  with `EHOSTDOWN` after about 5 s. Only an answer from the device counts as on: a refused,
+  reset or aborted connect, a permission (link key) error or `EBADE`; any other failure, a
+  local adapter error included, counts as off (`bluetooth::answered`). Any command stops the probe and is held until it has let go of the
   link, so two links never meet. During a sensor check
   it reads "Bluetooth link losing N% of data" while `lost_percent` is 1 or more (a host running
   Bluetooth discovery causes it; #85 covers the session). The flow runs over the

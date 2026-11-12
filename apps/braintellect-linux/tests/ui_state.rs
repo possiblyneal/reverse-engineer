@@ -739,10 +739,12 @@ fn the_idle_status_says_whether_the_b2_answered_the_probe() {
 }
 
 #[test]
-fn only_an_unanswered_page_means_the_b2_is_off() {
+fn only_an_answer_from_the_device_means_the_b2_is_on() {
     use braintellect_linux::ui::bluetooth::answered;
     use std::io::Error;
 
     assert!(!answered(&Error::from_raw_os_error(libc::EHOSTDOWN)));
+    assert!(!answered(&Error::from_raw_os_error(libc::ENETDOWN)));
     assert!(answered(&Error::from_raw_os_error(libc::ECONNREFUSED)));
+    assert!(answered(&Error::from_raw_os_error(libc::EBADE)));
 }

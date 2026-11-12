@@ -29,6 +29,8 @@ const READ_TIMEOUT: Duration = Duration::from_secs(1);
 /// A session running on its own thread.
 pub struct Worker {
     stop: Arc<AtomicBool>,
+    /// Set as the job's thread leaves, before its last wake, so that redraw sees it ended.
+    done: Arc<AtomicBool>,
     pub events: Receiver<Event>,
     thread: Option<JoinHandle<()>>,
 }
@@ -115,13 +117,17 @@ impl Worker {
         job: impl FnOnce(&AtomicBool, &dyn Fn(Event)) -> Result<(), String> + Send + 'static,
     ) -> Self {
         let stop = Arc::new(AtomicBool::new(false));
+        let done = Arc::new(AtomicBool::new(false));
         let (send, events) = channel();
-        let flag = Arc::clone(&stop);
+        let (flag, ended) = (Arc::clone(&stop), Arc::clone(&done));
         let thread = thread::spawn(move || {
+            // A job may end without an event (a preview that played, a stopped probe) or
+            // in a panic, and the window waits on its end, so it is marked and woken then.
+            let ended = Ended { done: ended, wake };
             let send = |event: Event| {
                 // The window closing drops the receiver; nothing is left to tell.
                 let _ = send.send(event);
-                wake();
+                (ended.wake)();
             };
             if let Err(why) = job(&flag, &send) {
                 send(Event::Failed(why));
@@ -129,19 +135,33 @@ impl Worker {
         });
         Self {
             stop,
+            done,
             events,
             thread: Some(thread),
         }
     }
 
-    /// Whether the job's thread has ended.
+    /// Whether the job has ended.
     pub fn is_finished(&self) -> bool {
-        self.thread.as_ref().is_none_or(JoinHandle::is_finished)
+        self.done.load(Ordering::Acquire)
     }
 
     /// Ask the session to end; it is stored like any other end.
     pub fn stop(&self) {
         self.stop.store(true, Ordering::Relaxed);
+    }
+}
+
+/// Marks a job ended and wakes the window when the job's thread leaves, unwinding or not.
+struct Ended<W: Fn()> {
+    done: Arc<AtomicBool>,
+    wake: W,
+}
+
+impl<W: Fn()> Drop for Ended<W> {
+    fn drop(&mut self) {
+        self.done.store(true, Ordering::Release);
+        (self.wake)();
     }
 }
 
@@ -164,15 +184,10 @@ fn open_b2(known: Option<&str>) -> Result<(String, RfcommStream), PairFailure> {
     connect_b2(&mut host, known, |mac| {
         let stream = RfcommStream::connect(mac, DEFAULT_CHANNEL).map_err(|e| {
             let why = format!("cannot connect to {mac}: {e}");
-            // The kernel reports HCI "PIN or Key Missing" as `EBADE`.
-            let key_missing = e.raw_os_error() == Some(libc::EBADE);
-            match e.kind() {
-                ErrorKind::ConnectionRefused
-                | ErrorKind::ConnectionReset
-                | ErrorKind::ConnectionAborted
-                | ErrorKind::PermissionDenied => OpenError::Authentication(why),
-                _ if key_missing => OpenError::Authentication(why),
-                _ => OpenError::Other(why),
+            if answered(&e) {
+                OpenError::Authentication(why)
+            } else {
+                OpenError::Other(why)
             }
         })?;
         stream

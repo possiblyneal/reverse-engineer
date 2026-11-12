@@ -56,6 +56,8 @@ struct App {
     lib_dir: String,
     /// The stored sessions, or why they could not be read.
     history: Result<Vec<Summary>, String>,
+    /// Why the last Mark as test / Not a test failed, until the next one.
+    mark_failed: Option<String>,
     show_tests: bool,
     /// The session the last run stored, until the next run starts.
     saved: Option<i64>,
@@ -79,16 +81,20 @@ impl App {
             pending: Vec::new(),
             lib_dir: String::new(),
             history: read_history(),
+            mark_failed: None,
             show_tests: false,
             saved: None,
         }
     }
 
     /// Mark a stored session as a test run or clear the mark, then list the sessions again.
+    /// A failure keeps the list shown, so the mark can be tried again, and says why.
     fn mark_test(&mut self, id: i64, test: bool) {
-        let marked =
-            open_store().and_then(|store| store.set_test(id, test).map_err(|e| e.to_string()));
-        self.history = marked.and_then(|()| read_history());
+        self.mark_failed = None;
+        match open_store().and_then(|store| store.set_test(id, test).map_err(|e| e.to_string())) {
+            Ok(()) => self.history = read_history(),
+            Err(why) => self.mark_failed = Some(why),
+        }
     }
 
     /// Run `command` once the probe has let go of the link, so the two links never meet.
@@ -205,6 +211,58 @@ impl App {
         }
     }
 
+    /// The Past sessions section; the session the clinician asked to mark or unmark, if any.
+    fn past_sessions(&mut self, ui: &mut egui::Ui) -> Option<(i64, bool)> {
+        let mut mark = None;
+        egui::CollapsingHeader::new("Past sessions").show(ui, |ui| {
+            ui.checkbox(&mut self.show_tests, "Show test sessions");
+            if let Some(why) = &self.mark_failed {
+                ui.label(format!("The mark could not be saved: {why}"));
+            }
+            match &self.history {
+                Err(why) => {
+                    ui.label(format!("Past sessions could not be read: {why}"));
+                }
+                Ok(sessions) => {
+                    let rows = history::rows(sessions, self.show_tests, history::local_time);
+                    if rows.is_empty() {
+                        ui.label("No sessions stored yet.");
+                    }
+                    for row in rows {
+                        egui::CollapsingHeader::new(&row.title)
+                            .id_salt(("session", row.id))
+                            .show(ui, |ui| {
+                                egui::Grid::new(("results", row.id)).show(ui, |ui| {
+                                    ui.label("Band (µV)");
+                                    for sensor in &row.sensors {
+                                        ui.label(sensor);
+                                    }
+                                    ui.end_row();
+                                    for (band, means) in &row.bands {
+                                        ui.label(band);
+                                        for mean in means {
+                                            ui.label(mean);
+                                        }
+                                        ui.end_row();
+                                    }
+                                });
+                                balance_grid(ui, ("balance", row.id), &row.balance);
+                                let label = if row.test {
+                                    "Not a test"
+                                } else {
+                                    "Mark as test"
+                                };
+                                if ui.button(label).clicked() {
+                                    mark = Some((row.id, !row.test));
+                                }
+                            });
+                    }
+                }
+            }
+        });
+        mark
+    }
+
     fn previewing(&self) -> bool {
         running(self.preview.as_ref())
     }
@@ -272,7 +330,11 @@ impl eframe::App for App {
                         command = self.model.pair_and_connect();
                     }
                     if ui
-                        .add_enabled(view.can_start, egui::Button::new("Start session"))
+                        // A session opens the audio output, which a playing preview holds.
+                        .add_enabled(
+                            view.can_start && can_preview,
+                            egui::Button::new("Start session"),
+                        )
                         .clicked()
                     {
                         command = self.model.start();
@@ -432,50 +494,9 @@ impl eframe::App for App {
                 }
                 ui.separator();
 
-                egui::CollapsingHeader::new("Past sessions").show(ui, |ui| {
-                    ui.checkbox(&mut self.show_tests, "Show test sessions");
-                    match &self.history {
-                        Err(why) => {
-                            ui.label(format!("Past sessions could not be read: {why}"));
-                        }
-                        Ok(sessions) => {
-                            let rows =
-                                history::rows(sessions, self.show_tests, history::local_time);
-                            if rows.is_empty() {
-                                ui.label("No sessions stored yet.");
-                            }
-                            for row in rows {
-                                egui::CollapsingHeader::new(&row.title)
-                                    .id_salt(("session", row.id))
-                                    .show(ui, |ui| {
-                                        egui::Grid::new(("results", row.id)).show(ui, |ui| {
-                                            ui.label("Band (µV)");
-                                            for sensor in &row.sensors {
-                                                ui.label(sensor);
-                                            }
-                                            ui.end_row();
-                                            for (band, means) in &row.bands {
-                                                ui.label(band);
-                                                for mean in means {
-                                                    ui.label(mean);
-                                                }
-                                                ui.end_row();
-                                            }
-                                        });
-                                        balance_grid(ui, ("balance", row.id), &row.balance);
-                                        let label = if row.test {
-                                            "Not a test"
-                                        } else {
-                                            "Mark as test"
-                                        };
-                                        if ui.button(label).clicked() {
-                                            mark = Some((row.id, !row.test));
-                                        }
-                                    });
-                            }
-                        }
-                    }
-                });
+                if let Some(marked) = self.past_sessions(ui) {
+                    mark = Some(marked);
+                }
             });
         });
         if let Some((id, test)) = mark {

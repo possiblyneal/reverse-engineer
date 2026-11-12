@@ -162,6 +162,18 @@ fn a_run_to_the_end_of_the_stream_is_stored_and_readable() {
     let names: Vec<&str> = series.iter().map(|s| s.name.as_str()).collect();
     assert_eq!(names[1], "Band-10");
     assert_eq!(names.len(), 17);
+    // `Store::summaries` finds the Balance Meter inputs by these names.
+    for name in ["High 1&2", "Low 1&2"] {
+        assert!(names.contains(&name), "{name}");
+    }
+    let third: Vec<&str> = record.channels[2]
+        .series
+        .iter()
+        .map(|s| s.name.as_str())
+        .collect();
+    for name in ["High 3&4", "Low 3&4"] {
+        assert!(third.contains(&name), "{name}");
+    }
     let xs: Vec<f64> = series[0].points.iter().map(|p| p.x).collect();
     assert_eq!(xs, [5000.0, 10000.0, 15000.0, 20000.0, 25000.0, 30000.0]);
     assert!(series[0].points.iter().all(|p| p.y > 0.0));
