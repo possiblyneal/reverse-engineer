@@ -22,7 +22,7 @@ echo "check-test"
 gate_fixture() {
   fixture "$1"
   local step
-  for step in doctor script-tests structure github-parity; do
+  for step in doctor script-tests structure payload-parity; do
     printf '#!/usr/bin/env bash\necho "chatter from %s"\n' "$step" > "$work/scripts/$step"
   done
   printf '#!/usr/bin/env bash\necho "lint               pass             python"\n%s\n' \

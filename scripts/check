@@ -66,12 +66,12 @@ scripts/structure </dev/null
 # Whether this repository's own .github/ still matches the copy it ships to
 # generated repositories. Reports not-applicable where there is no payload,
 # which is every repository generated from one.
-if [[ ! -x scripts/github-parity ]]; then
-  echo "scripts/github-parity is missing or not executable."
+if [[ ! -x scripts/payload-parity ]]; then
+  echo "scripts/payload-parity is missing or not executable."
   exit 1
 fi
 
-scripts/github-parity </dev/null
+scripts/payload-parity </dev/null
 
 if [[ ! -x scripts/ci ]]; then
   echo "scripts/ci is missing or not executable."
