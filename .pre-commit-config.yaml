@@ -74,21 +74,22 @@ repos:
         always_run: true
         pass_filenames: false
 
-      # .github/ can exist twice: a repository that ships a template payload
-      # holds its own configuration and the copy generated repositories are cut
-      # from. Dependabot's github-actions ecosystem reaches the root one only,
-      # so a merged bump leaves the payload pinned to the old SHA through a
-      # pull request that looks routine. This refuses the divergence rather
-      # than repairing it, which turns each root bump into a complete one, and
-      # reports not-applicable where there is no payload.
+      # .github/ and scripts/ can each exist twice: a repository that ships a
+      # template payload holds its own copy and the one generated repositories
+      # are cut from. Dependabot's github-actions ecosystem reaches the root
+      # .github/ only, so a merged bump leaves the payload pinned to the old
+      # SHA through a pull request that looks routine; and the shellcheck hook
+      # below skips the payload's scripts/, which is sound only while it
+      # matches the root's. This refuses a divergence rather than repairing it,
+      # which turns each root bump into a complete one, and reports
+      # not-applicable where there is no payload.
       #
       # always_run with no files filter, for the same reason as adr-index
       # above: a path filter reads the staged paths, which exclude deletions,
-      # and deleting a workflow from one tree is exactly the divergence to
-      # catch.
-      - id: github-parity
-        name: check the two .github/ trees agree
-        entry: scripts/github-parity
+      # and deleting a file from one tree is exactly the divergence to catch.
+      - id: payload-parity
+        name: check the root and payload .github/ and scripts/ trees agree
+        entry: scripts/payload-parity
         language: script
         always_run: true
         pass_filenames: false
@@ -171,12 +172,27 @@ repos:
   # -x follows `source` into the detection library, so it is analyzed with
   # its caller rather than reported as unreadable. Without it every script that
   # sources the detection library fails on SC1091.
+  #
+  # require_serial: false overrides the upstream hook's true, so pre-commit
+  # splits the files across CPUs. -x re-analyzes the detection library for
+  # every script that sources it, which made one serial process the slowest
+  # step of scripts/check. Each file is still analyzed with what it sources,
+  # whichever partition it lands in, so the findings are the same.
+  #
+  # The template payload's scripts/ is skipped: scripts/payload-parity holds it
+  # byte-identical to the root's, so analyzing it again reports the same
+  # findings at twice the cost. A repository with no payload matches nothing.
+  # Parity is read from the index, so the guarantee holds at commit: an
+  # unstaged edit to a payload script alone goes unanalyzed by scripts/check,
+  # and payload-parity refuses its commit until the root copy, which is
+  # analyzed, matches.
   - repo: https://github.com/shellcheck-py/shellcheck-py
     rev: v0.11.0.1
     hooks:
       - id: shellcheck
         args: [-x]
-        exclude: (^|/)vendor/
+        require_serial: false
+        exclude: (^|/)vendor/|^apps/github-repository-template/src/base-repo/scripts/
 
   # Workflow errors otherwise surface as a failed run after the push, since
   # nothing validates workflow syntax, action inputs, or shell snippets locally.

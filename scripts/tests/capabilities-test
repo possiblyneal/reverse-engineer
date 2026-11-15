@@ -799,7 +799,7 @@ stub go <<'STUB'
 case "$1" in
   list)
     if [[ "$2" == -m ]]; then printf '%s\n' "$PWD"; exit 0; fi
-    printf 'example.com/work/src\nexample.com/work/tests/integration\n'
+    printf 'example.com/work/src\t%s/src\nexample.com/work/tests/integration\t%s/tests/integration\n' "$PWD" "$PWD"
     exit 0
     ;;
   test) printf '%s\n' "$*" >> "${MARKER:?}" ;;
@@ -812,6 +812,71 @@ exit 0
 STUB
 MARKER="$work/go-args" ci_real > /dev/null 2>&1
 if [[ "$(grep '^test ' "$work/go-args" 2>/dev/null)" == "test example.com/work/src" ]]; then
+  pass
+else
+  fail "the gate's go test asks for $(grep '^test ' "$work/go-args" 2>/dev/null) rather than the packages outside the tier"
+fi
+
+# A tier can be a module of its own, named in go.work, whose go.mod gives it an
+# import path without tests/integration in it. The exclusion follows the
+# directory, so that module's packages stay at the tier's runner too.
+fixture "the gate's go test leaves out a tier that is its own module"
+go_mod "$work"
+mkdir -p "$work/tests/integration"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    if [[ "$2" == -m ]]; then printf '%s\n%s/tests/integration\n' "$PWD" "$PWD"; exit 0; fi
+    if [[ "$PWD" == */tests/integration ]]; then
+      printf 'example.com/work-integration\t%s\n' "$PWD"
+    else
+      printf 'example.com/work/src\t%s/src\n' "$PWD"
+    fi
+    exit 0
+    ;;
+  test) printf '%s\n' "$*" >> "${MARKER:?}" ;;
+esac
+exit 0
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+MARKER="$work/go-args" ci_real > /dev/null 2>&1
+if [[ "$(grep '^test ' "$work/go-args" 2>/dev/null)" == "test example.com/work/src" ]]; then
+  pass
+else
+  fail "the gate's go test asks for $(grep '^test ' "$work/go-args" 2>/dev/null) rather than the packages outside the tier"
+fi
+
+# The tier is a path below the repository root. A checkout that itself sits
+# under a tests/integration/ directory, as a CI workspace can, has that segment
+# in every absolute directory go list names, and must still test its packages.
+fixture "the gate's go test keeps packages of a checkout under a tests/integration path"
+checkout="$work/ci/tests/integration/repo"
+mkdir -p "$checkout/tests/integration"
+git -C "$checkout" init -q
+mv "$work/scripts" "$checkout/"
+go_mod "$checkout"
+stub go <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  list)
+    if [[ "$2" == -m ]]; then printf '%s\n' "$PWD"; exit 0; fi
+    printf 'example.com/repo/src\t%s/src\nexample.com/repo/tests/integration\t%s/tests/integration\n' "$PWD" "$PWD"
+    exit 0
+    ;;
+  test) printf '%s\n' "$*" >> "${MARKER:?}" ;;
+esac
+exit 0
+STUB
+stub gofmt <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+(cd "$checkout" && MARKER="$work/go-args" scripts/ci > /dev/null 2>&1 </dev/null)
+if [[ "$(grep '^test ' "$work/go-args" 2>/dev/null)" == "test example.com/repo/src" ]]; then
   pass
 else
   fail "the gate's go test asks for $(grep '^test ' "$work/go-args" 2>/dev/null) rather than the packages outside the tier"
@@ -868,7 +933,7 @@ stub go <<'STUB'
 case "$1" in
   list)
     if [[ "$2" == -m ]]; then printf '%s\n' "$PWD"; exit 0; fi
-    printf 'example.com/work/tests/integrationutil\nexample.com/work/tests/integration\n'
+    printf 'example.com/work/tests/integrationutil\t%s/tests/integrationutil\nexample.com/work/tests/integration\t%s/tests/integration\n' "$PWD" "$PWD"
     exit 0
     ;;
   test) printf '%s\n' "$*" >> "${MARKER:?}" ;;

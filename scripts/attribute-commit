@@ -78,12 +78,27 @@ attributed() {
 
 # Prints the PID of the Bash tool's shell running this commit -- the ancestor
 # whose parent is Claude Code -- or nothing.
+#
+# Each step reads /proc/<pid>/stat in-process where it exists: a ps per step
+# cost about 20ms of CPU, paid by every commit, and a test suite making
+# hundreds of commits spent more on this walk than on its tests. The parent is
+# the second field after comm, found after the last ") " since comm is
+# parenthesized and may itself contain ") " or a newline; the whole file is
+# read, so a newline cannot cut it short. macOS has no /proc and keeps ps.
 claude_shell() {
-  local claude="${CLAUDE_PID:-}" pid=$$ parent steps
+  local claude="${CLAUDE_PID:-}" pid=$$ parent stat steps
   [[ "$claude" =~ ^[0-9]+$ ]] || return 0
   for (( steps = 0; steps < 32; steps++ )); do
-    parent="$(ps -o ppid= -p "$pid" 2>/dev/null)" || return 0
-    parent="${parent//[[:space:]]/}"
+    if [[ -r /proc/$$/stat ]]; then
+      stat=
+      read -r -d '' stat 2>/dev/null < "/proc/$pid/stat" || [[ -n "$stat" ]] || return 0
+      stat="${stat##*) }"
+      stat="${stat#* }"
+      parent="${stat%% *}"
+    else
+      parent="$(ps -o ppid= -p "$pid" 2>/dev/null)" || return 0
+      parent="${parent//[[:space:]]/}"
+    fi
     if [[ "$parent" == "$claude" ]]; then
       printf '%s' "$pid"
       return 0

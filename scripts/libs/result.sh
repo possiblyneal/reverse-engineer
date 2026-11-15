@@ -2,7 +2,7 @@
 # How a check reports: the four Result states, the printed layout, the findings
 # under a failed check, and the tally that becomes the process exit status.
 # Sourced by libs/detect.sh, and so by every capability command, and directly
-# by structure, github-parity, changelog-check, protect-branch, and
+# by structure, payload-parity, changelog-check, protect-branch, and
 # repo-settings.
 #
 # Sourced, never executed: no shebang, no executable bit, a .sh extension so
