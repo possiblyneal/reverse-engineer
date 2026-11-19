@@ -46,4 +46,16 @@ else
   fail "scripts/clean left a generated dist/ or __pycache__/ directory in place"
 fi
 
+# The CMake binary directory is pruned from every search, since FetchContent
+# clones dependencies into it, so it is removed by path rather than found.
+current="scripts/clean removes the CMake binary directory"
+mkdir -p "$work/build/_deps/lib-src"
+: > "$work/build/CMakeCache.txt"
+(cd "$work" && scripts/clean) >/dev/null 2>&1
+if [[ ! -d "$work/build" ]]; then
+  pass
+else
+  fail "scripts/clean left the root build/ in place"
+fi
+
 report

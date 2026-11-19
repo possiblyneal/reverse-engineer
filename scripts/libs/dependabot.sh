@@ -43,8 +43,8 @@
 # The manifest filenames Dependabot reads, and the package-ecosystem each one
 # earns: dependabot_ecosystem_of <basename>, empty for anything else.
 #
-# Deliberately the same six languages the rest of the template detects, plus
-# docker, and the same set the mapping table in
+# Deliberately the languages the rest of the template detects, less C and C++,
+# plus docker, and the same set the mapping table in
 # apps/repo-builder/src/references/lifecycle.md states. Anything else recognized
 # here and nowhere else is a shape no other check can see, so a manifest outside
 # this list is reported by a /repo-builder flow on its own gate rather than
@@ -63,6 +63,9 @@
 # contains the word, such as docker-notes.md or my-dockerfile-guide.txt, earns
 # nothing; Dockerfile.<anything> does, and Dependabot reads it too. An ignore
 # file named for its Containerfile is not an image pin and maps to nothing.
+#
+# CMakeLists.txt is absent because Dependabot has no CMake ecosystem: a
+# FetchContent dependency is a URL and a tag that nothing bumps.
 #
 # go.work and settings.gradle.kts are absent on purpose. They are workspace
 # files: they say where the modules are, and the modules are what Dependabot

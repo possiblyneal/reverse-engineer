@@ -29,7 +29,11 @@ find . \( "${prune[@]}" \) -prune -o \
   -type f \( -name '*.pyc' -o -name '*.pyo' \) -exec rm -f {} +
 
 # Dependency caches, kept out of the search above so that only these exact
-# paths are removed rather than every directory sharing their names.
-rm -rf node_modules/.cache target/debug/.fingerprint
+# paths are removed rather than every directory sharing their names. The CMake
+# binary directory is one by path too: the prune above skips it, since it holds
+# fetched dependencies' own trees, so it is removed whole here.
+rm -rf node_modules/.cache target/debug/.fingerprint "$CMAKE_BUILD_DIR"
 
-echo "Cleaned common generated files and caches. Add project-specific cleanup to scripts/clean."
+# Project-specific cleanup goes above this line. The hint lives here rather
+# than in the output, where every run repeated it to a reader who only cleaned.
+echo "Cleaned common generated files and caches."

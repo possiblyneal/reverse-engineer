@@ -67,6 +67,16 @@ bare_package "$work"
 out="$(cd "$work" && scripts/ci 2>&1)"
 assert_unavailable $? 'lint +unavailable +node' "$out"
 
+# The last line is what `| tail -1` keeps, so it alone must carry the exit
+# status and count unavailable beside FAIL.
+current="ci ends with a verdict naming its status and the unavailable lines"
+want_unavailable="$(grep -cE '^[A-Za-z0-9_-]+ +unavailable( |$)' <<< "$out")"
+if [[ "$(tail -n 1 <<< "$out")" =~ ^scripts/ci\ exited\ 1:\ 0\ FAIL,\ ${want_unavailable}\ unavailable,\ [0-9]+\ not-applicable,\ [0-9]+\ pass$ ]]; then
+  pass
+else
+  fail "wanted a closing verdict with $want_unavailable unavailable, got: $(tail -n 1 <<< "$out")"
+fi
+
 fixture "fix fails on a language with no formatter"
 bare_package "$work"
 out="$(cd "$work" && scripts/fix 2>&1)"

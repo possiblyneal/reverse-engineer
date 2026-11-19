@@ -104,15 +104,28 @@ fi
 
 # Regeneration is the check, so the script must report the rewrite itself. A
 # newly created index is untracked at that moment and pre-commit's own
-# modified-files detection does not see it.
+# modified-files detection does not see it. PRE_COMMIT=1 is what pre-commit
+# sets for its hooks.
 fixture "a rewrite is reported"
 record 0001-a.md "A" accepted
-out="$(cd "$work" && scripts/adr-index 2>&1)"
+out="$(cd "$work" && PRE_COMMIT=1 scripts/adr-index 2>&1)"
 status=$?
 if (( status != 0 )) && grep -q "Rewrote $index" <<<"$out"; then
   pass
 else
   fail "creating the index did not fail the run, so a commit lands without it"
+fi
+
+# Run by hand the rewrite is the job done; a failing exit stops the `&&` chain
+# after it.
+fixture "a rewrite run by hand succeeds"
+record 0001-a.md "A" accepted
+out="$(cd "$work" && env -u PRE_COMMIT scripts/adr-index 2>&1)"
+status=$?
+if (( status == 0 )) && grep -q "Rewrote $index" <<<"$out" && [[ -f "$work/$index" ]]; then
+  pass
+else
+  fail "a rewrite outside pre-commit exited $status: $out"
 fi
 
 # Without this the hook fails forever: every commit touching an ADR would
@@ -134,7 +147,7 @@ record 0001-a.md "A" accepted
 (cd "$work" && scripts/adr-index) > /dev/null 2>&1
 expected="$(cat "$work/$index")"
 echo "hand-written note" >> "$work/$index"
-out="$(cd "$work" && scripts/adr-index 2>&1)"
+out="$(cd "$work" && PRE_COMMIT=1 scripts/adr-index 2>&1)"
 status=$?
 if (( status != 0 )) && [[ "$expected" == "$(cat "$work/$index")" ]]; then
   pass
@@ -157,7 +170,7 @@ fixture "removing the last record removes the index"
 record 0001-a.md "A" accepted
 (cd "$work" && scripts/adr-index) > /dev/null 2>&1
 rm "$work/docs/adrs/0001-a.md"
-out="$(cd "$work" && scripts/adr-index 2>&1)"
+out="$(cd "$work" && PRE_COMMIT=1 scripts/adr-index 2>&1)"
 status=$?
 if (( status != 0 )) && [[ ! -e "$work/$index" ]]; then
   pass

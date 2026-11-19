@@ -156,7 +156,11 @@ fi
 # modified-files detection, which does not fire when the index is created for
 # the first time: the file is untracked at that moment, so pre-commit sees no
 # change to a file it knows about and the commit lands without the index in it.
+#
+# Only under pre-commit, which sets PRE_COMMIT=1 for its hooks. Run by hand,
+# the rewrite is the job done, and exiting 1 for it stopped the rest of an
+# `&&` chain that had just succeeded.
 if [[ "$before" != "$after" ]]; then
   echo "Rewrote $index. Stage it with the record that changed it." >&2
-  exit 1
+  [[ -z "${PRE_COMMIT:-}" ]] || exit 1
 fi

@@ -95,6 +95,19 @@ else
   fail "wanted the failing step's status 7, got $status"
 fi
 
+gate_fixture "a failing script test fails the gate after ci has run"
+printf '#!/usr/bin/env bash\necho "chatter from script-tests"\nexit 3\n' > "$work/scripts/script-tests"
+out="$(cd "$work" && scripts/check --verbose 2>&1)"
+status=$?
+if (( status == 3 )) \
+  && grep -q 'chatter from script-tests' <<< "$out" \
+  && grep -qE '^lint +pass' <<< "$out" \
+  && ! grep -q 'chatter from security' <<< "$out"; then
+  pass
+else
+  fail "wanted exit 3 with both outputs and no later step, got exit $status: $out"
+fi
+
 gate_fixture "summarize still reads check" \
   'echo "audit              FAIL             1 violation(s)"; exit 1'
 out="$(cd "$work" && scripts/summarize scripts/check 2>&1)"

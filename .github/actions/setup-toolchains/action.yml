@@ -91,3 +91,19 @@ runs:
     - name: Set up Gradle
       if: steps.detect.outputs.kotlin == 'true'
       uses: gradle/actions/setup-gradle@8da46b539cd8fe6ab27ca75128919a18d757604c # v6
+
+    # The hosted Ubuntu image ships CMake, GCC and Clang with clang-format and
+    # clang-tidy, so nothing installs here. Their versions are printed instead:
+    # clang-format's layout changes between releases, and a format check that
+    # passes locally and fails here is that difference before it is the code.
+    - name: Report C and C++ toolchain
+      if: steps.detect.outputs.cpp == 'true'
+      shell: bash
+      run: |
+        for tool in cmake cc c++ clang-format clang-tidy; do
+          if ! command -v "$tool" > /dev/null 2>&1; then
+            echo "::error::$tool is not on this runner. A GitHub-hosted Ubuntu image ships it; a self-hosted host must install it before a C or C++ repository can build here."
+            exit 1
+          fi
+          "$tool" --version | head -n 1
+        done

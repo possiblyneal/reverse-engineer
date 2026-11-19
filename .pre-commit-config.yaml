@@ -152,6 +152,15 @@ repos:
         language: script
         stages: [prepare-commit-msg]
 
+      # The other half of the pair: refuses a Generated-By that is missing or
+      # is not a model ID, with the line to write. A reader at commit-msg, so
+      # its order against commitlint does not matter.
+      - id: attribution-check
+        name: check the Generated-By trailer names a model ID
+        entry: scripts/attribute-commit --check
+        language: script
+        stages: [commit-msg]
+
       # These hooks let Git remove only stale administrative records for linked
       # worktrees whose directories have already disappeared. They never remove
       # a live worktree directory, and SessionStart reports candidates without
@@ -218,7 +227,7 @@ repos:
   # The remaining low findings are artipacked, which wants persist-credentials:
   # false on every checkout. Dropping to low means setting that on each one.
   - repo: https://github.com/zizmorcore/zizmor-pre-commit
-    rev: v1.31.1
+    rev: v1.32.0
     hooks:
       - id: zizmor
         args: ["--no-progress", "--config", ".github/zizmor.yml", "--min-severity", "medium"]

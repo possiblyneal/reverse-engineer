@@ -78,7 +78,21 @@ out="$(rewrite "feat: add a thing
 A body.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>")"
-if [[ "$(trailers "$out")" == "Generated-By: Claude Opus 5" ]]; then
+if [[ "$(trailers "$out")" == "Generated-By: claude-opus-5" ]]; then
+  pass
+else
+  fail "the rewritten message parses as: $(trailers "$out")"
+fi
+
+# The fallback spells the display name as an ID, so --check accepts what it
+# wrote rather than refusing an agent commit made without the hook.
+fixture "a display name in the agent trailer is spelled as an ID"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>")"
+if [[ "$(trailers "$out")" == "Generated-By: claude-opus-5-5" ]]; then
   pass
 else
   fail "the rewritten message parses as: $(trailers "$out")"
@@ -105,7 +119,7 @@ A body.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>
 Co-Authored-By: A Human <human@example.com>")"
-if [[ "$(trailers "$out")" == $'Generated-By: Claude Opus 5\nCo-Authored-By: A Human <human@example.com>' ]]; then
+if [[ "$(trailers "$out")" == $'Generated-By: claude-opus-5\nCo-Authored-By: A Human <human@example.com>' ]]; then
   pass
 else
   fail "the pair parses as: $(trailers "$out")"
@@ -148,13 +162,15 @@ else
   fail "the message parses as: $(trailers "$out")"
 fi
 
-fixture "a rewritten Co-Authored-By is kept over the session's model"
+# The display name Claude Code writes is the same fact as the ID, in a form
+# --check refuses, so the known ID takes its place.
+fixture "the session's model replaces an agent Co-Authored-By"
 out="$(rewrite "feat: add a thing
 
 A body.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" claude-opus-5-5)"
-if [[ "$(trailers "$out")" == "Generated-By: Claude Opus 5" ]]; then
+if [[ "$(trailers "$out")" == "Generated-By: claude-opus-5-5" ]]; then
   pass
 else
   fail "the message parses as: $(trailers "$out")"
@@ -373,7 +389,7 @@ else
   fail "the message parses as: $(trailers "$out")"
 fi
 
-fixture "a rewritten Co-Authored-By is kept over an entry"
+fixture "an entry's model replaces an agent Co-Authored-By"
 entry sess-1 glm-5.1 "$(commit_cmd)"
 out="$(claude_rewrite "feat: add a thing
 
@@ -381,10 +397,93 @@ A body.
 
 Co-Authored-By: Claude Opus 5 <noreply@anthropic.com>" "$(commit_cmd)" \
   CLAUDE_CODE_SESSION_ID=sess-1)"
-if [[ "$(trailers "$out")" == "Generated-By: Claude Opus 5" ]]; then
+if [[ "$(trailers "$out")" == "Generated-By: glm-5.1" ]]; then
   pass
 else
   fail "the message parses as: $(trailers "$out")"
+fi
+
+fixture "a context-window suffix is dropped from the model"
+out="$(rewrite "feat: add a thing
+
+A body." "claude-opus-5[1m]")"
+if [[ "$(trailers "$out")" == "Generated-By: claude-opus-5" ]]; then
+  pass
+else
+  fail "the message parses as: $(trailers "$out")"
+fi
+
+# Spacing around the name must not leave a hyphen at either end of the ID.
+fixture "extra spaces around the display name leave no end hyphen"
+out="$(rewrite "feat: add a thing
+
+A body.
+
+Co-Authored-By: Claude Opus 4.6 (1M context)  <noreply@anthropic.com>")"
+if [[ "$(trailers "$out")" == "Generated-By: claude-opus-4-6" ]]; then
+  pass
+else
+  fail "the rewritten message parses as: $(trailers "$out")"
+fi
+
+# --check at commit-msg: prints nothing and exits 0 for a model ID, refuses
+# anything else with the line to write.
+verify() {
+  printf '%s\n' "$1" > "$work/COMMIT_EDITMSG"
+  (cd "$work" && "$script" --check "$work/COMMIT_EDITMSG" 2>&1)
+}
+
+fixture "--check accepts a model ID"
+out="$(verify $'feat: add a thing\n\nA body.\n\nGenerated-By: claude-opus-5-5')"
+status=$?
+out2="$(verify $'feat: add a thing\n\nA body.\n\nGenerated-By: gpt-5.1-codex')"
+status2=$?
+# Other vendors' IDs carry a tag, a version date, or a provider path.
+out3="$(verify $'feat: add a thing\n\nA body.\n\nGenerated-By: qwen3-coder:30b\nGenerated-By: claude-opus-4-1@20250805\nGenerated-By: meta/Llama-3.1-8B')"
+status3=$?
+if (( status == 0 && status2 == 0 && status3 == 0 )) && [[ -z "$out$out2$out3" ]]; then
+  pass
+else
+  fail "a model ID was refused (exit $status, $status2, $status3): $out $out2 $out3"
+fi
+
+fixture "--check refuses a display name"
+out="$(verify $'feat: add a thing\n\nA body.\n\nGenerated-By: Claude Opus 5.5 (1M context)')"
+status=$?
+if (( status != 0 )) && grep -q "is not a model ID" <<< "$out"; then
+  pass
+else
+  fail "a display name passed, exit $status: $out"
+fi
+
+fixture "--check refuses a context-window suffix"
+out="$(verify $'feat: add a thing\n\nA body.\n\nGenerated-By: claude-opus-5[1m]')"
+status=$?
+if (( status != 0 )); then
+  pass
+else
+  fail "a [1m] suffix passed: $out"
+fi
+
+# commitlint's trailer-exists refuses a missing trailer and skips the merge,
+# revert, and fixup subjects on its ignore list; refusing here would undo that.
+fixture "--check leaves a missing trailer to commitlint"
+out="$(verify $'Merge branch \'main\' into feature')"
+status=$?
+if (( status == 0 )) && [[ -z "$out" ]]; then
+  pass
+else
+  fail "a merge with no trailer was refused, exit $status: $out"
+fi
+
+fixture "--check passes a replayed commit"
+mkdir -p "$work/.git/rebase-merge"
+out="$(verify $'feat: add a thing\n\nA body.\n\nGenerated-By: Claude Opus 5')"
+status=$?
+if (( status == 0 )); then
+  pass
+else
+  fail "a replayed commit's old trailer was refused: $out"
 fi
 
 # git calls this hook for every commit, including ones whose message is already

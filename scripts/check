@@ -44,15 +44,6 @@ fi
 
 scripts/doctor
 
-# Run before the checks they guard. They verify the language-capabilities
-# interface, its workflow adapters, and that routine local commands stay offline.
-if [[ ! -x scripts/script-tests ]]; then
-  echo "scripts/script-tests is missing or not executable."
-  exit 1
-fi
-
-scripts/script-tests
-
 # Where a file sits, checked before what is in it. A misplaced file passes every
 # language check in this repository, because each one reads the manifests and
 # never asks whether the tree around them matches the rules.
@@ -73,12 +64,52 @@ fi
 
 scripts/payload-parity </dev/null
 
+if [[ ! -x scripts/script-tests ]]; then
+  echo "scripts/script-tests is missing or not executable."
+  exit 1
+fi
+
 if [[ ! -x scripts/ci ]]; then
   echo "scripts/ci is missing or not executable."
   exit 1
 fi
 
-scripts/ci
+# The script tests verify the language-capabilities interface, its workflow
+# adapters, and that routine local commands stay offline. They run beside ci
+# rather than before it, because both spend most of their time waiting on git
+# and child processes, so neither fills the CPUs and the pair takes as long as
+# ci alone. Both only read the tree. pre-commit's sweep below stays after them,
+# since its fixers rewrite files that ci's linters and tests read.
+#
+# The suites' output is held and printed whole once ci has finished, so the two
+# never interleave, and both must pass. A background job in a non-interactive
+# shell ignores SIGINT, so an interrupt exits the gate at once, without waiting
+# for the suites, and the EXIT trap stops them rather than leaving them running.
+# set -m starts the suites in a process group of their own, so one signal to the
+# group reaches every suite at once, including one started mid-shutdown. Being
+# their own group, a signal to the gate's group misses them: TERM still reaches
+# the trap, and PIPE, from an output pipe the same signal closed, gets one too.
+# A group SIGKILL runs no trap, so the suites finish on their own.
+script_tests_log="$(mktemp)"
+set -m
+scripts/script-tests </dev/null >"$script_tests_log" 2>&1 &
+script_tests_pid=$!
+set +m
+trap 'kill -- -"$script_tests_pid" 2>/dev/null || true; rm -f "$script_tests_log"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
+trap 'exit 141' PIPE
+
+ci_status=0
+scripts/ci || ci_status=$?
+script_tests_status=0
+wait "$script_tests_pid" || script_tests_status=$?
+# Reaped, so its PID may now belong to another process.
+trap 'rm -f "$script_tests_log"' EXIT
+trap - INT TERM PIPE
+cat "$script_tests_log"
+(( ci_status == 0 )) || exit "$ci_status"
+(( script_tests_status == 0 )) || exit "$script_tests_status"
 
 # The security workflow blocks a pull request the same way the CI workflow does,
 # so leaving it out here means finding out on the pull request instead of before
@@ -99,10 +130,17 @@ scripts/security
 # no-commit-to-branch is skipped rather than run. It reads the current branch
 # instead of any file, so on main it fails this whole sweep for a commit that
 # is not being made.
+#
+# So is every hook that repeats a step this gate already ran over the whole
+# tree: structure and payload-parity above, and the template repository's
+# addon-adoption and reference-assertions, which are test files its pytest run
+# in ci collects. They stay on at commit time, where nothing else runs them.
+# Naming a hook a repository lacks skips nothing.
+skip=no-commit-to-branch,structure,payload-parity,addon-adoption,reference-assertions
 if [[ -s .pre-commit-config.yaml ]]; then
   echo
   echo "Running pre-commit across all files"
-  SKIP=no-commit-to-branch pre-commit run --all-files
+  SKIP="$skip" pre-commit run --all-files
 
   # --all-files means every file Git knows about, so a file written but not yet
   # staged is not one of them. That is this sweep's blind spot at the moment it
@@ -120,6 +158,6 @@ if [[ -s .pre-commit-config.yaml ]]; then
   if (( ${#untracked[@]} )); then
     echo
     echo "Running pre-commit across ${#untracked[@]} untracked file(s)"
-    SKIP=no-commit-to-branch pre-commit run --files "${untracked[@]}"
+    SKIP="$skip" pre-commit run --files "${untracked[@]}"
   fi
 fi

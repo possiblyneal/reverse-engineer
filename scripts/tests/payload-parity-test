@@ -121,6 +121,51 @@ write ".github/workflows/ci.yml" changed
 audit
 assert_fails ".github/workflows/ci.yml differs"
 
+# The direction is settled by which copy changed since HEAD, so these cases
+# commit the agreeing trees first. The printed command, run verbatim, is the
+# fix; where both copies changed it names none rather than guess.
+commit_fixture() {
+  stage
+  git -C "$work" commit -q -m "chore: agreeing trees"
+}
+
+parity_fixture "an edit to one copy names the command that mirrors it"
+commit_fixture
+write ".github/workflows/ci.yml" changed
+audit
+fix="$(sed -n 's/.*; run: //p' "$work/.audit-output")"
+if [[ "$fix" == "mkdir -p $payload/workflows && cp .github/workflows/ci.yml $payload/workflows/ci.yml && git add"* ]] \
+  && (cd "$work" && eval "$fix") && run_parity && (( parity_status == 0 )); then
+  pass
+else
+  fail "wanted a root-to-payload command that resolves it, got '$fix', then: $(head -1 "$work/.audit-output")"
+fi
+
+# A staged deletion counts as the edit, and its mirror removes the other copy;
+# a cp from the deleted copy would fail.
+parity_fixture "a deletion of one copy names the git rm that mirrors it"
+commit_fixture
+rm "$work/$payload/workflows/ci.yml"
+audit
+fix="$(sed -n 's/.*; run: //p' "$work/.audit-output")"
+if [[ "$fix" == "git rm .github/workflows/ci.yml" ]] \
+  && (cd "$work" && eval "$fix" > /dev/null) && run_parity && (( parity_status == 0 )); then
+  pass
+else
+  fail "wanted a git rm that resolves it, got '$fix', then: $(head -1 "$work/.audit-output")"
+fi
+
+parity_fixture "an edit to both copies names no direction"
+commit_fixture
+write ".github/workflows/ci.yml" one
+write "$payload/workflows/ci.yml" two
+audit
+if (( parity_status != 0 )) && ! grep -q '; run:' "$work/.audit-output"; then
+  pass
+else
+  fail "wanted a FAIL with no command, got: $(cat "$work/.audit-output")"
+fi
+
 parity_fixture "a root file absent from the payload fails"
 write .github/workflows/release.yml
 audit
