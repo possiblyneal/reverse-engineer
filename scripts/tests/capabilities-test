@@ -14,7 +14,7 @@ set -uo pipefail
 # asked of `language_capabilities probe`, and dispatch of `CI_DRY_RUN=1`, which
 # reports each pairing scripts/ci would run and runs none of them.
 #
-# Covered: the twelve-by-six probe table, dispatch under CI_DRY_RUN=1, and real
+# Covered: the twelve-by-seven probe table, dispatch under CI_DRY_RUN=1, and real
 # runs of ci, security, run, integration, fix, and package against stubbed
 # toolchains. fix is asked for both halves in order, and a language with no
 # lint autofix must not fail it. The integration tier's cases run in both
@@ -83,7 +83,7 @@ assert_dispatches() {
   for check in lint format-check typecheck test build; do
     expected=would-run
     case "$check:$lang" in
-      typecheck:go|typecheck:rust|typecheck:swift|typecheck:kotlin|build:python)
+      typecheck:go|typecheck:rust|typecheck:swift|typecheck:kotlin|typecheck:cpp|build:python)
         expected=not-applicable
         ;;
     esac
@@ -108,11 +108,11 @@ assert_absent() {
 echo "capabilities-test"
 
 current="supported languages"
-expected=$'node\npython\ngo\nrust\nswift\nkotlin'
+expected=$'node\npython\ngo\nrust\nswift\nkotlin\ncpp'
 if [[ "$(language_capabilities supported)" == "$expected" ]]; then
   pass
 else
-  fail "the interface does not report the six supported languages in order"
+  fail "the interface does not report the seven supported languages in order"
 fi
 
 # --- every pairing, wired or absent, held as one table -------------------------
@@ -124,14 +124,14 @@ fi
 # gap the capabilities module explains beside where each would go. Every other
 # cell is wired, and a `dev` capability no longer exists to have a row at all.
 current="the probe reports every capability and language pairing"
-absent='typecheck:go typecheck:rust typecheck:swift typecheck:kotlin build:python
-integration:rust integration:swift integration:kotlin
-lint-fix:go lint-fix:swift lint-fix:kotlin
-run:swift package:node package:python package:swift package:kotlin'
+absent='typecheck:go typecheck:rust typecheck:swift typecheck:kotlin typecheck:cpp build:python
+integration:rust integration:swift integration:kotlin integration:cpp
+lint-fix:go lint-fix:swift lint-fix:kotlin audit:cpp
+run:swift run:cpp package:node package:python package:swift package:kotlin package:cpp'
 out="$(language_capabilities probe)"
 missing=""
 for cap in lint format-check typecheck test build audit toolchain format-write lint-fix integration run package; do
-  for lang in node python go rust swift kotlin; do
+  for lang in node python go rust swift kotlin cpp; do
     expected=wired
     [[ " ${absent//$'\n'/ } " != *" $cap:$lang "* ]] || expected=absent
     grep -qE "^$cap +$expected +$lang$" <<<"$out" || missing="$missing $cap:$lang=$expected"
@@ -139,8 +139,8 @@ for cap in lint format-check typecheck test build audit toolchain format-write l
 done
 if [[ -n "$missing" ]]; then
   fail "the probe does not report:$missing"
-elif (( $(wc -l <<<"$out") != 72 )); then
-  fail "the probe reports $(wc -l <<<"$out") pairings rather than 72 -- a capability or language it was not asked about"
+elif (( $(wc -l <<<"$out") != 84 )); then
+  fail "the probe reports $(wc -l <<<"$out") pairings rather than 84 -- a capability or language it was not asked about"
 elif grep -q '^dev ' <<<"$out"; then
   fail "a dev capability survives in the probe"
 else
@@ -206,6 +206,12 @@ if orphaned; then
 else
   pass
 fi
+
+fixture "cmake project"
+printf 'cmake_minimum_required(VERSION 3.20)\nproject(p C)\n' > "$work/CMakeLists.txt"
+out="$(ci)"
+assert_dispatches cpp "$out"
+assert_absent python "$out"
 
 # --- a manifest no check can see ---------------------------------------------
 
@@ -274,6 +280,36 @@ if orphaned; then
   fail "a workspace member under a root manifest was reported as an orphan"
 else
   pass
+fi
+
+# CMake has no workspace file: the root CMakeLists.txt reaches a unit's through
+# add_subdirectory(), so a unit's with none above it is configured by nothing.
+fixture "nested CMakeLists.txt, no root"
+mkdir -p "$work/apps/fw"
+printf 'add_executable(fw src/main.c)\n' > "$work/apps/fw/CMakeLists.txt"
+out="$(ci)"
+status=$?
+if (( status != 0 )) && grep -q "apps/fw/CMakeLists.txt has no root CMakeLists.txt" <<<"$out"; then
+  pass
+else
+  fail "scripts/ci did not fail naming the orphaned CMakeLists.txt"
+fi
+
+# A CMakeLists.txt below a src/, as an Android NDK library sits in a Kotlin
+# unit, or beside another language's manifest, belongs to that build, so only
+# the unit's own one is an orphan.
+fixture "CMakeLists.txt owned by another build is no orphan"
+mkdir -p "$work/apps/fw" "$work/apps/android/src/main/cpp" "$work/apps/ios"
+printf 'add_executable(fw src/main.c)\n' > "$work/apps/fw/CMakeLists.txt"
+printf 'add_library(jni SHARED jni.c)\n' > "$work/apps/android/src/main/cpp/CMakeLists.txt"
+printf 'add_library(native native.c)\n' > "$work/apps/ios/CMakeLists.txt"
+printf '// swift-tools-version:5.9\n' > "$work/apps/ios/Package.swift"
+out="$(ci)"
+if grep -q "apps/fw/CMakeLists.txt has no root" <<<"$out" &&
+  ! grep -q "apps/android/src/main/cpp/CMakeLists.txt\|apps/ios/CMakeLists.txt" <<<"$out"; then
+  pass
+else
+  fail "the orphan search did not name apps/fw's CMakeLists.txt alone: $out"
 fi
 
 # --- root manifest specificity -------------------------------------------------
@@ -404,6 +440,58 @@ elif grep -q 'apps/a/gradle.lockfile' "$work/scanned" && grep -q 'apps/b/gradle.
 else
   fail "trivy scanned $(tr '\n' ' ' < "$work/scanned")rather than both lockfiles"
 fi
+
+# --- a Go audit failing only on the local standard library says so -----------
+
+# govulncheck reports the standard library of the Go that runs it, and CI runs
+# stable, so stdlib-only findings fixed in a newer Go are named as such. One
+# finding in a module is the code's own, and gets no such line.
+govulncheck_stub() {
+  stub govulncheck <<STUB
+#!/usr/bin/env bash
+cat <<'OUT'
+Vulnerability #1: GO-2026-4601
+  Standard library
+    Found in: net/url@go1.24.4
+    Fixed in: net/url@go1.25.8
+Vulnerability #2: GO-2025-4010
+  $1
+    Found in: $2
+    Fixed in: $3
+OUT
+exit 3
+STUB
+}
+for case in stdlib module; do
+  fixture "a Go audit failing on $case findings"
+  go_mod "$work"
+  stub go <<'STUB'
+#!/usr/bin/env bash
+[[ "$1" == list ]] && printf '%s\n' "$PWD"
+exit 0
+STUB
+  stub gitleaks <<'STUB'
+#!/usr/bin/env bash
+exit 0
+STUB
+  if [[ "$case" == stdlib ]]; then
+    govulncheck_stub "Standard library" "net/http@go1.24.4" "net/http@go1.24.8"
+  else
+    govulncheck_stub "Module: golang.org/x/net" "golang.org/x/net@v0.1.0" "golang.org/x/net@v0.38.0"
+  fi
+  out="$(cd "$work" && scripts/security 2>&1 </dev/null)"
+  status=$?
+  note="$(grep -c 'fixed by go1.25.8' <<< "$out")"
+  if (( status == 0 )) || ! grep -qE '^audit +FAIL +go' <<< "$out"; then
+    fail "wanted the audit to fail on its findings (exit $status): $out"
+  elif [[ "$case" == stdlib && "$note" != 1 ]]; then
+    fail "wanted one line naming go1.25.8 under stdlib-only findings: $out"
+  elif [[ "$case" == module && "$note" != 0 ]]; then
+    fail "wanted no toolchain line where a module carries a finding: $out"
+  else
+    pass
+  fi
+done
 
 # --- go checks must reach a module that is not at the repository root --------
 
@@ -1008,7 +1096,7 @@ printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
 output="$(cd "$work" && scripts/detect github-output)"
 if grep -qx 'python=true' <<<"$output" &&
   grep -qx 'node=false' <<<"$output" &&
-  [[ "$(grep -Ec '^(node|python|go|rust|swift|kotlin)=(true|false)$' <<<"$output")" -eq 6 ]]; then
+  [[ "$(grep -Ec '^(node|python|go|rust|swift|kotlin|cpp)=(true|false)$' <<<"$output")" -eq 7 ]]; then
   pass
 else
   fail "github-output does not return one boolean for every supported language"
@@ -1258,6 +1346,133 @@ STUB
 else
   current="the package target outcomes"
   skip "jq is not installed"
+fi
+
+# clang-tidy is handed the compilation database's units that are this
+# repository's own C and C++: not the assembly it parses as C and fails on, not
+# a vendored tree, and not a source generated into the binary directory.
+fixture "cpp lint reads only the project's own C and C++ units"
+if command -v jq >/dev/null 2>&1; then
+  printf 'cmake_minimum_required(VERSION 3.20)\nproject(p C ASM)\n' > "$work/CMakeLists.txt"
+  mkdir -p "$work/apps/fw/src" "$work/vendor/lib"
+  : > "$work/apps/fw/src/main.c"
+  : > "$work/apps/fw/src/start.S"
+  : > "$work/vendor/lib/lib.c"
+  stub cmake <<'STUB'
+#!/usr/bin/env bash
+root="$(pwd -P)"
+mkdir -p build
+: > build/gen.c
+printf '[{"file":"%s"},{"file":"%s"},{"file":"%s"},{"file":"%s"},{"file":"%s"}]\n' \
+  "$root/apps/fw/src/main.c" "$root/apps/fw/src/start.S" "$root/vendor/lib/lib.c" \
+  "$root/build/gen.c" "$root/apps/fw/src/main.c" > build/compile_commands.json
+STUB
+  stub clang-tidy <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "${MARKER:?}"
+STUB
+  out="$(cd "$work" && MARKER="$work/tidy-args" language_capabilities run lint 2>&1 </dev/null)"
+  tidy_units="$(grep -c '^/' "$work/tidy-args" 2>/dev/null)"
+  if grep -qE '^lint +pass +cpp$' <<<"$out" &&
+    [[ "$tidy_units" == 1 ]] && grep -qx "$work/apps/fw/src/main.c" "$work/tidy-args"; then
+    pass
+  else
+    fail "clang-tidy was not handed main.c alone, once: $(tr '\n' ' ' < "$work/tidy-args" 2>/dev/null) / $out"
+  fi
+else
+  skip "jq is not installed"
+fi
+
+# CMake writes the database with the logical path it ran from, so a checkout
+# reached through a symlink still lints its own units rather than none.
+fixture "cpp lint matches units through a symlinked checkout"
+if command -v jq >/dev/null 2>&1; then
+  printf 'cmake_minimum_required(VERSION 3.20)\nproject(p C)\n' > "$work/CMakeLists.txt"
+  mkdir -p "$work/apps/fw/src"
+  : > "$work/apps/fw/src/main.c"
+  ln -s "$work" "$work.link"
+  stub cmake <<'STUB'
+#!/usr/bin/env bash
+mkdir -p build
+printf '[{"file":"%s"}]\n' "$PWD/apps/fw/src/main.c" > build/compile_commands.json
+STUB
+  stub clang-tidy <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' "$@" > "${MARKER:?}"
+STUB
+  out="$(cd "$work.link" && MARKER="$work/tidy-args" language_capabilities run lint 2>&1 </dev/null)"
+  if grep -qE '^lint +pass +cpp$' <<<"$out" &&
+    grep -qx "$work.link/apps/fw/src/main.c" "$work/tidy-args" 2>/dev/null; then
+    pass
+  else
+    fail "clang-tidy was not handed main.c through the symlink: $out"
+  fi
+  rm -f "$work.link"
+else
+  skip "jq is not installed"
+fi
+
+# A unit's enable_testing() without the root's leaves ctest reading no test
+# file and passing with "No tests were found", so the adapter refuses before
+# ctest runs.
+fixture "cpp test refuses tests the root never enables"
+printf 'cmake_minimum_required(VERSION 3.20)\nproject(p C)\n' > "$work/CMakeLists.txt"
+stub cmake <<'STUB'
+#!/usr/bin/env bash
+mkdir -p build/apps/fw
+printf 'if(CTEST_CONFIGURATION_TYPE MATCHES "^Debug$")\n  add_test([=[t]=] "/bin/true")\nendif()\n' > build/apps/fw/CTestTestfile.cmake
+STUB
+stub ctest <<'STUB'
+#!/usr/bin/env bash
+: > "${MARKER:?}"
+STUB
+out="$(cd "$work" && MARKER="$work/ctest-ran" language_capabilities run test 2>&1 </dev/null)"
+if grep -qE '^test +FAIL +cpp' <<<"$out" && grep -q 'never calls enable_testing()' <<<"$out" &&
+  [[ ! -e "$work/ctest-ran" ]]; then
+  pass
+else
+  fail "the cpp test adapter did not refuse a nested CTestTestfile.cmake with no root one: $out"
+fi
+
+# gtest_discover_tests writes an include() where add_test() would be, and a
+# multi-config generator indents add_test(), so either is a declared test.
+fixture "cpp test refuses discovered tests the root never enables"
+printf 'cmake_minimum_required(VERSION 3.20)\nproject(p C)\n' > "$work/CMakeLists.txt"
+stub cmake <<'STUB'
+#!/usr/bin/env bash
+mkdir -p build/apps/fw
+printf 'include("/x/fw_tests_include.cmake")\n' > build/apps/fw/CTestTestfile.cmake
+STUB
+stub ctest <<'STUB'
+#!/usr/bin/env bash
+: > "${MARKER:?}"
+STUB
+out="$(cd "$work" && MARKER="$work/ctest-ran" language_capabilities run test 2>&1 </dev/null)"
+if grep -qE '^test +FAIL +cpp' <<<"$out" && [[ ! -e "$work/ctest-ran" ]]; then
+  pass
+else
+  fail "the cpp test adapter did not refuse a nested include()-only CTestTestfile.cmake: $out"
+fi
+
+# A dependency fetched into _deps/ may call include(CTest) whatever its parent
+# does; its tests are not the project's, so a project with none still passes.
+fixture "cpp test ignores a dependency's own tests"
+printf 'cmake_minimum_required(VERSION 3.20)\nproject(p C)\n' > "$work/CMakeLists.txt"
+stub cmake <<'STUB'
+#!/usr/bin/env bash
+mkdir -p build/_deps/dep-build build/apps/fw
+printf 'add_test([=[t]=] "/bin/true")\n' > build/_deps/dep-build/CTestTestfile.cmake
+printf 'subdirs("x")\n' > build/apps/fw/CTestTestfile.cmake
+STUB
+stub ctest <<'STUB'
+#!/usr/bin/env bash
+: > "${MARKER:?}"
+STUB
+out="$(cd "$work" && MARKER="$work/ctest-ran" language_capabilities run test 2>&1 </dev/null)"
+if grep -qE '^test +pass +cpp' <<<"$out" && [[ -e "$work/ctest-ran" ]]; then
+  pass
+else
+  fail "the cpp test adapter refused a project whose only tests are a dependency's: $out"
 fi
 
 # --- aggregate outcomes ------------------------------------------------------

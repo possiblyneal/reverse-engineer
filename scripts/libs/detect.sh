@@ -35,13 +35,17 @@ source "$(dirname "${BASH_SOURCE[0]}")/result.sh"
 
 # The single place the supported set is written down. Callers iterate this
 # rather than keeping their own list.
-DETECT_LANGUAGES=(node python go rust swift kotlin)
+DETECT_LANGUAGES=(node python go rust swift kotlin cpp)
 
 has_node() { [[ -s package.json ]]; }
 has_python() { [[ -s pyproject.toml ]]; }
 has_go() { [[ -s go.mod || -s go.work ]]; }
 has_rust() { [[ -s Cargo.toml ]]; }
 has_kotlin() { [[ -s settings.gradle.kts || -s build.gradle.kts ]]; }
+# C, C++ and assembly are one language here because one build file holds all
+# three: CMake compiles a target's .c, .cpp and .S sources together, and the
+# checks below read that one project.
+has_cpp() { [[ -s CMakeLists.txt ]]; }
 
 # Directories holding manifests that belong to a dependency or another
 # repository rather than to this one. Searching them reports another project's
@@ -50,6 +54,14 @@ has_kotlin() { [[ -s settings.gradle.kts || -s build.gradle.kts ]]; }
 # whole repository materialized there is the case that would otherwise fail
 # every check that walks the tree.
 DETECT_PRUNE_DIRS=(.git node_modules .build target .venv venv vendor tmp)
+
+# The CMake binary directory every C and C++ check configures into. It sits
+# where clangd looks for compile_commands.json, and /build/ is already
+# gitignored. It is pruned by path rather than joining the names above:
+# FetchContent clones each dependency's whole source tree into it, Package.swift
+# and CMakeLists.txt included, while a build/ elsewhere may be a source
+# package's own name.
+CMAKE_BUILD_DIR=build
 
 # DETECT_PRUNE_DIRS as a find(1) `-name a -o -name b ...` expression, assigned
 # into the array named by $1. Its own copy of this list is the second copy
@@ -62,7 +74,7 @@ detect_prune_expr() {
   for dir in "${DETECT_PRUNE_DIRS[@]}"; do
     _detect_prune_out+=(-name "$dir" -o)
   done
-  unset '_detect_prune_out[${#_detect_prune_out[@]}-1]'
+  _detect_prune_out+=(-path "./$CMAKE_BUILD_DIR")
 }
 
 # find(1) with the directories above pruned. Arguments after the filename are
@@ -232,6 +244,84 @@ go_each() {
   return "$status"
 }
 
+# Every C and C++ source and header clang-format should read, NUL-separated,
+# with DETECT_PRUNE_DIRS and the CMake binary directory left out. Assembly is
+# not listed: clang-format has no assembly mode and reformats it as C.
+cpp_sources() {
+  local prune=()
+  detect_prune_expr prune
+  find . \( "${prune[@]}" \) -prune -o -type f \( -name '*.c' -o -name '*.h' \
+    -o -name '*.cc' -o -name '*.cpp' -o -name '*.cxx' -o -name '*.hh' \
+    -o -name '*.hpp' -o -name '*.hxx' \) -print0
+}
+
+# Configures the root project into CMAKE_BUILD_DIR, writing the compilation
+# database clang-tidy reads. Every check that needs the project calls it rather
+# than trusting a build tree left by an earlier run, and a configured tree
+# reconfigures in a moment.
+cmake_configure() {
+  command -v cmake >/dev/null 2>&1 || return "$NO_RUNNER"
+  cmake -S . -B "$CMAKE_BUILD_DIR" --log-level=WARNING -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
+}
+
+cmake_build() {
+  cmake_configure || return
+  cmake --build "$CMAKE_BUILD_DIR" --parallel "$(getconf _NPROCESSORS_ONLN)"
+}
+
+# The translation units clang-tidy should read, into the array named by $1:
+# the compilation database's files that cpp_sources also lists. That one
+# intersection leaves out assembly, which clang-tidy parses as C and fails on,
+# sources generated into the binary directory, fetched dependencies, and
+# everything pruned. The database names files by the logical path CMake was
+# run from, which is the physical one unless the checkout is reached through a
+# symlink, so each entry is compared relative to whichever of the two it starts
+# with; matching only one would lint nothing and pass.
+_cmake_translation_units() {
+  local -n _units_out="$1"
+  local file relative logical physical
+  local -A sources=()
+  logical="${PWD%/}/"
+  physical="$(pwd -P)/"
+  while IFS= read -r -d '' file; do
+    sources["${file#./}"]=1
+  done < <(cpp_sources)
+
+  _units_out=()
+  while IFS= read -r file; do
+    relative="${file#"$logical"}"
+    [[ "$relative" != "$file" ]] || relative="${file#"$physical"}"
+    # Unset once taken, so a file compiled into two targets is read once.
+    if [[ -n "${sources[$relative]:-}" ]]; then
+      _units_out+=("$file")
+      unset 'sources[$relative]'
+    fi
+  done < <(jq -r '.[].file' "$CMAKE_BUILD_DIR/compile_commands.json")
+}
+
+# clang-tidy over every translation unit, with whatever flags the caller adds.
+# Headers are read through the units that include them.
+_clang_tidy_project() {
+  local -a units=()
+  command -v clang-tidy >/dev/null 2>&1 || return "$NO_RUNNER"
+  command -v jq >/dev/null 2>&1 || return "$NO_RUNNER"
+  cmake_configure || return
+  _cmake_translation_units units
+  if (( ${#units[@]} == 0 )); then
+    echo "No C or C++ translation unit in the compilation database."
+    return 0
+  fi
+  clang-tidy -p "$CMAKE_BUILD_DIR" --quiet "$@" "${units[@]}"
+}
+
+# clang-format over every source, with the caller's mode.
+_clang_format_sources() {
+  local -a files=()
+  command -v clang-format >/dev/null 2>&1 || return "$NO_RUNNER"
+  mapfile -d '' files < <(cpp_sources)
+  (( ${#files[@]} == 0 )) || clang-format "$@" "${files[@]}"
+}
+
 # Gradle exposes lint and format tasks only when the matching plugin is applied,
 # so the task list decides which checks exist. Listing costs a daemon start, so
 # the result is read once and reused.
@@ -287,6 +377,16 @@ _detect_orphan_report() {
   echo "$nested has no root $root, so no check sees this $noun; $fix, or move it under an existing workspace"
 }
 
+# Whether the CMakeLists.txt in $1 belongs to another language's build.
+_cmake_owned_elsewhere() {
+  local dir="$1" manifest
+  [[ "/$dir/" != */src/* ]] || return 0
+  for manifest in package.json pyproject.toml Cargo.toml go.mod build.gradle.kts Package.swift; do
+    [[ ! -e "$dir/$manifest" ]] || return 0
+  done
+  return 1
+}
+
 detect_orphan_manifests() {
   local lang root nested dir
 
@@ -299,6 +399,7 @@ detect_orphan_manifests() {
     "rust:Cargo.toml:Cargo.toml:crate"
     "go:go.mod:go.work:module"
     "kotlin:build.gradle.kts:settings.gradle.kts:project"
+    "cpp:CMakeLists.txt:CMakeLists.txt:project"
   )
 
   local entry nested_name
@@ -322,11 +423,19 @@ detect_orphan_manifests() {
       # without a workspace file, not a nested module missing one.
       [[ "$dir" != "." ]] || continue
 
+      # A CMakeLists.txt is also how other languages build native code: an
+      # Android NDK library under a Kotlin unit's src/, a scikit-build Python
+      # package, a cmake-js Node addon. Below a src/, or beside another
+      # language's manifest, it belongs to that build and needs no root.
+      if [[ "$lang" == cpp ]] && _cmake_owned_elsewhere "$dir"; then continue; fi
+
       case "$lang" in
         go) _detect_orphan_report "$nested" "$root" "$noun" \
           "run 'go work init ./$dir' at the repository root" ;;
         kotlin) _detect_orphan_report "$nested" "$root" "$noun" \
           "add a root $root with an include() entry covering $dir" ;;
+        cpp) _detect_orphan_report "$nested" "$root" "$noun" \
+          "add a root $root that reaches $dir through add_subdirectory()" ;;
         *) _detect_orphan_report "$nested" "$root" "$noun" \
           "add a root $root covering $dir" ;;
       esac
@@ -364,6 +473,7 @@ _capability_lint_kotlin() {
   if gradle_has_task detekt; then ./gradlew detekt; return; fi
   return "$NO_RUNNER"
 }
+_capability_lint_cpp() { _clang_tidy_project --warnings-as-errors='*'; }
 
 _capability_format_check_node() { has_npm_script format:check || return "$NO_RUNNER"; npm run format:check; }
 _capability_format_check_python() { uv_run ruff format --check --extend-exclude vendor .; }
@@ -378,6 +488,7 @@ _capability_format_check_go() {
 _capability_format_check_rust() { cargo fmt --check; }
 _capability_format_check_swift() { command -v swift >/dev/null 2>&1 || return "$NO_RUNNER"; swift_each swift format lint --recursive .; }
 _capability_format_check_kotlin() { gradle_has_task ktlintCheck || return "$NO_RUNNER"; ./gradlew ktlintCheck; }
+_capability_format_check_cpp() { _clang_format_sources --dry-run --Werror; }
 
 _capability_typecheck_node() { has_npm_script typecheck || return "$NO_RUNNER"; npm run typecheck; }
 _capability_typecheck_python() { uv_run ty check --exclude '**/vendor/' .; }
@@ -389,10 +500,10 @@ _capability_test_node() { has_npm_script test || return "$NO_RUNNER"; npm run te
 # `scripts/check` out of its integration suite, which is a fix every generated
 # repository would otherwise have to rediscover.
 #
-# The other four declare their test set instead of discovering it -- an npm
-# script, a Gradle source set, a SwiftPM Tests directory, a Cargo test target --
-# so that declaration is what leaves the tier out, and a second exclusion here
-# would be a rule with nothing to apply to.
+# The other five declare their test set instead of discovering it -- an npm
+# script, a Gradle source set, a SwiftPM Tests directory, a Cargo test target,
+# a CMake add_test() -- so that declaration is what leaves the tier out, and a
+# second exclusion here would be a rule with nothing to apply to.
 _capability_test_python() {
   local status=0 dir
   local -a ignore=()
@@ -448,11 +559,34 @@ _capability_test_go() {
 _capability_test_rust() { cargo test; }
 _capability_test_swift() { command -v swift >/dev/null 2>&1 || return "$NO_RUNNER"; swift_each swift test; }
 _capability_test_kotlin() { [[ -x ./gradlew ]] || return "$NO_RUNNER"; ./gradlew test; }
+# ctest runs what the build declared, so the tests are built first. A project
+# with no add_test() passes with ctest's own "No tests were found", as pytest
+# collecting none does.
+#
+# ctest reads only the top-level CTestTestfile.cmake, which CMake writes only
+# when the root CMakeLists.txt calls enable_testing(). Called in a unit's alone,
+# every add_test() below it is skipped by that same passing message, so a
+# nested test file declaring a test, with no top-level one, is refused. A test
+# is an add_test(), indented under a multi-config generator, or the include()
+# gtest_discover_tests and catch_discover_tests write in its place. A
+# dependency's own test files, fetched into _deps/ or built from vendor/, are
+# not this project's tests: a library that calls include(CTest) regardless
+# must not fail a project that has none.
+_capability_test_cpp() {
+  cmake_build || return
+  if [[ ! -f "$CMAKE_BUILD_DIR/CTestTestfile.cmake" ]] &&
+    find "$CMAKE_BUILD_DIR" \( -path '*/_deps' -o -path '*/vendor' \) -prune -o \
+      -name CTestTestfile.cmake -exec grep -qE '^[[:space:]]*(add_test|include)\(' {} \; -print | grep -q .; then
+    echo "Tests are declared below the root CMakeLists.txt, which never calls enable_testing(), so ctest finds none of them." >&2
+    return 1
+  fi
+  ctest --test-dir "$CMAKE_BUILD_DIR" --output-on-failure
+}
 
-# The tier's own runners. Absent for rust, swift and kotlin: each names its
-# integration tests somewhere its own build file already decides -- a Cargo test
-# target, a SwiftPM test target, a Gradle source set -- and a tests/integration/
-# directory is not where any of the three looks. There is no runner for one of
+# The tier's own runners. Absent for rust, swift, kotlin and cpp: each names
+# its integration tests somewhere its own build file already decides -- a Cargo
+# test target, a SwiftPM test target, a Gradle source set, an add_test() -- and
+# a tests/integration/ directory is not where any of the four looks. There is no runner for one of
 # them to be missing, so each reports not-applicable whether or not a tier
 # exists -- see the arm in _capability_is_not_applicable.
 _capability_integration_node() { has_npm_script test:integration || return "$NO_RUNNER"; npm run test:integration; }
@@ -501,6 +635,7 @@ _capability_build_go() { go_each go build -o /dev/null ./...; }
 _capability_build_rust() { cargo build --locked; }
 _capability_build_swift() { command -v swift >/dev/null 2>&1 || return "$NO_RUNNER"; swift_each swift build; }
 _capability_build_kotlin() { [[ -x ./gradlew ]] || return "$NO_RUNNER"; ./gradlew build -x test; }
+_capability_build_cpp() { cmake_build; }
 
 _capability_audit_node() {
   if [[ -s package-lock.json ]] && command -v npm >/dev/null 2>&1; then
@@ -531,7 +666,35 @@ _capability_audit_python() {
   uv audit --help >/dev/null 2>&1 || return "$NO_RUNNER"
   uv audit --preview-features audit-command
 }
-_capability_audit_go() { command -v govulncheck >/dev/null 2>&1 || return "$NO_RUNNER"; go_each govulncheck ./...; }
+_capability_audit_go() { command -v govulncheck >/dev/null 2>&1 || return "$NO_RUNNER"; go_each _govulncheck_module; }
+
+# govulncheck audits the standard library of the Go that runs it, and
+# security.yml installs go-version: stable, so a local Go behind stable fails
+# here on CVEs CI never reports, and the findings read as the code's. The audit
+# still fails, since the local binary does carry them; when every finding is in
+# the standard library and has a fix, one line after the output names the Go
+# that clears them all.
+_govulncheck_module() {
+  local out status=0
+  out="$(govulncheck ./... 2>&1)" || status=$?
+  printf '%s\n' "$out"
+  (( status == 0 )) || _govulncheck_stdlib_note "$out"
+  return "$status"
+}
+_govulncheck_stdlib_note() {
+  local found fixed local_go needed
+  found="$(sed -n 's/^ *Found in: //p' <<< "$1")"
+  fixed="$(sed -n 's/^ *Fixed in: [^@ ]*@\(go[0-9][^ ]*\)$/\1/p' <<< "$1")"
+  # A fix naming a Go release for every finding means each is in the standard
+  # library and has one; a module's fix names a module version instead.
+  [[ -n "$found" ]] || return 0
+  (( $(wc -l <<< "$found") == $(grep -c . <<< "$fixed") )) || return 0
+  local_go="${found##*@}"
+  needed="$(sort -V <<< "$fixed" | tail -n 1)"
+  echo "Every finding is in the standard library of $local_go and fixed by $needed;"
+  echo "CI audits with go-version: stable and reports none of them. Install $needed"
+  echo "or later, or rerun with GOTOOLCHAIN=$needed+auto."
+}
 _capability_audit_rust() { command -v cargo-audit >/dev/null 2>&1 || return "$NO_RUNNER"; cargo audit; }
 _capability_audit_swift() { command -v trivy >/dev/null 2>&1 || return "$NO_RUNNER"; trivy_each Package.resolved; }
 _capability_audit_kotlin() { command -v trivy >/dev/null 2>&1 || return "$NO_RUNNER"; trivy_each gradle.lockfile; }
@@ -545,6 +708,10 @@ _capability_toolchain_kotlin() {
   command -v java >/dev/null 2>&1 || return "$NO_RUNNER"
   [[ -x ./gradlew ]] || return "$NO_RUNNER"
 }
+_capability_toolchain_cpp() {
+  command -v cmake >/dev/null 2>&1 || return "$NO_RUNNER"
+  command -v ctest >/dev/null 2>&1 || return "$NO_RUNNER"
+}
 
 _capability_format_write_node() { has_npm_script format || return "$NO_RUNNER"; npm run format; }
 _capability_format_write_python() { uv_run ruff format --extend-exclude vendor .; }
@@ -556,6 +723,7 @@ _capability_format_write_go() {
 _capability_format_write_rust() { cargo fmt; }
 _capability_format_write_swift() { command -v swift >/dev/null 2>&1 || return "$NO_RUNNER"; swift_each swift format --in-place --recursive .; }
 _capability_format_write_kotlin() { gradle_has_task ktlintFormat || return "$NO_RUNNER"; ./gradlew ktlintFormat; }
+_capability_format_write_cpp() { _clang_format_sources -i; }
 
 # scripts/run resolves the unit's declared run fact into $unit_run and the
 # arguments after `--` into $unit_args; scripts/package resolves the declared
@@ -565,7 +733,7 @@ _capability_format_write_kotlin() { gradle_has_task ktlintFormat || return "$NO_
 #
 # Only one adapter reads the run fact, and that is the trap. In Go, Rust,
 # Kotlin and Python the command is identical whichever value is declared --
-# Swift has no run adapter at all -- so anyone auditing those concludes
+# Swift and C++ have no run adapter at all -- so anyone auditing those concludes
 # correctly that the branch changes nothing and can be deleted. It cannot: in
 # Node it chooses between the program's own entry point and a dev server,
 # which are different programs.
@@ -664,6 +832,10 @@ _capability_lint_fix_python() { uv_run ruff check --fix --extend-exclude vendor 
 # and this command is only ever run on one: rewriting the working tree is what
 # it is for, and the diff is what the operator reviews before committing.
 _capability_lint_fix_rust() { cargo clippy --fix --allow-dirty --allow-staged; }
+# Without --warnings-as-errors, unlike lint: clang-tidy counts a finding it has
+# just fixed as an error under that flag, so every successful fix would FAIL.
+# Here a leftover finding is printed and the next `lint` fails on it.
+_capability_lint_fix_cpp() { _clang_tidy_project --fix; }
 
 _capability_run_node() {
   local line name entries_out chosen i
@@ -983,10 +1155,13 @@ _capability_package_rust() {
   return "$status"
 }
 
-# No packaging adapter for Node, Python, Swift, or Kotlin, and no run adapter
-# for Swift, and each gap is a signpost rather than a mystery: a Node or Python
-# executable means bundling an interpreter, and a Swift or Kotlin one means a
-# toolchain decision this template has not made. The dispatch reports each as
+# No packaging adapter for Node, Python, Swift, Kotlin, or C and C++, and no run
+# adapter for Swift or C and C++, and each gap is a signpost rather than a
+# mystery: a Node or Python executable means bundling an interpreter, a Swift or
+# Kotlin one means a toolchain decision this template has not made, and a C or
+# C++ one means reading the unit's executables out of the root project's CMake
+# File API, since a unit's CMakeLists.txt is a subdirectory of that project and
+# does not configure alone. The dispatch reports each as
 # `unavailable` and `language_capabilities probe` reports it `absent`, so the
 # gap is visible without a function standing in for the adapter that is not
 # there.
@@ -1010,7 +1185,7 @@ packaging_writes_dist() {
 
 _capability_is_not_applicable() {
   case "$1:$2" in
-    typecheck:go|typecheck:rust|typecheck:swift|typecheck:kotlin|build:python) return 0 ;;
+    typecheck:go|typecheck:rust|typecheck:swift|typecheck:kotlin|typecheck:cpp|build:python) return 0 ;;
     # No lint autofix exists in any of the three, so there is no tool to install
     # and nothing for an unavailable to be about. The adapters' own comment has it.
     lint-fix:go|lint-fix:swift|lint-fix:kotlin) return 0 ;;
@@ -1020,13 +1195,17 @@ _capability_is_not_applicable() {
     # trivy target absent here means nothing to scan, not a missing tool.
     audit:swift) [[ -z "$(detect_find Package.resolved -print -quit)" ]] ;;
     audit:kotlin) [[ -z "$(detect_find gradle.lockfile -print -quit)" ]] ;;
-    # Each of the three names its integration tests where its own build file
+    # CMake has no lockfile and no advisory database: a FetchContent dependency
+    # is a URL and a tag in CMakeLists.txt, which nothing scans. A repository
+    # adopting Conan gains a conan.lock trivy reads, and wires it here.
+    audit:cpp) return 0 ;;
+    # Each of the four names its integration tests where its own build file
     # decides -- a Cargo test target, a SwiftPM Tests directory, a Gradle source
-    # set -- so tests/integration/ is not a place any of them looks and there is
-    # no runner for one to be missing. Unconditional, like lint-fix above: an
+    # set, an add_test() -- so tests/integration/ is not a place any of them
+    # looks and there is no runner for one to be missing. Unconditional, like lint-fix above: an
     # unavailable here would fail every Rust repository the moment some other
     # language in it grew a tier.
-    integration:rust|integration:swift|integration:kotlin) return 0 ;;
+    integration:rust|integration:swift|integration:kotlin|integration:cpp) return 0 ;;
     # A repository with no tier has nothing to run, which is not a missing
     # runner: every language reports not-applicable rather than one of them
     # reporting unavailable and failing a run over tests that do not exist.
@@ -1139,6 +1318,7 @@ _codeql_entry() {
     rust) echo 'rust none ubuntu-latest' ;;
     kotlin) echo 'java-kotlin autobuild ubuntu-latest' ;;
     swift) echo 'swift autobuild macos-latest' ;;
+    cpp) echo 'c-cpp none ubuntu-latest' ;;
     *) return 1 ;;
   esac
 }

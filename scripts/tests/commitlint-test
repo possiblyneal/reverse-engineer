@@ -143,6 +143,19 @@ else
   fail "a merge subject was rejected, which would block every merge: $out"
 fi
 
+# A merge written by hand passes only in a default-ignored shape, since YAML
+# can hold no `ignores` of its own; .commitlintrc.yaml names the shape.
+fixture "a hand-written merge passes as 'into <branch>' and not as '#N: title'"
+into="$(attempt "Merge feature/x into main")"
+into_status=$?
+numbered="$(attempt "Merge #12: title")"
+numbered_status=$?
+if (( into_status == 0 && numbered_status != 0 )); then
+  pass
+else
+  fail "wanted 'into' accepted and '#N:' refused, got $into_status and $numbered_status: $into $numbered"
+fi
+
 # body-leading-blank is a warning in config-conventional and an error here. The
 # rule name is asserted rather than just the exit status, since a malformed
 # message fails for several reasons and only one of them is this rule.

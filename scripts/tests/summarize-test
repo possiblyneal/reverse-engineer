@@ -4,7 +4,8 @@ set -uo pipefail
 # What summarize keeps and what it drops. The cases run a stub command rather
 # than a real check, so they assert the filter's contract -- the layout
 # libs/result.sh documents -- and not the current output of any one check. They
-# also hold that it exits with the command's own status, and that a failure
+# also hold that it exits with the command's own status, that its last line is
+# a verdict carrying that status and a count per state, and that a failure
 # outside the table leaves the whole run in tmp/summarize-failure.log.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
@@ -88,6 +89,16 @@ if grep -q 'hook rewrote a file' tmp/summarize-failure.log; then
   pass
 else
   fail "wanted the dropped output in tmp/summarize-failure.log"
+fi
+
+# The last line is what `| tail -1` keeps, so it alone must carry the exit
+# status and count unavailable beside FAIL.
+current="the last line is the verdict, after any notice"
+if [[ "$(tail -n 1 <<< "$out2")" == "bash exited 1: 1 FAIL, 1 unavailable, 1 not-applicable, 1 pass" ]] \
+  && [[ "$(tail -n 1 <<< "$out")" == "bash exited 3: 0 FAIL, 0 unavailable, 0 not-applicable, 1 pass" ]]; then
+  pass
+else
+  fail "wanted a closing verdict line, got: $(tail -n 1 <<< "$out2") / $(tail -n 1 <<< "$out")"
 fi
 
 current="a FAIL in the table needs no such notice"

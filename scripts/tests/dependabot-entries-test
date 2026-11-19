@@ -218,8 +218,9 @@ else
 fi
 
 
-# The decision the operator made: the six the template detects, plus docker for
-# the Containerfiles the layout gives a place, and nothing else. A manifest
+# The decision the operator made: the six detected languages Dependabot has an
+# ecosystem for, plus docker for the Containerfiles the layout gives a place,
+# and nothing else. A manifest
 # outside that vocabulary is a shape the rest of the checks cannot see, and
 # reporting it here would promise an entry the derivation will not write.
 fixture "a manifest outside the mapped set is not reported" "$VERSION

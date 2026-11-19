@@ -18,9 +18,17 @@ set -uo pipefail
 # pass.
 #
 # Exits with the command's own status, so it can stand in for the command in a
-# gate rather than only in a report.
+# gate rather than only in a report, and ends with a verdict line naming that
+# status and a count per state.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+
+# For result_verdict alone. The verdict is the command's, not this script's,
+# so the EXIT trap sourcing installs is dropped.
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/result.sh
+source "$repo_root/scripts/libs/result.sh"
+trap - EXIT
 
 if (( $# == 0 )); then
   echo "usage: scripts/summarize <command> [args...]" >&2
@@ -37,7 +45,7 @@ status=$?
 # is a tool's own output -- cargo indents its progress -- and is dropped, after
 # a pass or after a FAIL's findings alike. Exit 1 from awk means the table held
 # nothing that failed.
-awk '
+table="$(awk '
   /^[A-Za-z0-9_-]+ +(pass|not-applicable|unavailable|FAIL|would-run)( |$)/ {
     print; under = ($2 == "FAIL"); if ($2 == "FAIL" || $2 == "unavailable") failed = 1; next
   }
@@ -45,10 +53,11 @@ awk '
   /^                     [^ ]/ { if (under) print; next }
   { under = 0 }
   END { exit failed ? 0 : 1 }
-' <<< "$output"
+' <<< "$output")"
 # grep's convention: 0 means the table held a failing state, not that awk
 # succeeded. Named for what it answers, since every read below is negated.
 table_reported_failure=$?
+[[ -z "$table" ]] || printf '%s\n' "$table"
 
 # Not everything a check command runs reports through the Result table: the
 # script suites print their own tally, and pre-commit prints its own hook list.
@@ -76,5 +85,14 @@ if (( status != 0 && table_reported_failure != 0 )); then
     echo "Re-run redirecting to a file you can write; it may not reproduce."
   fi
 fi
+
+# The verdict, always the last line: the exit status and a count per state.
+# A reader who keeps only the end of the output -- `| tail`, which also hides
+# the exit status behind its own -- still gets both, and an unavailable check
+# is counted beside FAIL rather than left for a FAIL-only grep to miss.
+for state in "${!result_counts[@]}"; do
+  result_counts[$state]="$(grep -cE "^[A-Za-z0-9_-]+ +$state( |\$)" <<< "$table")"
+done
+result_verdict "$1" "$status"
 
 exit "$status"

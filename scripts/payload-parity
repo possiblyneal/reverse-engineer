@@ -82,6 +82,34 @@ holds() {
   [[ $'\n'"$1"$'\n' == *$'\n'"$2"$'\n'* ]]
 }
 
+# Whether a path's staged content differs from HEAD's: which copy of a
+# diverged pair was edited. A missing HEAD reads as edited, so a first commit
+# names no direction.
+staged_edit() {
+  ! git diff --cached --quiet HEAD -- "$1" 2> /dev/null
+}
+
+# The command that mirrors a diverged pair, where the staged edit settles its
+# direction: exactly one copy changed since HEAD. Otherwise nothing, since a
+# merged root bump changes neither copy and an edit to both changes both, and
+# guessing a direction there overwrites the newer copy. A staged deletion is
+# such an edit, and is mirrored by removing the other copy.
+mirror_command() {
+  local root_copy="$1" payload_copy="$payload_root/$1" from to
+  if staged_edit "$root_copy" && ! staged_edit "$payload_copy"; then
+    from="$root_copy" to="$payload_copy"
+  elif staged_edit "$payload_copy" && ! staged_edit "$root_copy"; then
+    from="$payload_copy" to="$root_copy"
+  else
+    return 0
+  fi
+  if ! git cat-file -e ":$from" 2> /dev/null; then
+    printf '; run: git rm %q' "$to"
+    return 0
+  fi
+  printf '; run: mkdir -p %q && cp %q %q && git add %q %q' "${to%/*}" "$from" "$to" "$from" "$to"
+}
+
 # The paths under each tree, relative to the root: the payload's prefix is
 # stripped, so one path names both copies. quotePath is off so a non-ASCII
 # filename arrives literally rather than C-quoted into a path that does not
@@ -140,7 +168,7 @@ while IFS= read -r path; do
 
   if ! holds "$payload_paths" "$path"; then
     holds "$root_only" "$path" ||
-      record "$path is in the root and not in the payload; add it to $payload_root/$path"
+      record "$path is in the root and not in the payload; add it to $payload_root/$path$(mirror_command "$path")"
   elif holds "$payload_only" "$path"; then
     holds "$omitted" "$path" ||
       record "$path is in the payload and not in the root; mirror it, or record the omission under generation.features in $record_file"
@@ -152,7 +180,7 @@ while IFS= read -r path; do
       ! git cat-file -e ":$payload_root/$path" 2> /dev/null; then
       record "$path cannot be read from the index; finish the merge before asking whether the trees agree"
     elif ! cmp -s <(git show ":$path") <(git show ":$payload_root/$path"); then
-      record "$path differs between the two trees; mirror the change into the other"
+      record "$path differs between the two trees; mirror the change into the other$(mirror_command "$path")"
     fi
   fi
 done < <(printf '%s\n%s\n' "$root_paths" "$payload_paths" | sort -u)

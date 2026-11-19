@@ -69,6 +69,9 @@ root_files=(
   package.json package-lock.json tsconfig.json
   Cargo.toml Cargo.lock
   build.gradle.kts gradle.properties gradlew gradlew.bat settings.gradle.kts
+  # clang-format and clang-tidy read no manifest, CMakeLists.txt included, so
+  # each takes its own file, found by walking up from the source.
+  CMakeLists.txt .clang-format .clang-tidy
 )
 
 # Scoped folders: a scope holder -- the repository root, a unit, or a domain --

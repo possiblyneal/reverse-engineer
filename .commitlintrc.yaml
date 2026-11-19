@@ -11,6 +11,11 @@
 # third is this repository's own. Everything else -- type-enum, subject-case,
 # header-max-length, body-max-line-length -- is the stock preset, at error
 # level already.
+#
+# There is no `ignores` list: commitlint's entries are functions, which YAML
+# cannot hold. The default ignore list already passes GitHub's and git's own
+# merge subjects, so a hand-written merge commit uses one of those shapes,
+# `Merge <what> into <branch>`, rather than a `Merge #12: title` this refuses.
 extends:
   - "@commitlint/config-conventional"
 

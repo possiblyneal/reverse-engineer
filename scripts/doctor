@@ -85,10 +85,23 @@ if [[ -s .pre-commit-config.yaml ]]; then
   else
     uninstalled="$(pre_commit_hooks_missing .pre-commit-config.yaml)"
 
+    # `pre-commit install` refuses while core.hooksPath is set at any scope,
+    # and a machine-wide one is common, so the remedy there is the recipe that
+    # does not refuse: shims from init-templatedir, with the key pointed at them
+    # for this clone alone. Every configured type is written, not only the
+    # missing ones, because the key moves git off the directory holding the
+    # rest. The global key is never unset: every other repository reads it.
     if [[ -n "$uninstalled" ]]; then
-      while IFS= read -r hook_type; do
-        record "no $hook_type hook in this clone; run: pre-commit install"
-      done <<<"$uninstalled"
+      hooks_path="$(git config core.hooksPath || true)"
+      if [[ -n "$hooks_path" ]]; then
+        shims="$(git rev-parse --path-format=absolute --git-common-dir)/pre-commit-shims"
+        type_flags="$(pre_commit_hook_types .pre-commit-config.yaml | sed 's/^/-t /' | paste -sd ' ' -)"
+        record "no $(paste -sd ',' - <<<"$uninstalled" | sed 's/,/, /g') hook in $hooks_path, where core.hooksPath points git; pre-commit install refuses while that key is set, so run: pre-commit init-templatedir $type_flags $(printf %q "$shims") && git config --local core.hooksPath $(printf %q "$shims/hooks"), leaving init.templateDir unset whatever its warning suggests (a hook in $hooks_path stops firing here unless linked in as $shims/hooks/<type>.legacy)"
+      else
+        while IFS= read -r hook_type; do
+          record "no $hook_type hook in this clone; run: pre-commit install"
+        done <<<"$uninstalled"
+      fi
     fi
     verdict pre-commit "every configured hook is installed"
   fi

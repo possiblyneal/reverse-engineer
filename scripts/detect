@@ -15,7 +15,7 @@ Usage: scripts/detect <command>
   languages       Present languages, one per line
   github-output   language=true|false lines, plus trivy, for $GITHUB_OUTPUT
   codeql-matrix   matrix=<json> for $GITHUB_OUTPUT, for the CodeQL job's strategy
-  probe           Every capability and language pairing, wired or absent
+  probe           Which checks exist: every capability and language pairing, wired or absent
 EOF
 }
 

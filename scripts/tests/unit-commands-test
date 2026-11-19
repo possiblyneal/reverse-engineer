@@ -172,7 +172,7 @@ else
   pass
 fi
 
-# The other side of the same rule. Four of the six languages have no packaging
+# The other side of the same rule. Five of the seven languages have no packaging
 # adapter, and for a unit in one of those dist/ is not this command's output --
 # it holds whatever the unit's own build wrote, which scripts/ci produces before
 # the release walk reads it. Emptying it there would leave the unit with less

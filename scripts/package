@@ -57,10 +57,10 @@ fi
 # guard was written to prevent, arriving by a route it cannot see. So the
 # directory is emptied by the dispatch that refills it.
 #
-# Only when a present language actually packages into it. Four of the six have
-# no packaging adapter, and for a unit in one of those dist/ holds whatever its
-# own build wrote -- which is what scripts/ci produces before the release walk
-# reads it. Emptying that would leave the unit with less than it started with
+# Only when a present language actually packages into it. Five of the seven
+# have no packaging adapter, and for a unit in one of those dist/ holds
+# whatever its own build wrote -- which is what scripts/ci produces before the
+# release walk reads it. Emptying that would leave the unit with less than it started with
 # and abort the release it was meant to protect, so packaging_writes_dist is
 # asked first and the knowledge of which adapters write there stays beside them.
 #
