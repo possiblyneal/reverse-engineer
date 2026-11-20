@@ -5,10 +5,13 @@ set -euo pipefail
 # check below carries the rule it enforces, as a literal list or a literal test.
 # Runs from scripts/check and from pre-commit on every commit.
 #
-# This checks where a file sits, and reads the contents of exactly one file --
-# a unit's .unit.json, which exists because how a unit runs and what it ships
-# are the two facts a tree cannot show. Three of the rules are about content
-# and are reported not-applicable rather than guessed at: whether
+# This checks where a file sits, and reads the contents of two kinds of file.
+# A unit's .unit.json, which exists because how a unit runs and what it ships
+# are two facts a tree cannot show. And every CLAUDE.md, whose physical lines
+# and rendered blocks are capped so the contract stays readable rather than
+# drifting into unscannable walls; a run between headings that grows long is a
+# non-failing advisory, printed below the table. Three of the rules are about
+# content and are reported not-applicable rather than guessed at: whether
 # libs/ really holds code shared across apps, whether tests/ really spans them,
 # and whether a file sits at the scope it belongs to. A script that inferred
 # those from paths would be wrong quietly, which is worse than not asking.
@@ -585,6 +588,107 @@ for path in "${paths[@]}"; do
 done
 verdict docs-content "docs/ holds Markdown only"
 
+# --- CLAUDE.md readability --------------------------------------------------
+
+# A CLAUDE.md is the local work contract, read every session before editing its
+# subtree, so its cost in tokens and in attention is paid over and over. These
+# caps keep it scannable: no physical line past claudemd_line_max, no rendered
+# block (a paragraph, or a list item -- a marker opens a new one) past
+# claudemd_block_max, both measured in bytes so the audit is the same on every
+# host regardless of locale. Fenced code (``` or ~~~), table rows, and a line
+# that is one unbreakable token (a URL, a path) are exempt from both caps, since
+# none can be rewrapped; a heading is capped like any line. A run between
+# headings past claudemd_section_max is only an advisory, named in the
+# claudemd-blocks row: splitting it is a judgment about meaning the audit will
+# not force.
+claudemd_line_max=200
+claudemd_block_max=600
+claudemd_section_max=8000
+
+# Emits, per offending span: line:<n>:<bytes>, block:<n>:<bytes>,
+# section:<n>:<bytes>. Run under LC_ALL=C so length() counts bytes. The reader
+# below turns each into a finding or an advisory.
+# shellcheck disable=SC2016
+claudemd_program='
+  function flush_block() {
+    if (in_block && block_sum > BLOCK) printf "block:%d:%d\n", block_start, block_sum
+    in_block = 0; block_sum = 0
+  }
+  function flush_section() {
+    if (sec > SECTION) printf "section:%d:%d\n", sec_start, sec
+    sec = 0; sec_start = NR + 1
+  }
+  BEGIN { in_fence = 0; in_block = 0; block_sum = 0; sec = 0; sec_start = 1 }
+  {
+    # A fence closes only on its own character, at least as long as the one
+    # that opened it, so a ``` inside a ~~~ block is content, not a close. Any
+    # indent is allowed, since a fence in a nested list item sits deep.
+    if (match($0, /^[ \t]*(`{3,}|~{3,})/)) {
+      run = substr($0, RSTART, RLENGTH); sub(/^[ \t]*/, "", run)
+      if (!in_fence) { in_fence = 1; fence_char = substr(run, 1, 1); fence_len = length(run) }
+      else if (substr(run, 1, 1) == fence_char && length(run) >= fence_len) in_fence = 0
+      sec += length($0) + 1; flush_block(); next
+    }
+    if (in_fence) { sec += length($0) + 1; flush_block(); next }
+
+    heading = ($0 ~ /^ {0,3}#{1,6}([ \t]|$)/)
+    table   = ($0 ~ /^[ \t]*\|/)
+    blank   = ($0 ~ /^[ \t]*$/)
+    marker  = ($0 ~ /^[ \t]*([-*+]|[0-9]+\.)[ \t]+/)
+
+    if (heading) flush_section(); else sec += length($0) + 1
+    if (table) { flush_block(); next }
+
+    content = $0
+    sub(/^[ \t]*/, "", content)
+    sub(/^>[ \t]*/, "", content)
+    sub(/^([-*+]|[0-9]+\.)[ \t]+/, "", content)
+    breakable = (content ~ / /)
+    if (breakable && length($0) > LINE) printf "line:%d:%d\n", NR, length($0)
+
+    if (heading || blank) { flush_block(); next }
+    size = breakable ? length($0) + 1 : 0
+    if (!in_block || marker) { flush_block(); in_block = 1; block_start = NR; block_sum = size }
+    else block_sum += size
+  }
+  END { flush_block(); flush_section() }
+'
+
+claudemd_files=()
+for path in "${paths[@]}"; do
+  [[ "${path##*/}" == CLAUDE.md ]] && claudemd_files+=("$path")
+done
+
+claudemd_line_findings=()
+claudemd_block_findings=()
+claudemd_sections=()
+for path in ${claudemd_files[@]+"${claudemd_files[@]}"}; do
+  while IFS=: read -r kind lineno size; do
+    [[ -n "$kind" ]] || continue
+    case "$kind" in
+      line)  claudemd_line_findings+=("$path:$lineno: line is $size bytes, over the ${claudemd_line_max}-byte cap; wrap it") ;;
+      block) claudemd_block_findings+=("$path:$lineno: block is $size bytes, over the ${claudemd_block_max}-byte cap; split it at a blank line or a heading") ;;
+      section) claudemd_sections+=("$path:$lineno: $size bytes to the next heading, over ${claudemd_section_max}; consider a heading to break it up") ;;
+    esac
+  done < <(LC_ALL=C awk \
+    -v LINE="$claudemd_line_max" -v BLOCK="$claudemd_block_max" -v SECTION="$claudemd_section_max" \
+    "$claudemd_program" "$path")
+done
+
+if (( ${#claudemd_files[@]} == 0 )); then
+  result claudemd-lines not-applicable "no CLAUDE.md files"
+  result claudemd-blocks not-applicable "no CLAUDE.md files"
+else
+  for finding in ${claudemd_line_findings[@]+"${claudemd_line_findings[@]}"}; do record "$finding"; done
+  verdict claudemd-lines "every CLAUDE.md line is within the ${claudemd_line_max}-byte cap"
+  for finding in ${claudemd_block_findings[@]+"${claudemd_block_findings[@]}"}; do record "$finding"; done
+  blocks_detail="every CLAUDE.md block is within the ${claudemd_block_max}-byte cap"
+  if (( ${#claudemd_sections[@]} > 0 )); then
+    blocks_detail+="; advisory: ${#claudemd_sections[@]} section(s) over ${claudemd_section_max} bytes; scripts/structure lists them"
+  fi
+  verdict claudemd-blocks "$blocks_detail"
+fi
+
 # --- what this cannot answer ------------------------------------------------
 
 echo
@@ -593,6 +697,11 @@ result tests-are-crossapp not-applicable "whether tests/ spans apps is a judgmen
 result scope-matching not-applicable "whether a file sits at its own scope is a judgment about content"
 
 echo
+if (( ${#claudemd_sections[@]} > 0 )); then
+  echo "Advisory (not a failure): a CLAUDE.md runs long between headings."
+  printf '  %s\n' "${claudemd_sections[@]}"
+  echo
+fi
 if (( pruned > 0 )); then
   echo "$pruned path(s) not descended into, per $allow_file."
 fi

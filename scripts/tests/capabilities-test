@@ -167,6 +167,28 @@ out="$(ci)"
 assert_dispatches python "$out"
 assert_absent node "$out"
 
+fixture "--no-build leaves build out and nothing else"
+printf '[project]\nname = "p"\nversion = "0.1.0"\n' > "$work/pyproject.toml"
+out="$(cd "$work" && CI_DRY_RUN=1 scripts/ci --no-build 2>&1 </dev/null)"
+status=$?
+if (( status == 0 )) \
+  && ! grep -qE '^build ' <<<"$out" \
+  && grep -qE '^lint +would-run +python$' <<<"$out" \
+  && grep -qE '^test +would-run +python$' <<<"$out"; then
+  pass
+else
+  fail "scripts/ci --no-build still dispatched build or dropped another check: $out"
+fi
+
+fixture "scripts/ci refuses an unknown argument"
+(cd "$work" && scripts/ci --bogus >/dev/null 2>&1 </dev/null)
+status=$?
+if (( status == 2 )); then
+  pass
+else
+  fail "wanted exit 2, got $status"
+fi
+
 fixture "node only"
 printf '{"name":"n","version":"1.0.0"}\n' > "$work/package.json"
 out="$(ci)"

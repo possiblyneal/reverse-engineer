@@ -8,6 +8,19 @@ cd "$repo_root"
 # shellcheck source=libs/detect.sh
 source "$repo_root/scripts/libs/detect.sh"
 
+# --no-build leaves build out, for `scripts/check --fast`: the commit-time gate
+# drops the slowest check CI repeats on the same commit before it can land.
+# CI itself never passes it.
+capabilities=(lint format-check typecheck test build)
+case "${1:-}" in
+  "") ;;
+  --no-build) capabilities=(lint format-check typecheck test) ;;
+  *)
+    echo "usage: scripts/ci [--no-build]" >&2
+    exit 2
+    ;;
+esac
+
 # The shared policy: orphan search before the checks, which would run green over
 # the package none of them sees; the no-manifest early-out; the dry run.
-capability_command check lint format-check typecheck test build
+capability_command check "${capabilities[@]}"

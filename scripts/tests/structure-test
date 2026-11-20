@@ -585,4 +585,97 @@ else
   fail "expected unavailable, got: $output"
 fi
 
+# --- CLAUDE.md readability --------------------------------------------------
+#
+# A line over the cap, a rendered block over it, and a run between headings
+# over the section cap, in both directions. Lengths are built here rather than
+# written out so the fixture says what it means -- "over 200 bytes" -- instead
+# of hiding the intent in a wall of lorem. A wrappable line is prose with
+# spaces; an exempt one is a single token no wrap could break.
+long_line="$(printf 'lorem ipsum %.0s' $(seq 1 18))"      # 216 bytes, wrappable
+para_line="$(printf 'lorem ipsum dolor %.0s' $(seq 1 10))" # 180 bytes, wrappable
+
+fixture "a CLAUDE.md line over the cap fails"
+write CLAUDE.md "# Title
+
+$long_line"
+assert_fails claudemd-lines
+
+# Four wrappable lines, none over the line cap, run together into one block
+# over the block cap: the block rule catches what the line rule cannot.
+fixture "a CLAUDE.md block over the cap fails"
+write CLAUDE.md "# Title
+
+$para_line
+$para_line
+$para_line
+$para_line"
+assert_fails claudemd-blocks
+
+# Fenced code, a table row, and a bare URL each carry a line past the cap and
+# none is a finding: the first two are verbatim, the last cannot be wrapped.
+fixture "fenced code, table rows, and unbreakable tokens are exempt"
+write CLAUDE.md "# Title
+
+Short prose that is fine.
+
+| $long_line |
+
+\`\`\`
+$long_line
+\`\`\`
+
+<https://example.com/$(printf 'x%.0s' $(seq 1 210))>"
+assert_passes
+
+# A ~~~ fence is code too, and a ``` inside it is content rather than its close,
+# so the long line after the inner ``` is still exempt.
+fixture "a tilde fence is exempt and closes only on its own character"
+write CLAUDE.md "# Title
+
+~~~
+\`\`\`
+$long_line
+~~~"
+assert_passes
+
+# A fence inside a nested list item is indented past three spaces and is
+# still code, not prose.
+fixture "a fence indented under a nested list item is exempt"
+write CLAUDE.md "# Title
+
+- item
+    - nested
+
+      \`\`\`bash
+      $long_line
+      \`\`\`"
+assert_passes
+
+# A heading is capped like any line, and #331 opening a prose line is not a
+# heading, so neither escapes the line cap.
+fixture "a CLAUDE.md heading over the cap fails"
+write CLAUDE.md "# $long_line"
+assert_fails claudemd-lines
+
+fixture "a #-prefixed prose line is not a heading and is capped"
+write CLAUDE.md "# Title
+
+#331 $long_line"
+assert_fails claudemd-lines
+
+# A run between headings over the section cap is an advisory, printed below the
+# table, and leaves the audit green. Every line and block here is within cap.
+fixture "an over-long CLAUDE.md section is advisory, not a failure"
+body="# Title"
+for _ in $(seq 1 60); do body+="
+
+$para_line"; done
+write CLAUDE.md "$body"
+if audit && grep -q 'runs long between headings' "$work/.audit-output"; then
+  pass
+else
+  fail "expected a green audit with a section advisory: $(grep -iE 'fail|advisory' "$work/.audit-output" | head -1 | xargs)"
+fi
+
 report

@@ -8,6 +8,8 @@ on:
 
 permissions:
   contents: read
+  # scripts/ci-tested lists the tested-tree artifacts.
+  actions: read
 
 # A new push to the same branch makes the previous run's result obsolete, and
 # leaving it running lets a stale result report after the newer one.
@@ -30,6 +32,20 @@ jobs:
         with:
           fetch-depth: 0
 
+      # A push whose tree a pull request run already passed -- a merge, squash
+      # or fast-forward onto a base that has not moved since -- would prove that
+      # tree twice. scripts/ci-tested looks for the tree the run recorded at the
+      # end of this job, and every doubt runs the checks. Only on a self-hosted
+      # runner: it is the operator's machine that pays for the second run, and
+      # it keeps toolchain caches on disk, while on a hosted runner a skipped
+      # push stops main saving the caches every pull request restores.
+      - name: Find a passing run on this tree
+        id: tested
+        if: github.event_name == 'push' && vars.RUNNER != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: scripts/ci-tested >> "$GITHUB_OUTPUT"
+
       # adr-index-test and commitlint-test both skip their hook-wiring cases
       # when pre-commit is absent, and those cases are the ones that catch a
       # hook pre-commit never invokes -- the failure both suites exist for.
@@ -43,11 +59,13 @@ jobs:
       # path of this job, which was accepted rather than shipping a
       # commit-message rule to every generated repository unproven.
       - name: Install pre-commit
+        if: steps.tested.outputs.skip != 'true'
         run: pipx install pre-commit
 
       # Before the toolchains, since these install none and verify both the
       # language-capabilities wiring and the local/hosted check boundary.
       - name: Verify repository scripts
+        if: steps.tested.outputs.skip != 'true'
         run: scripts/script-tests
 
       # The hook receives the same base-to-head file range a push does. It
@@ -63,7 +81,26 @@ jobs:
           --from-ref "$BASE_SHA" --to-ref "$HEAD_SHA"
 
       - name: Set up toolchains
+        if: steps.tested.outputs.skip != 'true'
         uses: ./.github/actions/setup-toolchains
 
       - name: Run CI checks
+        if: steps.tested.outputs.skip != 'true'
         run: scripts/ci
+
+      # The tree this run just passed, the merge ref's, for scripts/ci-tested
+      # on the push that lands it. Reached only when every check above passed.
+      - name: Name the tested tree
+        id: tree
+        if: github.event_name == 'pull_request' && vars.RUNNER != ''
+        run: |
+          git rev-parse 'HEAD^{tree}' > "$RUNNER_TEMP/tested-tree"
+          echo "tree=$(cat "$RUNNER_TEMP/tested-tree")" >> "$GITHUB_OUTPUT"
+
+      - name: Record the tested tree
+        if: steps.tree.outcome == 'success'
+        uses: actions/upload-artifact@v7
+        with:
+          name: ci-tested-tree-${{ steps.tree.outputs.tree }}
+          path: ${{ runner.temp }}/tested-tree
+          retention-days: 30

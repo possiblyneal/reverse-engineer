@@ -4,8 +4,8 @@ set -uo pipefail
 # What scripts/check prints, writes, and exits with. The gate's steps are
 # stubbed in a scratch copy of the scripts, so the cases assert the wrapper's
 # contract -- table only by default, the whole run in tmp/check.log every time,
-# raw output under --verbose, the gate's own exit status -- and not the output
-# of any real check.
+# raw output under --verbose, the gate's own exit status, --fast handing ci
+# --no-build -- and not the output of any real check.
 
 repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 
@@ -126,6 +126,55 @@ if (( status == 0 )) && grep -qE '^lint +pass' <<< "$out"; then
   pass
 else
   fail "wanted the table and exit 0 from a subdirectory, got exit $status: $out"
+fi
+
+# ci records the arguments it was given, so a case can tell the full gate from
+# the fast one without running a real build.
+ci_args_fixture() {
+  gate_fixture "$1"
+  printf '#!/usr/bin/env bash\necho "ci:$*" > ci-args\necho "lint               pass             python"\n' \
+    > "$work/scripts/ci"
+}
+
+ci_args_fixture "the default gate runs ci whole"
+(cd "$work" && scripts/check >/dev/null 2>&1)
+if [[ "$(cat "$work/ci-args" 2>&1)" == "ci:" ]]; then
+  pass
+else
+  fail "wanted ci with no arguments, got: $(cat "$work/ci-args" 2>&1)"
+fi
+
+ci_args_fixture "--fast leaves build to CI and says so in the log"
+out="$(cd "$work" && scripts/check --fast 2>&1)"
+status=$?
+if (( status == 0 )) \
+  && [[ "$(cat "$work/ci-args" 2>&1)" == "ci:--no-build" ]] \
+  && grep -q 'chatter from security' "$work/tmp/check.log" \
+  && grep -q 'build is left to CI' "$work/tmp/check.log" \
+  && grep -qE '^lint +pass' <<< "$out"; then
+  pass
+else
+  fail "wanted ci --no-build, every other step, and the log naming the skip, got exit $status: $out"
+fi
+
+ci_args_fixture "--fast and --verbose combine in either order"
+out="$(cd "$work" && scripts/check --fast --verbose 2>&1)"
+status=$?
+if (( status == 0 )) \
+  && [[ "$(cat "$work/ci-args" 2>&1)" == "ci:--no-build" ]] \
+  && grep -q 'chatter from doctor' <<< "$out"; then
+  pass
+else
+  fail "wanted the streamed fast run, got exit $status: $out"
+fi
+
+gate_fixture "two modes are a usage error"
+(cd "$work" && scripts/check --verbose --gate >/dev/null 2>&1)
+status=$?
+if (( status == 2 )); then
+  pass
+else
+  fail "wanted exit 2, got $status"
 fi
 
 gate_fixture "an unknown argument is a usage error"

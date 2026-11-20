@@ -1,0 +1,106 @@
+#!/usr/bin/env bash
+set -uo pipefail
+
+# Whether scripts/ci-tested skips the default branch's checks only when a
+# passing pull request run recorded the tree that landed. `gh` is a stub that
+# answers the artifacts query with a fixed listing, run through the --jq filter
+# it was given as gh would, and records what it was asked.
+
+repo_root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
+
+# shellcheck source-path=SCRIPTDIR
+# shellcheck source=libs/harness.sh
+source "$repo_root/scripts/tests/libs/harness.sh"
+
+echo "ci-tested-test"
+
+export GITHUB_REPOSITORY=owner/repo
+
+# A repository with one commit, and a gh stub answering with the artifacts
+# listing $2, or failing when $2 is `error`.
+fixture() {
+  scratch_repo
+  current="$1"
+  printf '%s\n' "$2" > "$work/listing"
+  stub gh <<STUB
+#!/usr/bin/env bash
+printf '%s\n' "\$*" >> "$work/gh-calls"
+[[ "\$(cat "$work/listing")" == error ]] && exit 1
+while (( \$# )); do
+  [[ "\$1" == --jq ]] && exec jq "\$2" "$work/listing"
+  shift
+done
+cat "$work/listing"
+STUB
+  git -C "$work" add -A
+  git -C "$work" commit -qm base
+  tree="$(git -C "$work" rev-parse 'HEAD^{tree}')"
+}
+
+decide() {
+  (cd "$work" && scripts/ci-tested 2>"$work/reason")
+}
+
+# One artifact entry: expired true|false, then the head repository's id against
+# the repository's 1.
+artifact() {
+  printf '{"expired": %s, "workflow_run": {"repository_id": 1, "head_repository_id": %s}}' "$1" "$2"
+}
+
+if ! command -v jq >/dev/null 2>&1; then
+  current="ci-tested"
+  skip "jq is not installed, and the stub runs gh's --jq filter through it"
+  report
+  exit
+fi
+
+fixture "a tree a same-repository run recorded skips" "{\"artifacts\": [$(artifact false 1)]}"
+out="$(decide)"
+if [[ "$out" == "skip=true" ]] \
+  && grep -q "repos/owner/repo/actions/artifacts?name=ci-tested-tree-$tree&" "$work/gh-calls"; then
+  pass
+else
+  fail "wanted skip=true from a query for tree $tree, got '$out': $(cat "$work/reason" "$work/gh-calls" 2>&1)"
+fi
+
+fixture "a tree no run recorded runs the checks" '{"artifacts": []}'
+out="$(decide)"
+if [[ "$out" == "skip=false" ]] && grep -q 'no passing pull request run' "$work/reason"; then
+  pass
+else
+  fail "wanted skip=false, got '$out': $(cat "$work/reason" 2>&1)"
+fi
+
+fixture "an expired record runs the checks" "{\"artifacts\": [$(artifact true 1)]}"
+out="$(decide)"
+if [[ "$out" == "skip=false" ]]; then
+  pass
+else
+  fail "wanted skip=false for an expired artifact, got '$out': $(cat "$work/reason" 2>&1)"
+fi
+
+fixture "a record from a fork's run runs the checks" "{\"artifacts\": [$(artifact false 2)]}"
+out="$(decide)"
+if [[ "$out" == "skip=false" ]]; then
+  pass
+else
+  fail "wanted skip=false for a fork's artifact, got '$out': $(cat "$work/reason" 2>&1)"
+fi
+
+fixture "a record with no run runs the checks" '{"artifacts": [{"expired": false, "workflow_run": null}]}'
+out="$(decide)"
+if [[ "$out" == "skip=false" ]]; then
+  pass
+else
+  fail "wanted skip=false for an artifact with no run, got '$out': $(cat "$work/reason" 2>&1)"
+fi
+
+fixture "a failed query runs the checks" error
+out="$(decide)"
+if [[ "$out" == "skip=false" ]] && grep -q 'could not read' "$work/reason"; then
+  pass
+else
+  fail "wanted skip=false when gh fails, got '$out': $(cat "$work/reason" 2>&1)"
+fi
+
+report
