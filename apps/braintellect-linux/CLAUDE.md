@@ -22,17 +22,23 @@ those findings, it cites them.
 - **No guessing past the evidence.** The protocol source of truth is
   `docs/reverse-engineering/braintellect2/b2-protocol.md`. Items it marks
   unresolved — the 110 and 112 bytes the app never reads, and the 131-138 mode
-  and gain readings (inferred) — are not claimed as known. Implemented so far (`src/acquisition/`): the `decode` arithmetic
+  and gain readings (inferred) — are not claimed as known.
+
+  Implemented so far (`src/acquisition/`): the `decode` arithmetic
   (the sensor gain is not floored; the live app runs with 10), command encoding
   (`command`), the 32-byte frame parser with counter and `sampleValidation`
   error counters (`stream`), the handshake/start/stop/stream `Session` over any
   `Read + Write` (`session`), the decoded 110/112/131-138 replies (`info`), and
-  the RFCOMM socket adapter (`rfcomm`). Frames
+  the RFCOMM socket adapter (`rfcomm`).
+
+  Frames
   surface 4 channels in resolved order (channel c reads payload slots c and 4+c,
   oldest first); the device family is read from the 110 reply (`StreamConfig.family`
   only overrides it; an unaccepted code is `Error::UnknownFamily`), the gains are
   supplied by the caller. `tests/parity_handshake.rs` replays the live handshakes
-  (`handshake_live_{a,b}.txt`) and asserts decoded fields only. All four channels'
+  (`handshake_live_{a,b}.txt`) and asserts decoded fields only.
+
+  All four channels'
   microvolts are held bit exact to the original's logged volts (`assertions::channel_microvolts`):
   over the committed `consumed_*` fixtures in `tests/parity_acquisition.rs`, and over the
   whole #55 replay in the ignored `tests/replay_s55.rs` (`scripts/consumed-extract.py`
@@ -49,12 +55,16 @@ those findings, it cites them.
 - **Two feedback modes** (`feedback::Mode`, one explicit value passed to
   `Smart2Graph::new` / `TriggerPath::smart2` / `Threshold::smart2`; no global or flag).
   `Mode::Original` reproduces the original's feedback defects and is the mode of every
-  parity test; parity is asserted in original mode only. `Mode::Fixed` is what a live
+  parity test; parity is asserted in original mode only.
+
+  `Mode::Fixed` is what a live
   session runs (`live::GraphStart::LIVE`) and corrects four defects: the threshold window erases one entry when a value
   leaves it, not every equal one (`multiset::erase(key)`, `audio-feedback.md`); the 45 Hz
   interference low-pass takes over at the first graph sample (`Mode::interference_switch`),
   not a thread-timed one; every band-pass uses the all-scalar-head 16-tap-mean sum order
-  (`set_scalar_heads` is ignored in fixed mode); `NoteSelection` reads Evaluator code 112 as
+  (`set_scalar_heads` is ignored in fixed mode);
+
+  `NoteSelection` reads Evaluator code 112 as
   channel 3 and 113 as channel 4, not the channel 3 and 4 average (`audio-feedback.md`,
   "Channels 3n4 note codes"). The measured run-8 decision difference
   between the modes is in `audio-feedback.md`, "Fixed mode against original mode".
@@ -81,39 +91,43 @@ those findings, it cites them.
 - **Feedback graph** (`src/feedback/`). The caller runs `SourceFilters` (`source.rs`),
   built from `Smart2Design::source`; `Smart2Graph` (`graph.rs`) runs from the Source
   output (`process_evaluated_block`, or `process_filtered_block` with a logged code):
-  `BandPass`, `PeakFrequency`, the `continuous` Aggregator, the `Evaluator`
-  (`evaluator.rs`: the four Balance and two Coherence series from the Aggregators'
-  averages, the decision in the block that ends each Aggregator epoch, the design's
-  `aggregator_epoch_s`, by the Coherence then the Balance rule, default 111; a Balance
-  that is not finite never wins), the Ch3/Ch4 `Coherence` elements (`coherence.rs`, on the port of the
-  original's IPP order-9 real FFT in `ipp_fft.rs`, pinned bit for bit by
-  `tests/fixtures/ipp_real_fft_512.txt`, the original kernel's output under Unicorn on a
-  synthetic vector), `ExprTriggerAll`
-  (`trigger_all`), the Threshold/Counter `TriggerPath` and `NoteSelection`. `Smart2Design` is filled from `smart2_design.tsv`;
-  `Smart2Graph::new` refuses a rate other than `RATE_HZ` (500) or an aggregator epoch
-  of 0. The run-6 and run-8 replays feed the IPP 16-tap sum-order flags
-  (`set_scalar_head(s)`) and the counter clock (`BlockClock`) as inputs, never read
-  from the host. The counter takes its clock as a `CounterClock`: one read per block for
-  the epoch test and, only on a fire, a lap read that restarts its timer. `tests/parity_smart2_exercise.rs` overrides the design's
-  interference1/2, low-pass and high-pass Source fields to the run-8 device settings,
-  warms the Source chain over the 4000-sample pre-roll, and switches the 45 Hz
-  low-pass in cold one sample after the graph start. The 25 Hz band-stop (`Notch`,
-  `iir.rs`) runs the app's own two-biquad taps (transposed direct form II), not a
-  designed filter, so it serves only the 23.5/25.75 Hz setting at 500 Hz and
-  `SourceFilters::new` refuses it at another rate; its run-8
-  amplitudes are asserted bit for bit over blocks 0 to 6599. Parity tests pick the logged or
-  the evaluated code with `harness::run8::Codes`.
+  - `BandPass`, `PeakFrequency`, the `continuous` Aggregator.
+  - The `Evaluator` (`evaluator.rs`): the four Balance and two Coherence series from the
+    Aggregators' averages, the decision in the block that ends each Aggregator epoch, the design's
+    `aggregator_epoch_s`, by the Coherence then the Balance rule, default 111; a Balance that is
+    not finite never wins.
+  - The Ch3/Ch4 `Coherence` elements (`coherence.rs`, on the port of the original's IPP order-9
+    real FFT in `ipp_fft.rs`, pinned bit for bit by `tests/fixtures/ipp_real_fft_512.txt`, the
+    original kernel's output under Unicorn on a synthetic vector).
+  - `ExprTriggerAll` (`trigger_all`), the Threshold/Counter `TriggerPath` and `NoteSelection`.
+  - `Smart2Design` is filled from `smart2_design.tsv`; `Smart2Graph::new` refuses a rate other than
+    `RATE_HZ` (500) or an aggregator epoch of 0.
+  - The run-6 and run-8 replays feed the IPP 16-tap sum-order flags (`set_scalar_head(s)`) and the
+    counter clock (`BlockClock`) as inputs, never read from the host.
+  - The counter takes its clock as a `CounterClock`: one read per block for the epoch test and,
+    only on a fire, a lap read that restarts its timer.
+  - `tests/parity_smart2_exercise.rs` overrides the design's interference1/2, low-pass and
+    high-pass Source fields to the run-8 device settings, warms the Source chain over the
+    4000-sample pre-roll, and switches the 45 Hz low-pass in cold one sample after the graph start.
+  - The 25 Hz band-stop (`Notch`, `iir.rs`) runs the app's own two-biquad taps (transposed direct
+    form II), not a designed filter, so it serves only the 23.5/25.75 Hz setting at 500 Hz and
+    `SourceFilters::new` refuses it at another rate; its run-8 amplitudes are asserted bit for bit
+    over blocks 0 to 6599.
+  - Parity tests pick the logged or the evaluated code with `harness::run8::Codes`.
 - **Circle-Balance report** (`src/feedback/circle_balance.rs`). `B-2-Circle-Balance-fromBAGSD-v5.1.1`
   is a post-session report (`BAGSD.report`) over a stored exercise's `High`/`Low` LMH series, not a
   live design. `CircleBalanceDesign::circle_balance` is its
   wiring, asserted against `tests/fixtures/circle_balance_design.tsv` (`make-fixtures.py --src64`,
   `tests/parity_circle_balance.rs`); `report` runs the `TimeFilter` window, the `absolute` mean (double sum, `float32` result) and the
-  Balance Meter expression. Its eight values equal the original's chart inputs bit for bit over
+  Balance Meter expression.
+
+  Its eight values equal the original's chart inputs bit for bit over
   exercise 146 (`circle_balance_lmh.tsv` and `circle_balance_chart.tsv`, `make-fixtures.py
   --src62/--lmh62`, the asserting test in `tests/parity_circle_balance.rs`; the chart fixture is in
   the original's call order, see `fixtures::circle_balance_report_in_call_order`). The ignored
   `tests/replay_s62.rs` holds it to the raw hook log under `tmp/s62/` (`S62_CAPTURE`, and `S62_LMH`, the
   `scripts/lmh-extract.py` output of the exercise's type-9 XML).
+
   `Store::summaries` runs `report` over each stored session's own `High`/`Low` series
   (`Summary::balance`); the live B-2 selection is not exercised.
   Evidence: `audio-feedback.md`, "Circle-Balance design".
@@ -121,12 +135,16 @@ those findings, it cites them.
   database (`rusqlite`, bundled SQLite), at `$XDG_DATA_HOME/braintellect-linux/sessions.db`,
   else `~/.local/share/braintellect-linux/sessions.db` (a relative
   `XDG_DATA_HOME` is ignored); `Store::open(path)` overrides
-  it (tests use a scratch path). The schema is normalized (`session` header and
+  it (tests use a scratch path).
+
+  The schema is normalized (`session` header and
   duration, `channel`, `series`, `point`) and keeps the fields and meaning the original
   recorded (`docs/reverse-engineering/braintellect2/session-storage.md`), not its MySQL
   or Java-serialized, encrypted blobs. `PRAGMA user_version` is the schema version
   (`SCHEMA_VERSION`, 2); another version is refused, never migrated. Offline: no network,
-  and the original's records are never read or migrated. Each `session` row also keeps
+  and the original's records are never read or migrated.
+
+  Each `session` row also keeps
   `started_at` (Unix seconds, the wall clock at stream start), `capture` (the raw capture
   file relative to the data directory, `captures/b2-<secs>.rx`; NULL when none was written,
   part of version 2) and `test`, the clinician's
@@ -137,35 +155,46 @@ those findings, it cites them.
   note to PCM (note = trailing decimal of the resource name; shape-based, so it needs no
   fixed offsets); `player` is deterministic (trigger decisions in, events and mixed PCM
   out, no gate of its own, whole samples unscaled, overlaps summed and saturated);
+
   `import` copies the owner's banks with `braintellect-linux import <original lib dir>` into
   `$XDG_DATA_HOME/braintellect-linux/instruments/` (else `~/.local/share/...`, a relative
   `XDG_DATA_HOME` ignored; the rule is shared with storage via `storage::resolve_data_dir`).
   `import` refuses a source that is the destination (`ImportError::SameDirectory`; copying
-  onto itself would truncate the banks). `audio::load_instrument(dir, id)` reports a bank that
+  onto itself would truncate the banks).
+
+  `audio::load_instrument(dir, id)` reports a bank that
   was never imported as `InstrumentError::Missing`, naming the path and the import command; a
   sample rate of 0 is a `BankError`. The player sounds every trigger, repeated notes included
   (the original's `+0x2cf` check is `playOnChange`, false in SMART-2); the 40..76 note clamp is
   upstream in `feedback/note.rs`.
   Only `sink::AlsaSink` touches a device (libasound loaded with `dlopen`); tests never open
-  it and nothing plays audio. The bank bytes are never committed: `tests/parity_audio.rs` and
+  it and nothing plays audio.
+
+  The bank bytes are never committed: `tests/parity_audio.rs` and
   the audio tests use synthetic banks (`tests/harness/synthetic_bank.rs`); the ignored real-bank
   test reads `BT_BANK_1002_DLL`.
   Tones (`audio::tone`, `audio::soundfont`; ADR 0006): `TONES` lists the feedback tones in
   set-up order, the original banks 1002 (`DEFAULT_TONE`, index 0), 1001 and 1003, then recorded
-  Harp, Acoustic guitar and Xylophone. `braintellect-linux import-soundfont <file.sf2>` renders
+  Harp, Acoustic guitar and Xylophone.
+
+  `braintellect-linux import-soundfont <file.sf2>` renders
   the recorded ones from General MIDI programs 46, 24 and 13 into
   `tone-<key>.bank` beside the banks (notes 40..76, 96 kHz, 0.8 s; every file is written under
   a temporary name and renamed into place only once all render and write; a SoundFont sample
   with no rate is refused). `Tone::availability` reports a never-imported tone as unavailable, and
   the window disables it instead of failing the session; `UiModel::select_tone` refuses an
-  unavailable tone or a change while a session runs. The SoundFont is not committed
+  unavailable tone or a change while a session runs.
+
+  The SoundFont is not committed
   (`tests/harness/synthetic_soundfont.rs` builds a synthetic one; `tests/audio_tone.rs`). Recovered behavior: `docs/reverse-engineering/braintellect2/audio-feedback.md`.
 - **Live session engine** (`src/live.rs`; ADR 0005). `live::run`: `Session` over
   `Read + Write` -> `SourceFilters` -> `Smart2Graph` -> `audio::Player` -> an `AudioSink` (a
   trait; `AlsaSink` stays the only device code) -> `Store::save` when the session ends (stop,
   the length reached, the device closing the stream, or the window closing, which stops the
   worker and waits for the store). It stores only if a frame arrived; an error (link, audio,
-  store) ends it unstored. It blocks, so it runs off the UI thread and reports a `Snapshot`
+  store) ends it unstored.
+
+  It blocks, so it runs off the UI thread and reports a `Snapshot`
   (phase, link health, frames, `StreamStats`, per-channel RMS microvolts over the last second,
   triggers, the control code) through `Environment::report`, every 25 blocks and in the frame a
   trigger or a code change happens. The transport, sink, clock, stop flag and graph start
@@ -177,13 +206,17 @@ those findings, it cites them.
   original's did from connect to Play; a live session (`GraphStart::LIVE`) is fixed mode after
   500 samples (1 s), and the session length counts from the first block. The control code
   comes from the Evaluator (111 until its first full epoch pair; `Snapshot.control`, shown in
-  the session window). The IPP scalar-head flags are all `true` in either mode: the original's
+  the session window).
+
+  The IPP scalar-head flags are all `true` in either mode: the original's
   sum order cannot be derived, so a live run fixes the order that departs less from run 8's
   logged one (`audio-feedback.md`, "Live sum order"; pinned by
   `tests/parity_smart2_exercise.rs`). The counter timer starts one epoch
   (`feedback::TRIGGER_EPOCH_MS`) before the clock reading taken as the graph is built, so the
   first block is already eligible, as in the original (`audio-feedback.md`, "Counter timer
-  start"). The clinician sets the Source device settings (`SessionProperties`, default the
+  start").
+
+  The clinician sets the Source device settings (`SessionProperties`, default the
   run-8 baseline) and the length; the design is `Smart2Design::smart2`, checked against the
   design fixture in `tests/parity_feedback.rs`.
 - **Stored series and BAGSD** (`feedback::StoredSeries`, `assess.rs`): the original's BAGSD
@@ -192,17 +225,23 @@ those findings, it cites them.
   (low-pass 1 Hz), `Band-10` to `Band-90`, `Band-VHF` (high-pass 62 Hz), the LMH `High`, `Mid`,
   `Low` named per pair (`High 1&2`, `High 3&4`), `50Hz`, `60Hz` (Channel4's `60hz` is stored
   as `60Hz`), then `FFT-Normal-Order`; data type and side are not stored, as name and channel
-  give them. Each filter series is one microvolt point every 5 s of stream time and a closing
+  give them.
+
+  Each filter series is one microvolt point every 5 s of stream time and a closing
   point at the stop (`session-storage.md`, "Stored series (#56)"). The ignored
   `tests/replay_s56.rs` holds every series of every channel to the original's exercise 146
   record within `RECORD_EPSILON` (`assertions::stored_series` over `harness::record::as_stored`;
-  inputs `vol146.txt` and `b146/ed_9.xml` in `tmp/s56`, `S56_REPLAY_DIR`). The design's discrete
+  inputs `vol146.txt` and `b146/ed_9.xml` in `tmp/s56`, `S56_REPLAY_DIR`).
+
+  The design's discrete
   FFT is `feedback::FftSpectrum` (500-sample blocks, the partial block at the stop included),
   stored as `FFT-Normal-Order` (256 points, `x` the bin index, microvolts; `session-storage.md`,
   "Stored FFT (#59)"). The ignored `tests/replay_s59.rs` holds the whole report to exercise
   147's record within `RECORD_EPSILON` (inputs
   `volts.tsv` from `scripts/fft-extract.py` and `ed_9.xml` in `tmp/s59/replay`,
-  `S59_REPLAY_DIR`; `bagsd-design.md`, "Clone and parity") and every logged `DSPFFT` block bit
+  `S59_REPLAY_DIR`;
+
+  `bagsd-design.md`, "Clone and parity") and every logged `DSPFFT` block bit
   for bit (`fft_in_<c>.txt`, `fft_out_<c>.txt`); the FFT stage is `feedback::DspFft`, shared
   with sensor status.
 - **Sensor status** (`src/sensor.rs`): the Head2D evaluator's three fault tests, the
@@ -211,26 +250,34 @@ those findings, it cites them.
   `sensor::SensorMonitor` is the pre-session feed (per channel 500 samples plus 12 zeros into
   the 512-point FFT, five band levels, ground ceiling -10 dB; the evaluator runs on a
   `TICK_MS` (60 ms) display tick, not per block, so the debounce and the pre-block "Adjust Fit"
-  follow the clock). `live::monitor` runs it on an opened B-2 before a session with the LOD
+  follow the clock).
+
+  `live::monitor` runs it on an opened B-2 before a session with the LOD
   Source (45 Hz low-pass off, 25 Hz band-stop on, `SessionProperties::lod_source`), needs no
   tone, and returns why it could not run or broke off, which ends the check with that reason in
   the notice. Each report also carries `SensorReport::lost_percent`: the frames lost over the
   last `live::LOSS_WINDOW_MS` (3 s), rounded down, 100 for a window with nothing received,
   `None` before the first window ends.
   `ui::worker::Worker::spawn_check` (the "Check sensors" button, `Command::CheckSensors`)
-  starts it. The FFT stage is
+  starts it.
+
+  The FFT stage is
   `feedback::DspFft` (`DSPFFT::process`: f32 Bartlett, `RealFft512`, the `rsqrtps` magnitude of
   `ipp_magnitude.rs`, the x87 scale); the spectra, levels and evaluator fault flag are all
   replay-asserted bit exact against the original's sensors-off capture (`sensor-status.md`).
   The `rsqrtps` table is Intel's. Tests: `tests/parity_sensor_status.rs`
   (synthetic fault tests and the sensors-off replay of `tests/fixtures/sensor_*.tsv`),
   `tests/parity_selfcheck.rs`, `tests/parity_sensor_monitor.rs` (`live::monitor` over the
-  in-memory stream). The ignored `tests/replay_s61.rs` holds the three worn captures (good fit, T4
+  in-memory stream).
+
+  The ignored `tests/replay_s61.rs` holds the three worn captures (good fit, T4
   lifted, T3-T4 shorted) and run 8's no-wearer stream (#57) to the original's per-block levels (bit exact) and
   overlay states over the frames the original consumed (`S61_GOODFIT_CAPTURE`,
   `S61_T4OFF_CAPTURE`, `S61_SHORT_CAPTURE`, `S61_REPLAY_DIR`, `S57_RUN8_CAPTURE`, `S57_REPLAY_DIR` from
   `scripts/worn-sensor-extract.py`; `sensor-status.md`, "Observed: worn replays" and "Observed:
-  run 8 no-wearer overlay state"). A fault that reaches the debounce delay in the clock reading
+  run 8 no-wearer overlay state").
+
+  A fault that reaches the debounce delay in the clock reading
   of the next block's update is a host-timing race and its state is not compared (`ties.txt`). The
   original did not consume a few frames (cause inferred as host timing; no counter gap or
   validation failure marks them), so the clone cannot match those.
@@ -239,65 +286,86 @@ those findings, it cites them.
   marks the lower-RMS sensor not touching. Set from the eight worn captures, not the overlay's
   fault tests (`sensor-status.md`, "Observed: fixed-mode fit features"); it does not detect a
   short or an unworn headset (#81). `live::monitor` reports it as `SensorReport::fit` beside the
-  overlay, and the window's "Sensors:" line shows it (`ui::state::Event::Sensor`). Tests:
+  overlay, and the window's "Sensors:" line shows it (`ui::state::Event::Sensor`).
+
+  Tests:
   `tests/fit_status.rs` (synthetic good and lifted), the ignored `tests/replay_s77.rs` (every
   report over the eight captures, `S77_CAPTURE_DIR`, default `tmp/s61/`).
 - **Session UI** (`src/ui/`). `ui::state::UiModel` is the pure model (actions and events in,
   `View` out), tested in `tests/ui_state.rs`; `ui::app` only draws it, and `ui::worker` is the
   device glue (RFCOMM with a 1 s read timeout, ALSA, the default store, the chosen tone);
   neither is unit-tested. The window offers the ADR 0004 import when the default tone
-  (`DEFAULT_TONE`, found by key) is not imported. Window order, top down: the heading, the
+  (`DEFAULT_TONE`, found by key) is not imported.
+
+  Window order, top down: the heading, the
   `View::connection` line, the B-2 address, the button row (Pair and connect, Start session,
   Check sensors, Stop check, Stop), the sensor and frame lines, then the tone list, the session
   length and a collapsed **Options** section holding the interference, band-stop, low-pass and
   high-pass settings, then the feedback and notice lines and a collapsed **Past sessions**
-  section; the whole window scrolls. Past sessions (`ui::history::rows`, pure, tested in
+  section; the whole window scrolls.
+
+  Past sessions (`ui::history::rows`, pure, tested in
   `tests/ui_history.rs`) lists each stored session by local start time and length, expands to
   a table of every `Band-00` to `Band-VHF` mean (one row per pass band, one column per sensor)
   and its Balance Meter, hides test-marked sessions unless shown, and offers Mark as test /
   Not a test; the list rereads the store at start, after a saved session and after a mark.
+
   The Balance Meter (`ui::history::balance`) is a plain table, Emotional State (FP1/FP2) and
   Activation State (T3/T4) by Before/After High/Low, each value a whole percentage of the
   chart's full scale (`circle_balance::GRAPH_MAX_RANGE`, 4; clipped at 100% as the chart clips)
   with the stronger side (right when positive, from `sign(1.08*B - A)`), `—` for a window the session was too
   short for, and absent when no value exists; the original's SELF/OTHERS and BRAKE/GAS
-  labels are not shown (their orientation is unverified). The same table shows under the
+  labels are not shown (their orientation is unverified).
+
+  The same table shows under the
   notice once a session is saved, until the next run starts. Each tone has a ▶ preview (`Worker::spawn_preview` plays `tone::preview`:
   `PREVIEW_NOTES` started `PREVIEW_GAP_MS` apart; one at a time, failure in the notice). The
   session length offers only the original's `live::SESSION_MINUTES` (4 to 60 minutes). Entry point:
   `scripts/run braintellect-linux -- ui` (`--mac <MAC>` overrides the address); the window needs a display and loads
-  X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages). On
+  X11/Wayland/GL at run time (eframe `glow` with `x11` and `wayland`, no `-dev` packages).
+
+  On
   Debian the host needs `libxkbcommon-x11-0` (X11 start fails without it) and `libasound2`. The
   **Pair and connect** button
   (`UiModel::pair_and_connect`, shown while no address is known) finds the B-2, pairs it unless BlueZ
   already has, trusts it and then runs the sensor check. The window's top line is
   `View::connection` in large type; while idle with a known address (the button is then hidden)
   it reads "Checking whether the B-2 is on", then "B-2 on, ready to connect" or "B-2 off or out
-  of range" from the presence probe, and "No B-2 paired" with no address. The B-2
+  of range" from the presence probe, and "No B-2 paired" with no address.
+
+  The B-2
   never announces itself (a 2-minute `btmon` capture of a power-on showed no connect from it),
   so the probe (`Worker::spawn_probe`, `Event::Presence`) connects one RFCOMM link and, when the
   B-2 answers, holds it idle (the B-2 sends nothing before Start; held 60 s with 0 bytes) until
   it drops, which reports off at once. While the B-2 is off it pages again `PROBE_EVERY` (5 s)
   after each failure; it runs only while idle with no worker running. A B-2 that is off fails
-  with `EHOSTDOWN` after about 5 s. Only an answer from the device counts as on: a refused,
+  with `EHOSTDOWN` after about 5 s.
+
+  Only an answer from the device counts as on: a refused,
   reset or aborted connect, a permission (link key) error or `EBADE`; any other failure, a
   local adapter error included, counts as off (`bluetooth::answered`). Any command stops the probe and is held until it has let go of the
   link, so two links never meet. During a sensor check
   it reads "Bluetooth link losing N% of data" while `lost_percent` is 1 or more (a host running
-  Bluetooth discovery causes it; #85 covers the session). The flow runs over the
+  Bluetooth discovery causes it; #85 covers the session).
+
+  The flow runs over the
   `ui::bluetooth::BluetoothHost` seam (tested in `tests/ui_state.rs` with a fake host: found, not
   found, refused, already paired, stale bond). Every RFCOMM connect (Pair and connect, Check
   sensors, Start) goes through
   `bluetooth::connect_b2`: a connect refused, reset, aborted, denied or missing its link key
   (`OpenError::Authentication`) looks like a stale bond, so it calls `BluetoothHost::remove`
   (`Adapter1.RemoveDevice`), finds, pairs and trusts the B-2 again and connects once more, never
-  a loop. Any other first failure is `PairFailure::ConnectFailed`; a failed retry is
+  a loop.
+
+  Any other first failure is `PairFailure::ConnectFailed`; a failed retry is
   `ConnectFailedAfterRepair`; a failed re-pair is `BondLost`, on which the window forgets the
   address and offers Pair and connect again (`device-connection.md`, "Connect symptoms").
   `ui::bluez::Bluez` is its only implementation, D-Bus via `zbus` (blocking): it sets
   `Adapter1.Pairable` for the pairing and restores it, registers a NoInputNoOutput agent, and
   finds a known device by address whatever its name. It is device code and
-  not unit-tested. Without `--mac` the window uses the B-2 BlueZ has paired, else offers the button. The
+  not unit-tested.
+
+  Without `--mac` the window uses the B-2 BlueZ has paired, else offers the button. The
   last host to pair owns the bond (inferred, `device-connection.md`).
 - **Live tests.** `tests/live_session.rs` runs the engine over the fixture transport (run-8 EEG
   framed by `tests/harness/transport.rs`) with `RecordingSink` and a synthetic bank. The
@@ -307,28 +375,34 @@ those findings, it cites them.
   of every trigger exactly (`assertions::trigger_notes`; `audio-feedback.md`, "Live replay of
   the #33 capture").
 - **B-2 emulator and capture** (`src/emulate.rs`, `src/capture.rs`). The live session tees its raw
-  RX to `<data dir>/captures/b2-<secs>.rx` (`capture::Recording`). `braintellect-linux emulate
-  <capture> <socket>` plays a B-2 over a Unix socket (the QEMU serial chardev): `Command::decode`
-  recognises the app's requests and `PowerOff`, replies are replayed byte for byte, frames recorded
-  before the last reply (a B-2 left streaming) are dropped, the rest stream from Start at 250/s and stop on Stop, and nothing is sent on power-off. It is tested over
-  `Read + Write` with `tests/harness/peer.rs` (`tests/emulator.rs`); the VM rig and the run-8
-  replay result are in `docs/reverse-engineering/braintellect2/replay-rig.md`.
-  `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
-  `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/` (or the #53 log `tmp/s53/replay/`, `S48_REPLAY_DIR`), and the ignored
-  `tests/replay_s48.rs` diffs the clone's decisions on that stream against the original's
-  (via `harness::run8::replay_from`) and asserts the logged A..H amplitudes, every logged Balance and
-  Coherence value and the per-block Evaluator codes exactly; it locates
-  the unlogged graph start, 45 Hz low-pass switch sample and A..H band to band-pass object ranks
-  from those amplitudes (`audio-feedback.md`, "Replay start-up"; the extract keeps all 18 objects'
-  flags and the complete logged block prefix, up to 30001); inputs are vendor-derived and stay
-  outside Git.
+  RX to `<data dir>/captures/b2-<secs>.rx` (`capture::Recording`).
+  - `braintellect-linux emulate <capture> <socket>` plays a B-2 over a Unix socket (the QEMU
+    serial chardev).
+    - `Command::decode` recognises the app's requests and `PowerOff`, and replies are replayed
+      byte for byte.
+    - Frames recorded before the last reply (a B-2 left streaming) are dropped, the rest stream
+      from Start at 250/s and stop on Stop, and nothing is sent on power-off.
+  - It is tested over `Read + Write` with `tests/harness/peer.rs` (`tests/emulator.rs`); the VM rig
+    and the run-8 replay result are in `docs/reverse-engineering/braintellect2/replay-rig.md`.
+  - `scripts/s48-prep.cmd` and `scripts/s48-run.cmd` are the guest-side steps of that rig.
+  - `scripts/replay-extract.py` reduces a replay hook log to `tmp/s48/replay/` (or the #53 log
+    `tmp/s53/replay/`, `S48_REPLAY_DIR`).
+  - The ignored `tests/replay_s48.rs` diffs the clone's decisions on that stream against the
+    original's (via `harness::run8::replay_from`) and asserts the logged A..H amplitudes, every
+    logged Balance and Coherence value and the per-block Evaluator codes exactly.
+  - It locates the unlogged graph start, 45 Hz low-pass switch sample and A..H band to band-pass
+    object ranks from those amplitudes (`audio-feedback.md`, "Replay start-up"; the extract keeps
+    all 18 objects' flags and the complete logged block prefix, up to 30001).
+  - Inputs are vendor-derived and stay outside Git.
 - **Fixtures are scrubbed, no-wearer, and regenerated.** `tests/fixtures/` is
   committed so CI replays headlessly. It is derived only from no-wearer,
   sensors-off captures, minimal, with the B-2 serial replaced by `SCRUBBEDSN00` and
   no MAC, host id, machine/profile/user name, or timestamp. Regenerate it only with
   `python3 -I scripts/make-fixtures.py`; its docstring maps each raw capture under the
   repo's `tmp/` (the live handshakes under `tmp/s58`, `--src58`) to its flag and fixtures. Raw captures stay in `tmp/`, never in Git;
-  every fixture file stays under 500 KB. Grep the fixtures for the MAC and serial
+  every fixture file stays under 500 KB.
+
+  Grep the fixtures for the MAC and serial
   before committing.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
   SMART-2 feedback graph → audio output → session storage → session UI.

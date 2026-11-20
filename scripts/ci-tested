@@ -1,0 +1,39 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Whether a passing pull request run of ci.yml already tested the tree a push to
+# the default branch landed, so ci.yml can skip its checks instead of proving
+# the same tree twice. Prints `skip=true` or `skip=false` for $GITHUB_OUTPUT
+# and the reason on stderr, which the job log keeps.
+#
+#   scripts/ci-tested
+#
+# A pull request run that passes uploads an artifact named for the tree it
+# tested, its merge ref's: ci-tested-tree-<tree>. The push skips when an
+# unexpired one of those names HEAD's tree, so any merge, squash or
+# fast-forward whose result is a tree some run already passed skips, and one
+# onto a base that moved since does not. Only the name says the run passed, and
+# a pull request can rewrite the workflow that uploads it, so artifacts from a
+# fork's run, or with no run at all, are ignored. A branch in this repository
+# is trusted the same way: whoever can push one can already push to the
+# default branch.
+#
+# Called by ci.yml alone: it reads hosted run state, which no local command does.
+# Every doubt answers skip=false, since running the checks again costs minutes
+# and skipping them wrongly leaves the branch unproven.
+
+decide() {
+  echo "ci-tested: $2" >&2
+  echo "skip=$1"
+  exit 0
+}
+
+tree="$(git rev-parse 'HEAD^{tree}')"
+count="$(gh api "repos/${GITHUB_REPOSITORY:?}/actions/artifacts?name=ci-tested-tree-$tree&per_page=100" \
+  --jq '[.artifacts[] | select((.expired | not) and .workflow_run.repository_id != null
+    and .workflow_run.head_repository_id == .workflow_run.repository_id)] | length' \
+  2>/dev/null)" || decide false "could not read the tested-tree artifacts"
+
+[[ "$count" =~ ^[1-9] ]] ||
+  decide false "no passing pull request run tested tree $tree"
+decide true "a passing pull request run tested tree $tree, the tree now on the branch"

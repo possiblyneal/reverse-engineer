@@ -17,9 +17,12 @@ and the target index live here.
 
 - Do not put patient, session, account, or other personal data in this directory.
 - Separate observed configuration from inferred behavior; cite the source artifact and method for every material claim.
-- Constants recovered from the target artifact itself — hardcoded cipher keys, IVs, obfuscation constants, and the like — are documentable findings: record them inline in the findings doc with their extraction site (VA/file offset), since any holder of the artifact can re-extract them.
-- Keep genuinely secret or personal material out of Git and under the repository `tmp/` directory: raw exports, SQL dumps, decoded session records, live credentials, and any decrypted payload carrying patient or session data.
-- Run Ghidra through its CLI (`analyzeHeadless`), never through the REA/MCP Ghidra provider: each MCP call re-imports and re-analyzes the 30 MB `braintellect.exe` under a ~330 s deadline and times out. Import and analyze once with `analyzeHeadless` into a persistent project, then query with headless post-scripts.
+- Constants recovered from the target artifact itself — hardcoded cipher keys, IVs, obfuscation constants, and the like — are documentable findings: record them inline in the findings doc with
+  their extraction site (VA/file offset), since any holder of the artifact can re-extract them.
+- Keep genuinely secret or personal material out of Git and under the repository `tmp/` directory: raw exports, SQL dumps, decoded session records, live credentials, and any decrypted payload carrying
+  patient or session data.
+- Run Ghidra through its CLI (`analyzeHeadless`), never through the REA/MCP Ghidra provider: each MCP call re-imports and re-analyzes the 30 MB `braintellect.exe` under a ~330 s deadline and times
+  out. Import and analyze once with `analyzeHeadless` into a persistent project, then query with headless post-scripts.
 
 ## Work Guidance
 
