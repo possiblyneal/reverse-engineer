@@ -40,6 +40,13 @@ pub struct SampleFrame {
     pub channels: [[f64; SAMPLES_PER_CHANNEL]; CHANNELS],
 }
 
+impl SampleFrame {
+    /// The frame's samples in time order, each as one value per channel (microvolts).
+    pub fn instants(&self) -> impl Iterator<Item = [f64; CHANNELS]> + '_ {
+        (0..SAMPLES_PER_CHANNEL).map(|n| std::array::from_fn(|c| self.channels[c][n]))
+    }
+}
+
 /// The error counters the original keeps (`DataBuffer.packetCounterErrors` and
 /// `sampleValidationErrors`), and the frames lost on the link, which it does not.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
