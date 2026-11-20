@@ -406,9 +406,9 @@ fn sensor_loop<T: Read + Write>(
         match session.next_frame() {
             Ok(Some(frame)) => {
                 received += 1;
-                for n in 0..frame.channels[0].len() {
+                for instant in frame.instants() {
                     let volts: [f64; CHANNELS] =
-                        std::array::from_fn(|c| source[c].push(frame.channels[c][n] * 1e-6));
+                        std::array::from_fn(|c| source[c].push(instant[c] * 1e-6));
                     sensors.push(&volts);
                     fit = fits.push(&volts).or(fit);
                 }
@@ -533,7 +533,7 @@ impl<'a> Engine<'a> {
         let resumed = snapshot.health != Health::Streaming;
         snapshot.health = Health::Streaming;
         let (blocks, control, triggers) = (self.blocks, snapshot.control, snapshot.triggers);
-        for n in 0..frame.channels[0].len() {
+        for instant in frame.instants() {
             let mut volts = [0.0; CHANNELS];
             if self.warmup_left == 0 && self.switch_left == Some(0) {
                 for chain in &mut self.source {
@@ -541,7 +541,7 @@ impl<'a> Engine<'a> {
                 }
             }
             for (c, chain) in self.source.iter_mut().enumerate() {
-                volts[c] = chain.push(frame.channels[c][n] * 1e-6);
+                volts[c] = chain.push(instant[c] * 1e-6);
                 let window = &mut self.window[c];
                 if window.len() == RATE_HZ {
                     window.pop_front();
