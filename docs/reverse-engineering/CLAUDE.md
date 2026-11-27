@@ -1,4 +1,6 @@
-## Purpose
+## Purpose & Tradeoffs
+
+### Purpose
 
 Durable, non-sensitive technical findings from authorized analysis of local
 reverse-engineering targets. One subdirectory per target; cross-target contracts
@@ -13,7 +15,16 @@ and the target index live here.
 - Nothing sits directly in this directory except this `CLAUDE.md` and the target
   subdirectories.
 
-## Local Contracts
+## Child Index
+
+- `braintellect2/CLAUDE.md` — BRAINtellect2 / B-2 findings (wire protocol, device
+  connection, audio feedback, session storage, sensor status) and the HIRREM literature corpus.
+- `roku-rc-el1/CLAUDE.md` — Roku RC-EL1 voice remote hardware (RTL8721DF board, P1 debug header,
+  measured nets) and the firmware-dump plan for remapping the Disney+ button.
+
+## Contracts
+
+### Local Contracts
 
 - Do not put patient, session, account, or other personal data in this directory.
 - Separate observed configuration from inferred behavior; cite the source artifact and method for every material claim.
@@ -24,18 +35,15 @@ and the target index live here.
 - Run Ghidra through its CLI (`analyzeHeadless`), never through the REA/MCP Ghidra provider: each MCP call re-imports and re-analyzes the 30 MB `braintellect.exe` under a ~330 s deadline and times
   out. Import and analyze once with `analyzeHeadless` into a persistent project, then query with headless post-scripts.
 
-## Work Guidance
+## Execution & Escalation
+
+### Work Guidance
 
 - Record only reproducible technical findings that remain useful beyond the active session.
 - Preserve important uncertainty explicitly; do not convert an unverified implementation detail into a fact.
 
-## Verification
+## Commands & Verification
+
+### Verification
 
 - Review reports for accidental sensitive-data disclosure before committing or sharing.
-
-## Child Index
-
-- `braintellect2/CLAUDE.md` — BRAINtellect2 / B-2 findings (wire protocol, device
-  connection, audio feedback, session storage, sensor status) and the HIRREM literature corpus.
-- `roku-rc-el1/CLAUDE.md` — Roku RC-EL1 voice remote hardware (RTL8721DF board, P1 debug header,
-  measured nets) and the firmware-dump plan for remapping the Disney+ button.

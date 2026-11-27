@@ -58,7 +58,9 @@ Every unit has a `.unit.json` at its root, never at a domain's:
 - `ships.kind`: `executable`, `quadlet`, or `none`. `ships.targets` (`linux-amd64`, `macos-arm64`) is required for `executable` and rejected otherwise.
 - Any pairing of `run` and `ships` is valid.
 
-## Purpose
+## Purpose & Tradeoffs
+
+### Purpose
 
 Workspace for reverse-engineering sessions with REA (`rea-agents`). It scopes the REA skill and its CLI-only tooling to sessions opened here
 (`docs/adrs/0001-ship-no-deployable-and-host-rea-as-agent-tooling.md`; REA runs CLI-only, see Local Contracts).
@@ -69,17 +71,7 @@ BRAINtellect2 built, run, and tested in-repo as the parity oracle for the revers
 
 ## Ownership
 
-## Local Contracts
-
-- REA runs **CLI-only**, invoked as `npx -y rea-agents@6.8.0 <command>` pinned to an exact version. It is **not** registered as an MCP server: there is no `.mcp.json`, and the REA/MCP Ghidra provider
-  is not used (it re-analyzes the 30 MB exe per call under a ~330 s deadline and times out). Analyze native targets with `analyzeHeadless` and the `rea-agents` CLI subcommands.
-- `.claude/skills/reverse-engineer-anything/` is the skill copied verbatim from the same `rea-agents` tarball (currently version 49 / `tool_count` 229, from 6.8.0). Bump the skill and the pinned CLI
-  version together from one tarball, never one alone.
-- Ghidra, a JDK, and other analysis engines are host installs, not repository content.
-
-## Work Guidance
-
-## Verification
+`scripts/` and `.github/` are template-managed.
 
 ## Child Index
 
@@ -87,4 +79,21 @@ BRAINtellect2 built, run, and tested in-repo as the parity oracle for the revers
 - `apps/braintellect-linux/CLAUDE.md` — the Rust BRAINtellect2 clone, its parity contract, and its layer plan.
 - `docs/reverse-engineering/CLAUDE.md` — durable, non-sensitive reverse-engineering findings.
 
-`scripts/` and `.github/` are template-managed.
+## Contracts
+
+### Local Contracts
+
+- REA runs **CLI-only**, invoked as `npx -y rea-agents@6.8.0 <command>` pinned to an exact version. It is **not** registered as an MCP server: there is no `.mcp.json`, and the REA/MCP Ghidra provider
+  is not used (it re-analyzes the 30 MB exe per call under a ~330 s deadline and times out). Analyze native targets with `analyzeHeadless` and the `rea-agents` CLI subcommands.
+- `.claude/skills/reverse-engineer-anything/` is the skill copied verbatim from the same `rea-agents` tarball (currently version 49 / `tool_count` 229, from 6.8.0). Bump the skill and the pinned CLI
+  version together from one tarball, never one alone.
+- Ghidra, a JDK, and other analysis engines are host installs, not repository content.
+
+
+## Execution & Escalation
+
+### Work Guidance
+
+## Commands & Verification
+
+### Verification

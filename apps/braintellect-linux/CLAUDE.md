@@ -1,4 +1,6 @@
-## Purpose
+## Purpose & Tradeoffs
+
+### Purpose
 
 The BRAINtellect2 Linux clone: a from-scratch Rust reimplementation of the
 BRAINtellect2 neurofeedback application for Debian Linux, driving the B-2 EEG
@@ -13,7 +15,13 @@ Owns the Rust clone and its parity tests. The protocol and behavior it
 reproduces are owned by `docs/reverse-engineering/`; this unit does not restate
 those findings, it cites them.
 
-## Local Contracts
+## Child Index
+
+None.
+
+## Contracts
+
+### Local Contracts
 
 - **Parity is the correctness contract.** Every layer is validated by diffing
   its observable output (bytes on the wire, decoded microvolts, note/trigger
@@ -407,20 +415,20 @@ those findings, it cites them.
 - **Layers** (each a parity-gated vertical slice): RFCOMM acquisition core →
   SMART-2 feedback graph → audio output → session storage → session UI.
 
-## Work Guidance
+## Execution & Escalation
+
+### Work Guidance
 
 - Rust edition 2021; the gate runs `cargo clippy -- -D warnings`, so keep it
   warning-clean.
 - Cite the originating VA (or the protocol-doc section) in a comment for any
   constant or formula recovered from the binary.
 
-## Verification
+## Commands & Verification
+
+### Verification
 
 - `cargo test` replays the committed fixtures through the harness; the self-check is
   `tests/parity_selfcheck.rs`.
 - `scripts/check` runs the Rust capabilities: `cargo fmt --check`,
   `cargo clippy -- -D warnings`, `cargo test`, `cargo build --locked`.
-
-## Child Index
-
-None.
