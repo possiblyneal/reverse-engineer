@@ -98,3 +98,6 @@ target/
 # Generated artifacts
 /artifacts/
 /downloads/
+
+# Tablet export holding private data; kept out of the repository
+/apps/braintellect-collector/assets/BST-full-export-*.zip
