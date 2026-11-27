@@ -1,4 +1,6 @@
-## Purpose
+## Purpose & Tradeoffs
+
+### Purpose
 
 Peer-reviewed literature on the science inside the BRAINtellect/B-2 device —
 HIRREM (High-resolution, Relational, Resonance-based, Electroencephalic
@@ -19,7 +21,13 @@ reproduces; not a substitute for the recovered design/montage data.
   stimulation, autonomic mechanism, and neurofeedback trial-design references
   found by web search; leads to verify, not downloaded.
 
-## Local Contracts
+## Child Index
+
+None.
+
+## Contracts
+
+### Local Contracts
 
 - External published materials only; keep open-access copies here, link
   (DOI/PMC) to anything paywalled rather than committing it.
@@ -30,10 +38,10 @@ reproduces; not a substitute for the recovered design/montage data.
   restate their content into the findings docs.
 - Record provenance and collection date for anything added.
 
-## Work Guidance
+## Execution & Escalation
 
-## Verification
+### Work Guidance
 
-## Child Index
+## Commands & Verification
 
-None.
+### Verification

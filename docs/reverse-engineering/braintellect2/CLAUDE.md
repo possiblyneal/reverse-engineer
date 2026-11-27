@@ -1,4 +1,6 @@
-## Purpose
+## Purpose & Tradeoffs
+
+### Purpose
 
 Durable, non-sensitive findings from authorized analysis of **BRAINtellect2**
 (`braintellect.exe` v5.1.57) and its B-2 device — the reverse-engineering target
@@ -17,7 +19,14 @@ the `apps/braintellect-linux` clone reproduces.
 | `replay-rig.md` | Ticket #48: the `braintellect-linux emulate` B-2 emulator played into the original through a QEMU 16550 serial port (COM2): the emulator contract, the quadlet and guest-ini before/after, the run steps with the run-8 hook set, the results of replaying run 8 (the original's own decisions differ from run 8; the clone matches the replay 874/874 with E..H bit exact) and #33's live clone capture (734/734 over the 26022 blocks logged before the capture ran out), #55's all-channel consumed volts (the clone bit exact on channels 0 to 3), #56's stored-session capture (exercise 146, reproduced from the consumed volts), why a replay of a live capture stops short of the exercise end, the host clock a replay needs (turbo on; the night `no_turbo` schedule caps the host at 800 MHz), #61's worn captures (unattended Startup-folder launch with NTFS staging, no emulator connect retry, overlay state via instruction-site hooks), and #57's no-wearer run-8 overlay replay (rig-up of the quadlet, extractor options). |
 | `bagsd-design.md` | Ticket #59: the `BAGSD-4-chnl-wDiscreteFFT-v5.1.0` element graph, its post-session role (no live selection), the discrete-FFT algorithm, and the clone's FFT held bit exact per block and to the stored record. |
 
-## Local Contracts
+## Child Index
+
+- `literature/CLAUDE.md` — peer-reviewed HIRREM/Cereset corpus and independent
+  EEG→audio feedback references; background for the feedback the clone reproduces.
+
+## Contracts
+
+### Local Contracts
 
 Inherits every contract in the parent `../CLAUDE.md` (sensitive-data handling,
 observed-vs-inferred, Ghidra via CLI).
@@ -32,7 +41,6 @@ observed-vs-inferred, Ghidra via CLI).
   every board position with the top side up and the `BRAINTELLECT B2v2` silkscreen reading
   normally, left to right.
 
-## Child Index
+## Execution & Escalation
 
-- `literature/CLAUDE.md` — peer-reviewed HIRREM/Cereset corpus and independent
-  EEG→audio feedback references; background for the feedback the clone reproduces.
+## Commands & Verification

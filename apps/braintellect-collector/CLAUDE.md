@@ -1,4 +1,6 @@
-## Purpose
+## Purpose & Tradeoffs
+
+### Purpose
 
 `Collect-BRAINtellect2-Data.cmd`: one file a BRAINtellect2 tablet owner double-taps on
 Windows 8, 8.1 or 10 to get a single Desktop ZIP of the installation, database, relevant
@@ -19,7 +21,13 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
 | `tests/test_delivery-archive.sh` | checks both archive variants and retry launcher |
 | `tests/integration/` | the VM test and its guest half |
 
-## Local Contracts
+## Child Index
+
+None.
+
+## Contracts
+
+### Local Contracts
 
 - **One tap-to-run file, two modes.** The file is a polyglot: its first ten lines are a batch
   header wrapped as a PowerShell block comment (`<# : … : #>`). A double-tap (or `cmd /c`) runs
@@ -100,12 +108,16 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
 - Each delivery archive holds only its collector variant and matching instructions: no tests or exports. `scripts/build-delivery --retry` creates the data-only retry archive and injects
   `BST_RETRY_ONLY=1` into its launcher.
 
-## Work Guidance
+## Execution & Escalation
+
+### Work Guidance
 
 - The Windows VM is a test fixture only. Its Windows 11 details say nothing about the tablet.
 - Never run the collector against a physical tablet from here.
 
-## Verification
+## Commands & Verification
+
+### Verification
 
 - `tests/test_delivery-archive.sh`: builds normal and retry archives; asserts exact membership,
   retry launcher injection, and CRLF. Needs no VM; run it after changing delivery inputs.
@@ -131,7 +143,3 @@ one tappable icon carries the whole program. The unit runs nothing here and ship
 - The window's contents have no automated check: the VM test only proves the window mode
   completes and closes. To see it, run `Collect-BRAINtellect2-Data.cmd` without `BST_NO_UI` on
   the guest desktop and watch it.
-
-## Child Index
-
-None.
